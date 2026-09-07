@@ -1,0 +1,7 @@
+add_executable(kcf_integration_backend src/backend_main.cpp src/integration_element.cpp)
+target_include_directories(kcf_integration_backend PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(kcf_integration_backend PRIVATE kcf_core rt)
+
+add_executable(kcf_integration_client src/client_main.cpp)
+target_include_directories(kcf_integration_client PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(kcf_integration_client PRIVATE kcf_core rt)

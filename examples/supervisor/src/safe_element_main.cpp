@@ -20,7 +20,7 @@ public:
         else std::cout << "[SafeElement] Setup output=0" << std::endl;
         return result;
     }
-    void Loop() override
+    int Loop() override
     {
         if (error_requested_.load() && !safe_)
         {
@@ -32,6 +32,7 @@ public:
         // Low-rate diagnostics demonstrate that the process/FSM remains alive.
         if (++ticks_ % 10 == 0)
             std::cout << "[SafeElement] alive safe=" << safe_ << " output=" << output_ << std::endl;
+        return 0;
     }
     void Shutdown() override
     {

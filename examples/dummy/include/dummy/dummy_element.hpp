@@ -6,6 +6,6 @@ class DummyElement : public kcf::ProcessElement
 {
 public:
     int Setup() override;
-    void Loop() override;
+    int Loop() override;
     void Shutdown() override;
 };

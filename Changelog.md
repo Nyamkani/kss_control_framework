@@ -6,6 +6,34 @@ Phase 2 통신 기능은 v2.0, Phase 3 supervision/recovery는 v3.0에 기록합
 버전은 최신순으로, 각 버전 내부는 Phase 진행 순서대로 정리합니다.
 이 문서의 버전 표기는 개발 이력 구분이며 Git tag 또는 배포 생성 여부를 의미하지 않습니다.
 
+## v4.1 — Mecanum M-0 / Runtime Lifecycle Contract
+
+### M-0 — Application Data Contract
+
+- `applications/mecanum/data/`에 common/motor/imu/lidar 헤더 추가. Framework 공통 타입과 분리.
+- Producer sequence·monotonic timestamp, 3축 VelocityCommand/OdometryData, IMU 단위·valid mask 정의.
+- 제품 독립적인 FixedLidarScan container와 타입 특성·양수 capacity static_assert 추가.
+- C++17 개별/통합 include, 기본값 및 잘못된 template 인자 거부 검증 PASS.
+- 실제 Motor/IMU/LiDAR Element 및 Driver 구현은 포함하지 않음.
+
+### Runtime Lifecycle / Error Contract
+
+- **API 변경:** ProcessElement의 `void Loop()`를 `int Loop()`로 변경. 0은 정상 cycle, non-zero는 fatal runtime error.
+- Setup 진입 후 성공·오류 반환·예외와 관계없이 Shutdown을 정확히 1회 호출. Setup 전 내부 초기화 실패는 호출하지 않음.
+- Setup/Loop 예외는 -EFAULT로 처리하고, Shutdown 예외가 기존 오류를 덮어쓰지 않도록 유지.
+- 실패한 Loop cycle은 heartbeat를 증가시키지 않고 ERROR → Shutdown → 원래 오류 반환으로 종료.
+- 기존 Supervisor loss 우선순위와 SIGINT/SIGTERM/RequestStop·Reset 정상 종료 계약 유지.
+- 기존 example/test Element의 signature와 정상 반환 경로 이식. Integration의 Setup 내부 직접 Shutdown을 제거하여 중복 정리 방지.
+- `kcf_runtime_lifecycle_test` 추가: 정확한 Run 오류값·Runtime status, heartbeat, Shutdown 횟수 및 부분 자원 정리 검증.
+- 기존 Element는 int Loop로 이식 후 재빌드 필요. Mecanum 데이터·통신 내부·Bringup 정책은 변경하지 않음.
+- C++17 clean build와 기존 예제 빌드, lifecycle·Runtime supervision·20 Element/1 kHz·Reset 10회·Supervisor loss 회귀 PASS.
+- Topic/Service/Parameter/Action 및 Timer 포함 Integration 10 lifecycle PASS. 부분 초기화 자원·FD·child·SHM 정리 확인.
+
+## v4.0 — Mecanum 헤더 추가 전 기준
+
+- v3.0 supervision/recovery 및 Phase 3-8/3-9A/3-9B hardening을 완료한 Framework 기준 상태.
+- 이후 v4.1 M-0 데이터 계약 및 Runtime lifecycle 보완 작업의 기준. 세부 이력은 아래 v3.0의 Phase별 항목 유지.
+
 ## v3.0 — System Supervision / Fault Management
 
 Phase 3-1~3-7 통합 검증과 Phase 3-8/3-9A/3-9B hardening을 완료했습니다. **v3.0 PASS**.

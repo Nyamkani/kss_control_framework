@@ -21,7 +21,7 @@ public:
         std::cout << "[RuntimeTest] " << name << " Setup end result=" << setup_result << std::endl;
         return static_cast<int>(setup_result);
     }
-    void Loop() override
+    int Loop() override
     {
         ++loops;
         if (loops==stall_after)
@@ -30,6 +30,7 @@ public:
             std::this_thread::sleep_for(std::chrono::milliseconds(stall_ms));
         }
         if (loops==throw_after) throw std::runtime_error("test Loop exception");
+        return 0;
     }
     void Shutdown() override
     {

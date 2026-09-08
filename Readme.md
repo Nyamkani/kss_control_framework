@@ -7,15 +7,17 @@ IPC 및 command/state 구조를 공통화하기 위한 재사용 가능한 제�
 Linux/POSIX API의 반복 사용을 얇게 감싸고, 프로세스와 통신 구조가 코드에서
 명확하게 보이도록 설계합니다. ROS를 재구현하지 않으며, 매카넘 로봇은 향후 첫 Reference Application입니다.
 
-## 현재 상태: v3.0
+## 현재 상태: v4.1
 
-Phase 3-7 통합 검증과 Phase 3-8/3-9A/3-9B hardening을 완료했습니다. 현재 개발 기준은 **v3.0 PASS**입니다.
+v3.0 hardening 완료 상태를 v4.0 기준으로 두고, v4.1에서 Mecanum M-0 데이터 헤더와 Runtime lifecycle/error 계약을 반영했습니다.
 
 | 버전 | 완료 범위 |
 | --- | --- |
 | v1.0 | ProcessElement / ProcessRuntime / Process / Bringup 실행 기반 |
 | v2.0 | Topic / Timer / Service / Runtime Parameter / Action 통신 기반 |
 | v3.0 | Multi-Element supervision, ERROR/SAFE, 명시적 Reset, Supervisor loss 및 SHM crash hardening |
+| v4.0 | Mecanum 데이터 헤더 추가 전 Framework 기준 상태 |
+| v4.1 | M-0 Application data contract, Setup 실패 정리 및 Loop fatal error 반환 |
 
 v3.0은 최초 오류를 유지하고, 사용자 Reset으로 전체 process generation을 교체한 뒤
 모든 Runtime이 RUNNING일 때만 정상 운전으로 복귀합니다. 자동 재시작은 하지 않습니다.
@@ -56,9 +58,21 @@ STOPPED → STARTING → Setup() → RUNNING → Loop() 반복
         → Stop Request → STOPPING → Shutdown() → STOPPED
 ```
 
-`Setup()`은 성공 시 0, 실패 시 non-zero를 반환합니다.
-Setup 실패 시 Runtime은 `ERROR` 상태로 종료하며 `Shutdown()`을 자동 호출하지 않습니다.
-`Shutdown()`은 기본 빈 구현을 제공하므로 정리 작업이 필요한 Element만 재정의합니다.
+`Setup()`과 `Loop()`는 `int`를 반환합니다. 0은 성공/정상 cycle, non-zero는 lifecycle을 종료할 오류입니다.
+가능하면 negative errno를 사용하며, Runtime은 양수 오류도 실패로 취급합니다. 일시적인 오류의 retry/recovery는
+Element에서 처리하고 정상 운전을 계속할 수 있을 때만 Loop에서 0을 반환합니다.
+
+Setup 호출이 시작되면 반환 오류나 예외가 발생해도 Runtime은 Shutdown을 정확히 한 번 호출합니다.
+Shutdown은 부분 초기화 상태에서도 안전하게 자원을 정리해야 하며 Setup에서 직접 호출하지 않습니다.
+Runtime 내부 초기화·supervision 시작 실패로 Setup을 호출하지 않았다면 Shutdown도 호출하지 않습니다.
+Loop 오류 cycle은 heartbeat를 증가시키지 않고 ERROR → Shutdown → 오류 반환으로 종료합니다.
+Setup/Loop 예외는 `-EFAULT`이며 Shutdown 예외가 기존 오류를 덮어쓰지 않습니다.
+이미 latch된 Supervisor loss의 우선순위와 정상 signal/RequestStop의 STOPPING → Shutdown → STOPPED 흐름은 유지합니다.
+`Shutdown()`은 기본 빈 구현을 제공합니다.
+
+**기존 Element 이식:** `void Loop() override`를 `int Loop() override`로 바꾸고 정상 경로에서 `return 0;`을 추가해야 합니다.
+새 API로 모든 Element를 다시 빌드해야 합니다. Unix process exit status는 음수 int를 그대로 보존하지 않으므로
+정확한 errno 확인에는 `ProcessRuntime::Run()` 반환값 또는 Runtime status를 사용합니다.
 
 ## System Supervision / Fault Management
 
@@ -154,6 +168,20 @@ Service의 중복 보호는 최근 64개 응답 캐시, Action의 추가 보호�
 v3.0은 Topic/Parameter의 robust 동기화 복구와 controlled generation recovery를 제공합니다.
 Crash로 남은 reader pin은 개별 회수하지 않으며 전체 generation 교체로 복구합니다.
 
+## Mecanum Reference Application — M-0
+
+`applications/mecanum/data/`는 Framework와 분리된 Application 전용 IPC 데이터 계약입니다.
+
+| 헤더 | 타입 / 의미 |
+| --- | --- |
+| `common.hpp` | `SampleHeader`: producer sequence와 monotonic microsecond timestamp |
+| `motor.hpp` | 3축 `VelocityCommand`, `OdometryData` |
+| `imu.hpp` | `ImuData`: 가속도(g), 각속도(rad/s), Euler(rad), 자기장 raw, valid mask |
+| `lidar.hpp` | `FixedLidarScan<PointT, MaxPoints>`: 제품 독립적인 고정 용량 container |
+
+타입은 trivially copyable·standard layout 조건을 검증하며 heap ownership을 포함하지 않습니다.
+M-0에는 실제 Element·Driver·제품별 LiDAR payload 구현이 없습니다.
+
 ## 저장소 구조
 
 ```text
@@ -161,6 +189,7 @@ Crash로 남은 reader pin은 개별 회수하지 않으며 전체 generation �
 ├─ CMakeLists.txt
 ├─ Readme.md
 ├─ Changelog.md
+├─ applications/mecanum/data/
 ├─ kcf/
 │  ├─ CMakeLists.txt
 │  ├─ include/kcf/
@@ -211,7 +240,7 @@ cmake --build build
 
 추가 검증 target은 `examples/supervisor/`의 `kcf_supervisor_normal`, `kcf_supervisor_crash`,
 `kcf_supervisor_safe`, `kcf_supervisor_runtime_test`, `kcf_runtime_supervision_test`, `kcf_reset_test`,
-`kcf_system_status_recovery_test`와
+`kcf_runtime_lifecycle_test`, `kcf_system_status_recovery_test`와
 `examples/recovery/`의 `kcf_topic_recovery_test`, `kcf_parameter_recovery_test`,
 `kcf_incomplete_recovery_test`입니다.
 Integration 예제는 `kcf_integration_backend`, `kcf_integration_client`입니다.
@@ -253,6 +282,7 @@ Reset 제어는 public `RequestReset()` API로 제공하며 CLI Reset 명령은 
 Python 검증에는 Python 3가 필요합니다.
 
 ```sh
+./build/examples/supervisor/kcf_runtime_lifecycle_test
 ./build/examples/supervisor/kcf_runtime_supervision_test ./build/examples/supervisor/kcf_supervisor_runtime_test
 python3 examples/supervisor/runtime_health_checks.py build
 python3 examples/supervisor/supervisor_loss_checks.py build
@@ -372,9 +402,14 @@ Phase 3-8~3-9B hardening까지 다음 검증을 추가로 완료했습니다. �
 
 1 kHz 검증은 해당 테스트 환경에서의 Loop 진행 확인이며 hard real-time 보장을 의미하지 않습니다.
 
+v4.1 Runtime lifecycle 테스트에서는 Setup 성공·오류·예외, Loop 오류·예외, 양수/음수 오류 보존,
+실패 cycle의 heartbeat 미증가, Shutdown 예외의 우선순위, Setup 전 내부 실패의 cleanup 생략을 확인했습니다.
+직접 Run 반환값과 실제 supervision status를 함께 검사하며 부분 초기화 자원과 FD 정리도 검증합니다.
+C++17 clean build, 기존 Runtime·20 Element/1 kHz·Reset 10회·Supervisor loss, 통신 및 Integration 10 lifecycle 회귀까지 **PASS**입니다.
+
 ## 개발 기준 문서
 
 로컬 `docs/KCF_ARCHITECTURE_PLAN.md`와 `docs/KCF_CODEX_INSTRUCTION.md`를 설계 및 개발 기준으로
 사용합니다. 두 문서는 Git ignore 상태로 유지합니다.
 
-공개 개발 이력은 [Changelog](Changelog.md)의 v0.1~v3.0 항목을 참고하세요.
+공개 개발 이력은 [Changelog](Changelog.md)의 v0.1~v4.1 항목을 참고하세요.

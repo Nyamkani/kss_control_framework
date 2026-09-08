@@ -68,6 +68,8 @@ int ProcessRuntime::Run(ProcessElement& element)
         if (stop_reason_.load() < 0) setup_result = stop_reason_.load();
         runtime_error_ = setup_result;
         state_ = ProcessState::ERROR;
+        try { element.Shutdown(); }
+        catch (...) {} // preserve the original Setup/previously latched loss error
         Finalize();
         return setup_result;
     }
@@ -95,7 +97,12 @@ int ProcessRuntime::Run(ProcessElement& element)
                 break;
             }
 
-            element.Loop();
+            const int loop_result = element.Loop();
+            if (loop_result != 0)
+            {
+                result = loop_result;
+                break; // failed cycles do not advance the heartbeat or scheduler
+            }
             if (loop_heartbeat_.load() == std::numeric_limits<std::uint64_t>::max())
             {
                 result = -EOVERFLOW;

@@ -15,7 +15,7 @@ class IntegrationElement : public kcf::ProcessElement
 {
 public:
     int Setup() override;
-    void Loop() override;
+    int Loop() override;
     void Shutdown() override;
 private:
     // Application state; callbacks and Loop share this short critical section.

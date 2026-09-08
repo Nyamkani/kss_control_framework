@@ -72,7 +72,7 @@ public:
         }
         return -ETIMEDOUT;
     }
-    void Loop() override
+    int Loop() override
     {
         if (role=="B")
         {
@@ -80,6 +80,7 @@ public:
             channel.Publish(getpid());
         }
         else { pid_t value=0; std::uint32_t seq=0; if(channel.ReadLatestSnapshot(value,seq)==0)Write(root/"A.observed",std::to_string(value)); }
+        return 0;
     }
     void Shutdown() override { channel.Close(); parameter.Close(); if(role=="B") { channel.Unlink(); parameter.Unlink(); } }
 };

@@ -21,12 +21,13 @@ public:
         std::cout << "[CrashTest] " << name << " delay_ms=" << delay << std::endl;
         return 0;
     }
-    void Loop() override
+    int Loop() override
     {
-        if (std::chrono::steady_clock::now()-start<std::chrono::milliseconds(delay)) return;
+        if (std::chrono::steady_clock::now()-start<std::chrono::milliseconds(delay)) return 0;
         if (normal_exit) _exit(static_cast<int>(exit_code)); // intentional unexpected process exit
         if (prctl(PR_SET_DUMPABLE,0)!=0) _exit(2);
         raise(SIGSEGV);
+        return 0;
     }
 private:
     std::chrono::steady_clock::time_point start{};

@@ -85,17 +85,16 @@ int IntegrationElement::Setup()
     catch (const std::exception& error)
     {
         std::cerr << "[IntegrationBackend] Setup failed: " << error.what() << std::endl;
-        // Runtime does not call Shutdown after failed Setup.
-        try { Shutdown(); } catch (...) {}
+        // Runtime calls Shutdown once after this failed Setup.
         return -1;
     }
 }
 
-void IntegrationElement::Loop()
+int IntegrationElement::Loop()
 {
     Check(async_error_.load());
     const auto state = action_.GetState();
-    if (state != kcf::ActionState::ACCEPTED && state != kcf::ActionState::RUNNING) return;
+    if (state != kcf::ActionState::ACCEPTED && state != kcf::ActionState::RUNNING) return 0;
     const auto id = action_.GetGoalId();
     if (id != executing_)
     {
@@ -113,14 +112,14 @@ void IntegrationElement::Loop()
         }
         if (std::chrono::steady_clock::now() >= cancel_ready_)
             Check(action_.Canceled(id, {count_, -ECANCELED}));
-        return;
+        return 0;
     }
     if (state == kcf::ActionState::ACCEPTED)
     {
         const int result = action_.Start(id);
-        if (result == -EINVAL && action_.IsCancelRequested(id)) return;
+        if (result == -EINVAL && action_.IsCancelRequested(id)) return 0;
         Check(result);
-        return;
+        return 0;
     }
     std::uint32_t target;
     {
@@ -130,6 +129,7 @@ void IntegrationElement::Loop()
     }
     Check(action_.PublishFeedback(id, {count_, float(count_) / target}));
     if (count_ >= target) Check(action_.Succeed(id, {count_, 0}));
+    return 0;
 }
 
 void IntegrationElement::Shutdown()

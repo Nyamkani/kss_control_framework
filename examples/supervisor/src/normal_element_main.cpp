@@ -8,7 +8,7 @@ class NormalElement : public kcf::ProcessElement
 public:
     std::string name{"normal"};
     int Setup() override { std::cout << "[Normal] " << name << " Setup" << std::endl; return 0; }
-    void Loop() override { std::cout << "[Normal] " << name << " Loop" << std::endl; }
+    int Loop() override { std::cout << "[Normal] " << name << " Loop" << std::endl; return 0; }
     void Shutdown() override { std::cout << "[Normal] " << name << " Shutdown" << std::endl; }
 };
 int main(int argc, char** argv)

@@ -13,6 +13,9 @@ target_link_libraries(kcf_supervisor_runtime_test PRIVATE kcf_core)
 add_executable(kcf_runtime_supervision_test src/runtime_supervision_test.cpp)
 target_link_libraries(kcf_runtime_supervision_test PRIVATE kcf_core)
 
+add_executable(kcf_runtime_lifecycle_test src/runtime_lifecycle_test.cpp)
+target_link_libraries(kcf_runtime_lifecycle_test PRIVATE kcf_core)
+
 add_executable(kcf_reset_test src/reset_test.cpp ../../bringup/src/bringup.cpp)
 target_include_directories(kcf_reset_test PRIVATE ../../bringup/include)
 target_link_libraries(kcf_reset_test PRIVATE kcf_core)

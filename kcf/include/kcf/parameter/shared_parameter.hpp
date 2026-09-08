@@ -1,6 +1,8 @@
 #pragma once
+#include "kcf/ipc/detail/recovery.hpp"
 
 #include <cerrno>
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -24,17 +26,23 @@ class SharedParameter
 {
     static_assert(std::is_trivially_copyable_v<T>);
     static_assert(!std::is_pointer_v<T>);
+    static_assert(std::atomic<std::uint32_t>::is_always_lock_free);
     struct Storage
     {
         std::uint64_t magic{0};
         std::uint64_t payload_size{sizeof(T)};
         std::uint64_t payload_alignment{alignof(T)};
-        std::uint32_t format{1};
+        std::uint32_t format{2};
         std::uint32_t initialized{0};
+        std::int32_t owner_pid{0};
+        std::uint32_t reserved{0};
         pthread_mutex_t mutex;
         pthread_cond_t condition;
         std::uint64_t version{0};
-        alignas(T) unsigned char value[sizeof(T)];
+        std::uint64_t previous_version{0};
+        std::uint32_t active_index{0}, previous_active{0};
+        std::atomic<std::uint32_t> transaction_active{0};
+        alignas(T) unsigned char value_slots[2][sizeof(T)];
     };
 
 public:
@@ -48,17 +56,17 @@ public:
         if (fd_ >= 0 || owns_name_) return -EBUSY;
         int result = SetName(name);
         if (result != 0) return result;
-        fd_ = shm_open(name_.c_str(), O_CREAT | O_EXCL | O_RDWR, 0600);
-        if (fd_ < 0) return -errno;
+        fd_ = detail::CreateOwnedShm(name_.c_str(), magic_, sizeof(T), alignof(T));
+        if (fd_ < 0) { const int error = fd_; fd_ = -1; return error; }
         owns_name_ = true;
-        if (flock(fd_, LOCK_EX) != 0) return FailCreate(-errno);
         if (ftruncate(fd_, sizeof(Storage)) != 0) return FailCreate(-errno);
         result = Map();
         if (result != 0) return FailCreate(result);
         new (storage_) Storage;
+        storage_->owner_pid = getpid();
         result = InitializeSync();
         if (result != 0) return FailCreate(result);
-        std::memcpy(storage_->value, &initial_value, sizeof(T));
+        std::memcpy(storage_->value_slots[0], &initial_value, sizeof(T));
         storage_->magic = magic_;
         storage_->initialized = 1; // last, published by releasing initialization flock
         if (flock(fd_, LOCK_UN) != 0) return FailCreate(-errno);
@@ -72,6 +80,13 @@ public:
         if (result != 0) return result;
         fd_ = shm_open(name_.c_str(), O_RDWR, 0600);
         if (fd_ < 0) return -errno;
+        // Reject known stale objects before taking a shared initialization lock:
+        // a retrying client must not block the replacement owner's exclusive lock.
+        detail::OwnerHeader header{};
+        if (pread(fd_, &header, sizeof(header), 0) == sizeof(header) &&
+            header.magic == magic_ && header.format == 2 && header.initialized == 1 &&
+            header.size == sizeof(T) && header.alignment == alignof(T) &&
+            detail::OwnerDead(header.owner_pid)) return FailOpen(-EAGAIN);
         // If Open wins the lock before Create, zero size returns EAGAIN.
         if (flock(fd_, LOCK_SH) != 0) return FailOpen(-errno);
         struct stat info {};
@@ -80,10 +95,15 @@ public:
         if (info.st_size != static_cast<off_t>(sizeof(Storage))) return FailOpen(-EMSGSIZE);
         result = Map();
         if (result != 0) return FailOpen(result);
+        if (storage_->owner_pid <= 0) return FailOpen(-EPROTO);
         if (storage_->initialized != 1) return FailOpen(-EAGAIN);
-        if (storage_->magic != magic_ || storage_->format != 1) return FailOpen(-EPROTO);
+        if (storage_->magic != magic_ || storage_->format != 2) return FailOpen(-EPROTO);
         if (storage_->payload_size != sizeof(T) || storage_->payload_alignment != alignof(T))
             return FailOpen(-EMSGSIZE);
+        // A new generation must not attach to a dead owner's stale mapping
+        // before the replacement owner has completed Create. Existing peers
+        // retain their mappings; this is not hot reconnect or payload health.
+        if (detail::OwnerDead(storage_->owner_pid)) return FailOpen(-EAGAIN);
         if (flock(fd_, LOCK_UN) != 0) return FailOpen(-errno);
         return 0;
     }
@@ -92,9 +112,9 @@ public:
     int Get(T& value, std::uint64_t* version = nullptr)
     {
         if (!storage_) return -EBADF;
-        const int result = pthread_mutex_lock(&storage_->mutex);
+        const int result = RecoverLock(pthread_mutex_lock(&storage_->mutex));
         if (result != 0) return -result;
-        std::memcpy(&value, storage_->value, sizeof(T));
+        std::memcpy(&value, storage_->value_slots[storage_->active_index], sizeof(T));
         if (version) *version = storage_->version;
         return -pthread_mutex_unlock(&storage_->mutex);
     }
@@ -102,15 +122,22 @@ public:
     int Set(const T& value)
     {
         if (!storage_) return -EBADF;
-        int result = pthread_mutex_lock(&storage_->mutex);
+        int result = RecoverLock(pthread_mutex_lock(&storage_->mutex));
         if (result != 0) return -result;
         if (storage_->version == std::numeric_limits<std::uint64_t>::max())
         {
             pthread_mutex_unlock(&storage_->mutex);
             return -EOVERFLOW;
         }
-        std::memcpy(storage_->value, &value, sizeof(T));
-        ++storage_->version; // also for Set of the same value
+        storage_->previous_active = storage_->active_index;
+        storage_->previous_version = storage_->version;
+        storage_->transaction_active.store(1);
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+        const auto inactive = 1u - storage_->active_index;
+        std::memcpy(storage_->value_slots[inactive], &value, sizeof(T));
+        storage_->active_index = inactive;
+        storage_->version = storage_->previous_version + 1;
+        storage_->transaction_active.store(0); // commit: all new bytes precede this store
         result = pthread_mutex_unlock(&storage_->mutex);
         if (result != 0) return -result;
         return -pthread_cond_broadcast(&storage_->condition);
@@ -119,23 +146,24 @@ public:
     int Wait(T& value, std::uint64_t& last_version)
     {
         if (!storage_) return -EBADF;
-        int result = pthread_mutex_lock(&storage_->mutex);
+        int result = RecoverLock(pthread_mutex_lock(&storage_->mutex));
         if (result != 0) return -result;
         while (!stopped_ && storage_->version == last_version)
         {
-            result = pthread_cond_wait(&storage_->condition, &storage_->mutex);
-            if (result != 0)
-            {
+            const auto deadline = detail::RecoveryDeadline();
+            result = pthread_cond_timedwait(&storage_->condition, &storage_->mutex, &deadline);
+            if (result == ETIMEDOUT) result = 0;
+            if (result == EOWNERDEAD) result = RecoverLock(result);
+            else if (result != 0 && result != ENOTRECOVERABLE)
                 pthread_mutex_unlock(&storage_->mutex);
-                return -result;
-            }
+            if (result != 0) return -result;
         }
         if (stopped_)
         {
             pthread_mutex_unlock(&storage_->mutex);
             return -ECANCELED;
         }
-        std::memcpy(&value, storage_->value, sizeof(T));
+        std::memcpy(&value, storage_->value_slots[storage_->active_index], sizeof(T));
         last_version = storage_->version;
         return -pthread_mutex_unlock(&storage_->mutex);
     }
@@ -143,7 +171,7 @@ public:
     int StopWait()
     {
         if (!storage_) return -EBADF;
-        int result = pthread_mutex_lock(&storage_->mutex);
+        int result = RecoverLock(pthread_mutex_lock(&storage_->mutex));
         if (result != 0) return -result;
         stopped_ = true; // local predicate, synchronized with Wait's mutex
         result = pthread_cond_broadcast(&storage_->condition);
@@ -209,6 +237,7 @@ private:
         int result = pthread_mutexattr_init(&mutex_attr);
         if (result != 0) return -result;
         result = pthread_mutexattr_setpshared(&mutex_attr, PTHREAD_PROCESS_SHARED);
+        if (result == 0) result = pthread_mutexattr_setrobust(&mutex_attr, PTHREAD_MUTEX_ROBUST);
         if (result == 0) result = pthread_mutex_init(&storage_->mutex, &mutex_attr);
         pthread_mutexattr_destroy(&mutex_attr);
         if (result != 0) return -result;
@@ -217,11 +246,25 @@ private:
         if (result == 0)
         {
             result = pthread_condattr_setpshared(&cond_attr, PTHREAD_PROCESS_SHARED);
+            if (result == 0) result = pthread_condattr_setclock(&cond_attr, CLOCK_MONOTONIC);
             if (result == 0) result = pthread_cond_init(&storage_->condition, &cond_attr);
             pthread_condattr_destroy(&cond_attr);
         }
         if (result != 0) pthread_mutex_destroy(&storage_->mutex);
         return -result;
+    }
+    int RecoverLock(int result)
+    {
+        if (result != EOWNERDEAD) return result;
+        if (storage_->transaction_active.load())
+        {
+            storage_->active_index = storage_->previous_active;
+            storage_->version = storage_->previous_version;
+            storage_->transaction_active.store(0);
+        }
+        result = pthread_mutex_consistent(&storage_->mutex);
+        if (result != 0) pthread_mutex_unlock(&storage_->mutex);
+        return result;
     }
     int FailOpen(int error) { Close(); return error; }
     int FailCreate(int error) { Unlink(); Close(); return error; }

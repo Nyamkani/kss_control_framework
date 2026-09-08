@@ -1,0 +1,7 @@
+add_executable(kcf_topic_recovery_test src/topic_recovery_main.cpp)
+target_include_directories(kcf_topic_recovery_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(kcf_topic_recovery_test PRIVATE kcf_core rt)
+
+add_executable(kcf_parameter_recovery_test src/parameter_recovery_main.cpp)
+target_include_directories(kcf_parameter_recovery_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(kcf_parameter_recovery_test PRIVATE kcf_core rt)

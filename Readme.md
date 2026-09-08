@@ -7,14 +7,23 @@ IPC 및 command/state 구조를 공통화하기 위한 재사용 가능한 제�
 Linux/POSIX API의 반복 사용을 얇게 감싸고, 프로세스와 통신 구조가 코드에서
 명확하게 보이도록 설계합니다. ROS를 재구현하지 않으며, 매카넘 로봇은 향후 첫 Reference Application입니다.
 
-## 현재 상태: v2.0
+## 현재 상태: v3.0
 
-v1.0의 Process Execution Framework 위에 Phase 2-1~2-5의 통신 및 실행 보조 기능을
-추가했습니다. v2.0은 Topic, Timer, Service, Runtime Parameter, Action의 구현과 검증을 포함합니다.
+Phase 3-7 통합 검증을 완료했으며, 현재 개발 기준은 **v3.0 PASS**입니다.
+
+| 버전 | 완료 범위 |
+| --- | --- |
+| v1.0 | ProcessElement / ProcessRuntime / Process / Bringup 실행 기반 |
+| v2.0 | Topic / Timer / Service / Runtime Parameter / Action 통신 기반 |
+| v3.0 | Multi-Element supervision, ERROR/SAFE, crash IPC recovery, 명시적 Reset |
+
+v3.0은 최초 오류를 유지하고, 사용자 Reset으로 전체 process generation을 교체한 뒤
+모든 Runtime이 RUNNING일 때만 정상 운전으로 복귀합니다. 자동 재시작은 하지 않습니다.
 
 | 기능 | 역할 | 실행 / 전달 방식 |
 | --- | --- | --- |
 | Process Framework | Element lifecycle과 외부 프로세스 관리 | ProcessRuntime, Process, Bringup |
+| System Supervision | 여러 Element의 초기화·건강 상태·최초 오류 관리 | Runtime Supervision, SystemStatus, 명시적 Reset |
 | Topic | 센서·상태·연속 명령의 최신값 | Shared Memory, 1 Publisher : N Subscriber |
 | Timer | 독립적인 주기 callback | Timer별 worker, steady clock |
 | Service | 짧은 단발 Request / Response | localhost UDP, timeout / retry / 중복 응답 캐시 |
@@ -51,6 +60,37 @@ STOPPED → STARTING → Setup() → RUNNING → Loop() 반복
 Setup 실패 시 Runtime은 `ERROR` 상태로 종료하며 `Shutdown()`을 자동 호출하지 않습니다.
 `Shutdown()`은 기본 빈 구현을 제공하므로 정리 작업이 필요한 Element만 재정의합니다.
 
+## System Supervision / Fault Management
+
+Multi-Element Supervisor는 모든 ProcessRuntime이 RUNNING을 응답한 뒤에만 Application을 RUNNING으로 전환합니다.
+Process 종료, Runtime ERROR, 상태 응답 timeout, Loop heartbeat 정지를 구분하며 최초 오류를 latch합니다.
+살아 있는 Element는 SystemStatus ERROR를 받아 application의 SAFE 동작을 수행합니다.
+
+```text
+INITIALIZING → RUNNING → ERROR
+                         ↓ 명시적 RequestReset()
+                     RESETTING
+                         ↓ 전체 새 Runtime RUNNING 확인
+                      RUNNING
+```
+
+`Bringup::RequestReset()`은 ERROR에서만 Reset 요청을 기록합니다. Supervisor가 기존 Element 전체를
+종료·회수하고 같은 설정으로 새 process generation을 시작합니다. 모든 새 Runtime이 RUNNING인 경우에만
+오류를 해제합니다. Reset 실패 시 ERROR를 유지하며 다음 명시적 요청을 기다립니다.
+자동 restart, 일부 Element만 재시작, Reset용 UI·network command는 제공하지 않습니다.
+
+종료는 SIGTERM을 먼저 보내고 설정한 timeout 이후 살아 있는 child에 SIGKILL을 보낸 뒤 회수합니다.
+이 강제 정리는 Reset 또는 전체 종료에만 사용하며, health fault 감지 즉시 child를 강제 종료하지 않습니다.
+기존 generation이 모두 사라진 뒤 새 owner의 Create가 dead owner metadata를 확인하여 stale IPC를 복구합니다.
+SystemStatus Topic은 Reset 동안 유지하며, 기존 IPC mapping의 hot reconnect는 제공하지 않습니다.
+Dead owner의 SHM을 Open하면 `-EAGAIN`을 반환하므로 새 owner의 Create 이후 재시도합니다.
+
+SafeElement 예제는 초기 output=0으로 시작하고 SystemStatus RUNNING 이후에만 정상 output을 허용합니다.
+ERROR를 받은 generation의 SAFE latch는 이후 RUNNING snapshot으로 자동 해제되지 않습니다.
+KCF의 software supervision/SAFE와 Device의 communication watchdog·hardware safety는 서로 다른 책임입니다.
+KCF나 SIGKILL이 Device watchdog을 대체하지 않습니다. Linux kernel uninterruptible sleep(D state)은
+SIGKILL 이후에도 userspace에서 bounded 종료를 보장할 수 없습니다.
+
 ## 통신과 실행 책임
 
 Topic은 최신 snapshot을 전달하며 느린 Subscriber는 중간 값을 건너뛸 수 있습니다.
@@ -78,7 +118,9 @@ Shared Memory의 Close와 owner의 Unlink는 구분되며 정상 종료 시 owne
 현재 통신은 같은 Linux 호스트와 동일한 타입 layout / ABI를 전제로 합니다.
 전달 타입은 trivially copyable이어야 하며 pointer나 heap 소유 멤버를 포함하지 않습니다.
 Service의 중복 보호는 최근 64개 응답 캐시, Action의 추가 보호는 현재/직전 Goal 범위입니다.
-서버 재시작 이후의 영구 중복 방지나 프로세스 강제 종료 중 공유 동기화 복구는 제공하지 않습니다.
+서버 재시작 이후의 영구 중복 방지는 제공하지 않습니다.
+v3.0은 Topic/Parameter의 robust 동기화 복구와 controlled generation recovery를 제공합니다.
+Crash로 남은 reader pin은 개별 회수하지 않으며 전체 generation 교체로 복구합니다.
 
 ## 저장소 구조
 
@@ -95,7 +137,8 @@ Service의 중복 보호는 최근 64개 응답 캐시, Action의 추가 보호�
 │  │  ├─ timer/
 │  │  ├─ service/
 │  │  ├─ parameter/
-│  │  └─ action/
+│  │  ├─ action/
+│  │  └─ system/
 │  └─ src/
 ├─ examples/
 │  ├─ dummy/
@@ -103,7 +146,10 @@ Service의 중복 보호는 최근 64개 응답 캐시, Action의 추가 보호�
 │  ├─ timer/
 │  ├─ service/
 │  ├─ parameter/
-│  └─ action/
+│  ├─ action/
+│  ├─ integration/
+│  ├─ supervisor/
+│  └─ recovery/
 └─ bringup/
 ```
 
@@ -131,6 +177,11 @@ cmake --build build
 | `kcf_parameter_owner`, `kcf_parameter_client` | Runtime Parameter 예제 | `build/examples/parameter/` |
 | `kcf_action_server`, `kcf_action_client` | Count Action 예제 | `build/examples/action/` |
 
+추가 검증 target은 `examples/supervisor/`의 `kcf_supervisor_normal`, `kcf_supervisor_crash`,
+`kcf_supervisor_safe`, `kcf_supervisor_runtime_test`, `kcf_runtime_supervision_test`, `kcf_reset_test`와
+`examples/recovery/`의 `kcf_topic_recovery_test`, `kcf_parameter_recovery_test`입니다.
+Integration 예제는 `kcf_integration_backend`, `kcf_integration_client`입니다.
+
 최상위 CMake에서 하위 영역을 명시적으로 등록합니다. `build/`는 Git 추적에서 제외합니다.
 
 ## 실행
@@ -150,30 +201,30 @@ Ctrl+C를 입력하면 `[Dummy] Shutdown`이 한 번 출력되고 종료합니�
 ./build/bringup/kcf_bringup ./build/examples/dummy/kcf_dummy
 ```
 
-Bringup은 첫 번째 인자로 받은 실행 파일 경로를 사용합니다.
-정상 실행과 종료 시 대표적인 출력은 다음과 같습니다.
+여러 Element는 `--next`로 구분합니다.
 
-```text
-[Bringup] Dummy process started
-[Dummy] Setup
-[Dummy] Loop
-[Dummy] Loop
-...
+```sh
+./build/bringup/kcf_bringup ./build/examples/supervisor/kcf_supervisor_normal --element-name A --next ./build/examples/supervisor/kcf_supervisor_normal --element-name B
 ```
 
-Ctrl+C 입력 후:
+각 executable 뒤에 `--startup-timeout-ms`, `--health-timeout-ms`, `--shutdown-timeout-ms`를 지정할 수 있습니다.
+기본값은 각각 5000 / 2000 / 1500ms입니다. Health timeout은 정상 Loop 간격보다 충분히 크게 설정합니다.
+Child가 예기치 않게 종료되면 Application ERROR를 유지하고 자동 재시작하지 않습니다.
+Ctrl+C 또는 SIGTERM으로 전체 child를 종료·회수합니다. Ctrl+C는 같은 터미널의 child에도 전달될 수 있습니다.
+Reset 제어는 public `RequestReset()` API로 제공하며 CLI Reset 명령은 없습니다.
 
-```text
-[Bringup] Sending SIGTERM to dummy
-[Dummy] Shutdown
-[Bringup] Dummy process exited
-[Bringup] Shutdown complete
+### Fault / Recovery 검증
+
+다음 검증은 child에 의도적으로 crash·stall·SIGSTOP을 유도합니다. 다른 KCF Supervisor와 동시에 실행하지 않습니다.
+Python 검증에는 Python 3가 필요합니다.
+
+```sh
+./build/examples/supervisor/kcf_runtime_supervision_test ./build/examples/supervisor/kcf_supervisor_runtime_test
+python3 examples/supervisor/runtime_health_checks.py build
+python3 examples/supervisor/reset_checks.py build
+./build/examples/recovery/kcf_topic_recovery_test
+./build/examples/recovery/kcf_parameter_recovery_test
 ```
-
-Ctrl+C는 같은 터미널의 child에도 전달될 수 있어 로그 순서나 SIGTERM 전달 로그의
-출력 여부는 종료 타이밍에 따라 달라질 수 있습니다.
-Bringup은 실행 중인 child에 종료를 요청하고, 이미 종료한 child도 회수 상태를 확인합니다.
-child가 먼저 종료하면 이를 감지하고 재시작 없이 종료합니다.
 
 ### Topic
 
@@ -259,11 +310,17 @@ Goal/Cancel/GetResult ID는 100/101/102, 상태 Topic은 `/kcf_test_count_action
 | Action | 성공·실패·취소 FSM, Busy/잘못된 ID, 캐시 퇴출 후 중복 Goal 방지, 연속 Goal |
 | Action 동시성·정리 | 동시 Feedback 2,000회, 느린 Feedback과 독립적인 Result 조회, lifecycle 25회 FD·SHM 정리 |
 
-Phase 2-5 완료 시 Topic / Timer / Service / Parameter 회귀 검증도 모두 통과했습니다.
+v3.0 Phase 3-7에서 다음을 재검증했습니다.
+
+- STARTING/RUNNING barrier, 네 가지 fault, 최초 origin·secondary failure 및 SAFE 유지.
+- Fault 종류를 섞은 Reset 10회, Topic/Parameter stale owner 복구, 실패 후 명시적 재Reset.
+- Reset 중 operational gate 및 사용자 종료 우선 처리, SIGKILL/reap, FD·child·SHM 정리.
+- 20 Element의 단일 Supervisor monitoring context와 control Loop 진행.
+- Topic latest-value/1:N, Timer, Service, Parameter transaction/watcher, Action EAGAIN, Integration 10 lifecycle.
 
 ## 개발 기준 문서
 
 로컬 `docs/KCF_ARCHITECTURE_PLAN.md`와 `docs/KCF_CODEX_INSTRUCTION.md`를 설계 및 개발 기준으로
 사용합니다. 두 문서는 Git ignore 상태로 유지합니다.
 
-공개 개발 이력은 [Changelog](Changelog.md)의 v0.1~v1.0 및 v2.0 항목을 참고하세요.
+공개 개발 이력은 [Changelog](Changelog.md)의 v0.1~v3.0 항목을 참고하세요.

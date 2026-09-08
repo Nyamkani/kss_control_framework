@@ -46,9 +46,9 @@ class ActionServer
                 ActionStatus<Feedback> snapshot{};
                 snapshot.header = h;
                 snapshot.feedback = *f; // large copy outside state lock
-                int error;
-                do { error = publisher.Publish(snapshot); if (error == -EAGAIN) std::this_thread::yield(); }
-                while (error == -EAGAIN);
+                // A crashed reader can leave a pin until generation recovery.
+                // Return EAGAIN rather than blocking the application/Shutdown.
+                const int error = publisher.Publish(snapshot);
                 lock.lock();
                 if (error != 0 || observed == revision)
                 {

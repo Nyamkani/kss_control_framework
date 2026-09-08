@@ -1,4 +1,5 @@
 #pragma once
+#include "kcf/ipc/detail/recovery.hpp"
 
 #include <atomic>
 #include <cerrno>
@@ -42,8 +43,10 @@ class SharedChannel
         std::uint64_t magic{0};
         std::uint64_t size{sizeof(T)};
         std::uint64_t alignment{alignof(T)};
-        std::uint32_t format{1};
+        std::uint32_t format{2};
         std::uint32_t initialized{0}; // read/written under initialization flock
+        std::int32_t owner_pid{0};
+        std::uint32_t reserved{0};
         std::atomic<std::uint32_t> published_index{3}; // no snapshot yet
         std::atomic<std::uint32_t> publish_sequence{0};
         Slot slots[3];
@@ -63,15 +66,15 @@ public:
         if (fd_ >= 0 || owns_name_) return -EBUSY;
         int result = SetName(name);
         if (result != 0) return result;
-        fd_ = shm_open(name_.c_str(), O_CREAT | O_EXCL | O_RDWR, 0600);
-        if (fd_ < 0) return -errno;
+        fd_ = detail::CreateOwnedShm(name_.c_str(), magic, sizeof(T), alignof(T));
+        if (fd_ < 0) { const int error = fd_; fd_ = -1; return error; }
         owns_name_ = true;
-        if (flock(fd_, LOCK_EX) != 0) return FailCreate(-errno);
         if (ftruncate(fd_, sizeof(Storage)) != 0) return FailCreate(-errno);
         result = Map();
         if (result != 0) return FailCreate(result);
         // Explicitly start atomic object lifetimes before exposing metadata.
         new (storage_) Storage;
+        storage_->owner_pid = getpid();
         result = InitializeNotify();
         if (result != 0) return FailCreate(result);
         storage_->magic = magic;
@@ -88,6 +91,13 @@ public:
         if (result != 0) return result;
         fd_ = shm_open(name_.c_str(), O_RDWR, 0600);
         if (fd_ < 0) return -errno;
+        // Reject known stale objects before taking a shared initialization lock:
+        // a retrying client must not block the replacement owner's exclusive lock.
+        detail::OwnerHeader header{};
+        if (pread(fd_, &header, sizeof(header), 0) == sizeof(header) &&
+            header.magic == magic && header.format == 2 && header.initialized == 1 &&
+            header.size == sizeof(T) && header.alignment == alignof(T) &&
+            detail::OwnerDead(header.owner_pid)) return FailOpen(-EAGAIN);
         // If Open wins before the creator's flock, zero size yields EAGAIN.
         // No pthread or atomic object is used until initialization is complete.
         if (flock(fd_, LOCK_SH) != 0) return FailOpen(-errno);
@@ -97,10 +107,15 @@ public:
         if (info.st_size != static_cast<off_t>(sizeof(Storage))) return FailOpen(-EPROTO);
         result = Map();
         if (result != 0) return FailOpen(result);
+        if (storage_->owner_pid <= 0) return FailOpen(-EPROTO);
         if (storage_->initialized != 1) return FailOpen(-EAGAIN);
-        if (storage_->magic != magic || storage_->format != 1 ||
+        if (storage_->magic != magic || storage_->format != 2 ||
             storage_->size != sizeof(T) || storage_->alignment != alignof(T))
             return FailOpen(-EPROTO);
+        // A new generation must not attach to a dead owner's stale mapping
+        // before the replacement owner has completed Create. Existing peers
+        // retain their mappings; this is not hot reconnect or payload health.
+        if (detail::OwnerDead(storage_->owner_pid)) return FailOpen(-EAGAIN);
         if (flock(fd_, LOCK_UN) != 0) return FailOpen(-errno);
         return 0;
     }
@@ -136,7 +151,7 @@ public:
         storage_->publish_sequence.store(sequence);
 
         // Payload is complete before entering notification's critical section.
-        int result = pthread_mutex_lock(&storage_->notify_mutex);
+        int result = RecoverLock(pthread_mutex_lock(&storage_->notify_mutex));
         if (result != 0) return -result;
         storage_->notify_sequence = sequence;
         result = pthread_mutex_unlock(&storage_->notify_mutex);
@@ -147,16 +162,17 @@ public:
     int Wait(std::uint32_t& last_notify_sequence)
     {
         if (!storage_) return -EBADF;
-        int result = pthread_mutex_lock(&storage_->notify_mutex);
+        int result = RecoverLock(pthread_mutex_lock(&storage_->notify_mutex));
         if (result != 0) return -result;
         while (!stopped_.load() && storage_->notify_sequence == last_notify_sequence)
         {
-            result = pthread_cond_wait(&storage_->notify_cond, &storage_->notify_mutex);
-            if (result != 0)
-            {
+            const auto deadline = detail::RecoveryDeadline();
+            result = pthread_cond_timedwait(&storage_->notify_cond, &storage_->notify_mutex, &deadline);
+            if (result == ETIMEDOUT) result = 0;
+            if (result == EOWNERDEAD) result = RecoverLock(result);
+            else if (result != 0 && result != ENOTRECOVERABLE)
                 pthread_mutex_unlock(&storage_->notify_mutex);
-                return -result;
-            }
+            if (result != 0) return -result;
         }
         const bool stopped = stopped_.load();
         last_notify_sequence = storage_->notify_sequence;
@@ -205,9 +221,9 @@ public:
     int StopWait()
     {
         if (!storage_) return -EBADF;
-        int result = pthread_mutex_lock(&storage_->notify_mutex);
+        stopped_.store(true); // also stop a payload reader if the mutex is unrecoverable
+        int result = RecoverLock(pthread_mutex_lock(&storage_->notify_mutex));
         if (result != 0) return -result;
-        stopped_.store(true);
         result = pthread_cond_broadcast(&storage_->notify_cond);
         const int unlocked = pthread_mutex_unlock(&storage_->notify_mutex);
         return -(result != 0 ? result : unlocked);
@@ -274,6 +290,7 @@ private:
         int result = pthread_mutexattr_init(&mutex_attr);
         if (result != 0) return -result;
         result = pthread_mutexattr_setpshared(&mutex_attr, PTHREAD_PROCESS_SHARED);
+        if (result == 0) result = pthread_mutexattr_setrobust(&mutex_attr, PTHREAD_MUTEX_ROBUST);
         if (result == 0) result = pthread_mutex_init(&storage_->notify_mutex, &mutex_attr);
         pthread_mutexattr_destroy(&mutex_attr);
         if (result != 0) return -result;
@@ -282,6 +299,7 @@ private:
         if (result == 0)
         {
             result = pthread_condattr_setpshared(&cond_attr, PTHREAD_PROCESS_SHARED);
+            if (result == 0) result = pthread_condattr_setclock(&cond_attr, CLOCK_MONOTONIC);
             if (result == 0) result = pthread_cond_init(&storage_->notify_cond, &cond_attr);
             pthread_condattr_destroy(&cond_attr);
         }
@@ -289,6 +307,14 @@ private:
         return -result;
     }
 
+    int RecoverLock(int result)
+    {
+        if (result != EOWNERDEAD) return result;
+        storage_->notify_sequence = storage_->publish_sequence.load();
+        result = pthread_mutex_consistent(&storage_->notify_mutex);
+        if (result != 0) pthread_mutex_unlock(&storage_->notify_mutex);
+        return result;
+    }
     int FailOpen(int error) { Close(); return error; }
     int FailCreate(int error) { Unlink(); Close(); return error; }
     static constexpr std::uint64_t magic = 0x4b4346545249504cULL;

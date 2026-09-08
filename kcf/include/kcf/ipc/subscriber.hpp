@@ -87,8 +87,9 @@ public:
             if (worker_.get_id() == std::this_thread::get_id()) return -EDEADLK;
             running_.store(false);
             const int result = channel_.StopWait();
-            if (result != 0) return result;
+            if (result != 0 && result != -ENOTRECOVERABLE) return result;
             worker_.join();
+            if (result != 0) error_.store(result);
         }
         const int result = channel_.Close();
         return result != 0 ? result : error_.load();

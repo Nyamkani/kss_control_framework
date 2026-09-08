@@ -1,6 +1,8 @@
 #pragma once
 
 #include <atomic>
+#include <thread>
+#include "kcf/process/runtime_supervision.hpp"
 #include <signal.h>
 
 #include "kcf/process/lifecycle.hpp"
@@ -24,10 +26,17 @@ public:
 private:
     int Initialize();
     void Finalize();
+    int StartSupervision();
+    void Supervise();
 
     std::atomic<bool> running_{false};
     std::atomic<ProcessState> state_{ProcessState::STOPPED};
     double loop_frequency_hz_{10.0};
+    std::atomic<std::uint64_t> loop_heartbeat_{0};
+    std::atomic<int> runtime_error_{0};
+    std::atomic<bool> supervision_running_{false};
+    std::thread supervision_worker_;
+    int supervision_fd_{-1};
 
     struct sigaction previous_sigint_ {};
     struct sigaction previous_sigterm_ {};

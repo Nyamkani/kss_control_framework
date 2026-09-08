@@ -2,8 +2,78 @@
 
 KSS Control Framework(KCF)의 주요 개발 및 검증 이력입니다.
 기존 Phase 1-1~1-7의 v0.1~v0.7 이력은 유지하고 Phase 1 완료 기준을 v1.0으로 기록합니다.
-Phase 2-1~2-5 완료 내용은 v2.0으로 묶으며, 최신 버전부터 기록합니다.
+Phase 2 통신 기능은 v2.0, Phase 3 supervision/recovery는 v3.0에 기록합니다.
+버전은 최신순으로, 각 버전 내부는 Phase 진행 순서대로 정리합니다.
 이 문서의 버전 표기는 개발 이력 구분이며 Git tag 또는 배포 생성 여부를 의미하지 않습니다.
+
+## v3.0 — System Supervision / Fault Management
+
+Phase 3-1~3-7을 순차적으로 구현하고 최종 통합 검증을 완료했습니다. **v3.0 PASS**.
+
+### Phase 3-1 — Multi-Element Supervisor Base
+
+- Bringup을 여러 Element process를 관리하는 Supervisor로 확장.
+- Element별 이름·실행 파일·인자를 관리하고 `--next`로 여러 실행 항목을 지정하는 CLI 추가.
+- Process 인자 전달 및 ProcessExitInfo로 정상 exit code와 signal 종료 원인 조회 지원.
+- Child 실패를 개별 기록하고 surviving Element는 유지. 사용자 종료 시 전체 stop/reap 수행.
+- 다중 Element 실행, 부분 startup 실패 정리, 인자·종료 정보 및 zombie 부재 검증 PASS.
+
+### Phase 3-2 — Application State / Error Latch
+
+- 공통 ApplicationState의 INITIALIZING / RUNNING / ERROR / SHUTTING_DOWN 관리 추가.
+- RUNNING 중 최초 unexpected failure의 Element 이름·PID·종료 원인을 ApplicationError에 보존.
+- Secondary failure는 Element별로 기록하며 최초 origin을 덮어쓰지 않음.
+- ERROR 자동 해제·자동 restart 없이 사용자 종료까지 surviving Element 유지.
+- 상태 전이, 최초 origin 보존, secondary failure 및 ERROR 상태 종료 검증 PASS.
+
+### Phase 3-3 — SystemStatus Broadcast / Element Safe-State Reaction
+
+- Supervisor가 소유하는 SystemStatus Topic으로 Application 상태와 최초 오류를 반복 발행.
+- SafeElement fixture가 ERROR를 받으면 output=0으로 전환하고 SAFE latch 유지.
+- ERROR 이후에도 Element process와 Loop가 생존하는지 확인.
+- SystemStatus sequence·최초 origin·SAFE 유지 및 종료 시 Topic 정리 검증 PASS.
+- KCF software SAFE와 Device watchdog/hardware safety의 책임을 구분하여 문서화.
+
+### Phase 3-4 — Crash IPC Recovery Base
+
+- Topic/Parameter에 owner metadata와 dead owner 기반 stale SHM recovery 추가.
+- Robust mutex의 owner death 복구 및 condition wait/종료 처리 보완.
+- Parameter transaction 복구로 crash 중 부분 변경이 정상 값으로 노출되지 않도록 처리.
+- Crash로 남은 reader pin 때문에 Action 상태 발행이 무한 재시도하던 문제를 EAGAIN 반환으로 수정.
+- Topic/Parameter 각 20 generation recovery와 실제 Parameter Set 중 30회 crash 검증 PASS.
+- 기존 generation 전체 종료 후 복구하는 정책을 유지하며 hot reconnect는 제공하지 않음.
+
+### Phase 3-5 — Runtime Supervision Channel / Health Monitoring
+
+- UNIX socketpair 기반 Runtime 상태 요청·응답과 PID/request_id 검증 추가.
+- Runtime worker를 Setup 전에 시작하여 STARTING을 관찰하고, 전체 Runtime RUNNING 초기화 barrier 구현.
+- Loop 정상 반환 시 Runtime이 heartbeat를 자동 증가. Standalone 실행에는 supervision worker 없음.
+- PROCESS_EXIT / RUNTIME_ERROR / STATUS_TIMEOUT / HEARTBEAT_STALL을 구분하여 ERROR latch와 SystemStatus에 반영.
+- Health fault 감지 후 자동 kill/restart 없이 ERROR/SAFE 유지.
+- Startup 실패·timeout, Loop stall, SIGSTOP, Runtime ERROR 및 20 Element supervision 검증 PASS.
+
+### Phase 3-6 — User Reset / Controlled Reinitialize
+
+- 명시적 `RequestReset()`과 ERROR → RESETTING → RUNNING lifecycle 추가.
+- 전체 old generation에 SIGTERM을 보내고 timeout 시 SIGKILL 후 모두 reap한 뒤 새 generation 시작.
+- Reset 중 최초 오류와 SystemStatus Topic을 유지하고, 새 Runtime 전체 RUNNING 확인 후에만 오류 해제.
+- Reset 실패는 partial generation을 정리하고 ERROR로 복귀. 다음 명시적 요청으로 재시도 가능.
+- SafeElement를 initial output=0으로 변경하고 RUNNING 확인 후에만 정상 output 허용.
+- 반복 Reset 10회, 실패 후 재Reset, stuck child 정리 및 Reset 중 사용자 종료 우선 처리 검증 PASS.
+
+### Phase 3-7 — Fault / Recovery Integration Verification
+
+- Fault → ERROR/SAFE → 명시적 Reset → 전체 generation 복구 흐름을 통합 검증.
+- 새 client가 dead owner의 stale SHM에 연결되는 결함을 재현하고 Topic/Parameter Open에서 EAGAIN 반환하도록 수정.
+- Open 재시도의 shared lock이 새 owner Create와 경합하지 않도록 dead owner를 lock 전에 확인.
+- Topic·Parameter 동시 복구, 새 consumer 데이터 수신, 비운전 output=0 및 SAFE 자동 해제 부재 검증.
+- 혼합 fault/recovery 10회, Reset 실패·재시도·종료 우선 처리, 20 Element 검증 PASS.
+- v2.0 통신, crash recovery, Action EAGAIN 및 Integration 10 lifecycle 전체 회귀 PASS.
+- 최종 clean build, FD·child·SHM 정리와 UDP port 재사용 확인. 공개 문서를 v3.0 완료 기준으로 갱신.
+
+자동 restart·부분 restart·hot reconnect는 제공하지 않습니다.
+KCF software SAFE는 Device watchdog/hardware safety를 대체하지 않으며,
+Linux kernel uninterruptible sleep(D state)은 SIGKILL 이후에도 bounded 종료를 보장할 수 없습니다.
 
 ## v2.0 — Topic / Timer / Service / Runtime Parameter / Action
 

@@ -20,7 +20,8 @@ namespace
 {
 
 // One active ProcessRuntime per process.
-volatile sig_atomic_t stop_requested = 0;
+static_assert(std::atomic<sig_atomic_t>::is_always_lock_free);
+std::atomic<sig_atomic_t> stop_requested{0};
 
 void HandleStopSignal(int)
 {
@@ -34,6 +35,7 @@ namespace kcf
 
 int ProcessRuntime::Run(ProcessElement& element)
 {
+    stop_reason_ = 0;
     state_ = ProcessState::STARTING;
 
     loop_heartbeat_ = 0;
@@ -62,7 +64,8 @@ int ProcessRuntime::Run(ProcessElement& element)
 
     if (setup_result != 0)
     {
-        running_ = false;
+        RequestStop();
+        if (stop_reason_.load() < 0) setup_result = stop_reason_.load();
         runtime_error_ = setup_result;
         state_ = ProcessState::ERROR;
         Finalize();
@@ -70,7 +73,8 @@ int ProcessRuntime::Run(ProcessElement& element)
     }
 
     running_ = true;
-    state_ = ProcessState::RUNNING;
+    if (stop_requested || stop_reason_.load() != 0) RequestStop();
+    if (running_) state_ = ProcessState::RUNNING;
 
     int result = 0;
     try
@@ -127,6 +131,8 @@ int ProcessRuntime::Run(ProcessElement& element)
         running_ = false;
     }
 
+    RequestStop(); // claim expected stop before Shutdown; preserve earlier loss
+    if (stop_reason_.load() < 0) result = stop_reason_.load();
     runtime_error_ = result;
     state_ = result ? ProcessState::ERROR : ProcessState::STOPPING;
     try
@@ -135,7 +141,7 @@ int ProcessRuntime::Run(ProcessElement& element)
     }
     catch (...)
     {
-        result = -EFAULT;
+        if (result == 0) result = -EFAULT; // preserve the reason that initiated shutdown
     }
 
     running_ = false;
@@ -147,6 +153,8 @@ int ProcessRuntime::Run(ProcessElement& element)
 
 void ProcessRuntime::RequestStop()
 {
+    int none = 0;
+    stop_reason_.compare_exchange_strong(none, 1);
     running_ = false;
 }
 
@@ -157,7 +165,7 @@ bool ProcessRuntime::IsRunning() const
 
 ProcessState ProcessRuntime::GetState() const
 {
-    return state_.load();
+    return stop_reason_.load() < 0 ? ProcessState::ERROR : state_.load();
 }
 
 void ProcessRuntime::SetLoopFrequency(double hz)
@@ -227,36 +235,55 @@ int ProcessRuntime::StartSupervision()
     catch (...) { supervision_running_=false; return -ENOMEM; }
     return 0;
 }
+void ProcessRuntime::SupervisorLost(int error)
+{
+    // Signals and an already claimed normal stop take precedence over a later
+    // disconnect. The worker never executes Element cleanup or callbacks.
+    if (stop_requested || !supervision_running_.load()) return;
+    int none = 0;
+    if (stop_reason_.compare_exchange_strong(none, error))
+    {
+        runtime_error_ = error;
+        running_ = false;
+    }
+}
 void ProcessRuntime::Supervise()
 {
+    using Clock = std::chrono::steady_clock;
+    auto last_request = Clock::now();
     while (supervision_running_.load())
     {
+        if (Clock::now() - last_request >= std::chrono::milliseconds(SUPERVISOR_REQUEST_TIMEOUT_MS))
+        { SupervisorLost(-ETIMEDOUT); break; }
         pollfd event{supervision_fd_,POLLIN,0};
         const int ready=poll(&event,1,100);
         if (ready<0 && errno==EINTR) continue;
-        if (ready<0 || (event.revents&(POLLERR|POLLNVAL))) break;
-        if (!ready) continue;
-        if (!(event.revents&POLLIN)) { if (event.revents&POLLHUP) break; continue; }
+        if (ready<0 || (event.revents&(POLLHUP|POLLERR|POLLNVAL)))
+        { SupervisorLost(-ECONNRESET); break; }
+        if (!ready || !(event.revents&POLLIN)) continue;
         RuntimeStatusRequest request{};
         const auto size=recv(supervision_fd_,&request,sizeof(request),MSG_DONTWAIT|MSG_TRUNC);
         if (size<0 && (errno==EAGAIN || errno==EINTR)) continue;
-        if (size<=0) break;
+        if (size<=0) { SupervisorLost(-ECONNRESET); break; }
         if (size!=sizeof(request) || request.magic!=RUNTIME_STATUS_MAGIC ||
             request.protocol_version!=RUNTIME_STATUS_VERSION || request.packet_type!=1 || !request.request_id) continue;
+        last_request=Clock::now();
         RuntimeStatusResponse response{};
         response.request_id=request.request_id;
         response.pid=getpid();
-        response.state=state_.load();
+        response.state=GetState();
         response.loop_heartbeat=loop_heartbeat_.load();
         response.runtime_error=runtime_error_.load();
         const auto sent=send(supervision_fd_,&response,sizeof(response),MSG_DONTWAIT|MSG_NOSIGNAL);
-        if (sent<0 && errno!=EAGAIN && errno!=EINTR) break;
+        if (sent<0 && errno!=EAGAIN && errno!=EINTR)
+        { SupervisorLost(-ECONNRESET); break; }
     }
     supervision_running_=false;
 }
 
 void ProcessRuntime::Finalize()
 {
+    RequestStop();
     supervision_running_ = false;
     if (supervision_fd_ >= 0) shutdown(supervision_fd_, SHUT_RDWR);
     if (supervision_worker_.joinable()) supervision_worker_.join();

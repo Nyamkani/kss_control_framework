@@ -4,6 +4,7 @@
 #include <type_traits>
 namespace kcf
 {
+inline constexpr std::uint32_t SUPERVISOR_REQUEST_TIMEOUT_MS = 2000;
 inline constexpr char SUPERVISION_FD_ENV[] = "KCF_SUPERVISION_FD";
 inline constexpr std::uint32_t RUNTIME_STATUS_MAGIC = 0x4b435253;
 inline constexpr std::uint16_t RUNTIME_STATUS_VERSION = 1;

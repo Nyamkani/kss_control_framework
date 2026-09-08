@@ -8,7 +8,7 @@ Phase 2 통신 기능은 v2.0, Phase 3 supervision/recovery는 v3.0에 기록합
 
 ## v3.0 — System Supervision / Fault Management
 
-Phase 3-1~3-7을 순차적으로 구현하고 최종 통합 검증을 완료했습니다. **v3.0 PASS**.
+Phase 3-1~3-7 통합 검증과 Phase 3-8/3-9A/3-9B hardening을 완료했습니다. **v3.0 PASS**.
 
 ### Phase 3-1 — Multi-Element Supervisor Base
 
@@ -70,6 +70,39 @@ Phase 3-1~3-7을 순차적으로 구현하고 최종 통합 검증을 완료했�
 - 혼합 fault/recovery 10회, Reset 실패·재시도·종료 우선 처리, 20 Element 검증 PASS.
 - v2.0 통신, crash recovery, Action EAGAIN 및 Integration 10 lifecycle 전체 회귀 PASS.
 - 최종 clean build, FD·child·SHM 정리와 UDP port 재사용 확인. 공개 문서를 v3.0 완료 기준으로 갱신.
+
+### Phase 3-8 — Supervisor Loss Detection / Supervised Element Shutdown
+
+- 기존 RuntimeStatusRequest를 heartbeat로 사용하여 supervised Runtime만 Supervisor 생존 감시.
+- Socket loss는 ECONNRESET, 유효 요청 2초 timeout은 ETIMEDOUT으로 기록하고 non-zero 종료.
+- Worker는 atomic stop만 요청하고 main Runtime 경로가 Shutdown 수행. Setup 중 loss 후 Loop 진입 차단.
+- Standalone 및 정상 SIGTERM/Reset 종료 유지. Fast Loop에 socket/timeout 검사나 추가 thread 없음.
+- 실제 Supervisor SIGKILL/SIGSTOP 후 A/B/C 자체 종료·reap, invalid packet timeout 및 Setup-time loss 검증 PASS.
+- Clean build, protocol·20 Element·Reset 10회·통신·crash recovery·Integration 10회 회귀 PASS.
+- 무한 Setup/Loop의 강제 중단은 제공하지 않음. 외부 manager restart와 Device watchdog은 KCF 외부 책임.
+
+### Phase 3-9A — Persistent SystemStatus Crash Hardening
+
+- SystemStatus 전용 Publisher/Subscriber를 추가하고 기존 SharedParameter의 robust shared-state 동기화·복구 재사용.
+- 일반 Topic의 triple buffer·reader pin 구현은 유지하면서 persistent SystemStatus의 crash-leaked pin 누적 경로 제거.
+- Child 실행 전 INITIALIZING 생성, 초기 snapshot callback, Reset 동안 동일 inode 및 ERROR origin 유지.
+- Bringup·SafeElement·SystemStatus probes를 전용 API로 변경. 새 저장소 `/kcf/system/status/state` 사용, legacy 자동 migration 없음.
+- 동일 객체에서 mutex를 소유한 reader crash 20회, N readers·callback 재진입·ENOTRECOVERABLE·writer recovery 검증 PASS.
+- Clean build, Reset 10회, Supervisor loss, 20 Element/1 kHz, 기존 통신·Topic/Parameter recovery·Integration 회귀 PASS.
+- 이 단계에서는 일반 Topic/Parameter 구현을 유지. Incomplete SHM Open/Create 경합은 다음 Phase 3-9B에서 검증·수정.
+
+### Phase 3-9B — Incomplete SHM Open/Create Recovery Race
+
+- TEST-FIRST로 Topic·Parameter의 incomplete object Open/Create 경합 재현: shared flock 때문에 replacement Create가 -EEXIST 반환.
+- 짧은 header에서 Open이 재시도 경로를 벗어나는 -EPROTO/-EMSGSIZE를 반환하는 문제도 확인.
+- 짧은 header 및 initialized=0에 대한 Open을 flock 전 -EAGAIN으로 처리. Live initializer 보호와 post-lock 검증 유지.
+- Production 변경은 두 Open의 initialization 경로에 한정. Create 및 정상 Topic/Parameter fast path 변경 없음.
+- `kcf_incomplete_recovery_test` 추가. 크기 0·짧은 header·미완료 header·전체 크기 미초기화의 4 stage 검증.
+- Production hook 없이 test-only flock 순서 제어 및 barrier 사용. Transport별 400회 동시 시작·4개 결정적 순서, 각각 404/404 PASS.
+- Consumer retry 2초·전체 실행 60초 제한. Live owner·unknown complete header 보호, 새 inode·payload/version 및 stale attach 부재 확인.
+- Reset 중 Topic/Parameter initializer SIGKILL 후 ERROR/origin 유지, 다음 명시적 Reset에서 전체 Runtime RUNNING 및 fresh 값 수신 PASS.
+- Clean build, 기존 crash recovery·SystemStatus·Reset 10회·Supervisor loss·20 Element/1 kHz·통신·Integration 10 lifecycle 회귀 PASS.
+- FD baseline 유지, child reap, 잔여 process·zombie·SHM 없음 및 UDP 포트 재사용 확인. **Phase 3-9B PASS**.
 
 자동 restart·부분 restart·hot reconnect는 제공하지 않습니다.
 KCF software SAFE는 Device watchdog/hardware safety를 대체하지 않으며,

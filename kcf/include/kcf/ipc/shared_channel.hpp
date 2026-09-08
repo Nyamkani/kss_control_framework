@@ -94,7 +94,14 @@ public:
         // Reject known stale objects before taking a shared initialization lock:
         // a retrying client must not block the replacement owner's exclusive lock.
         detail::OwnerHeader header{};
-        if (pread(fd_, &header, sizeof(header), 0) == sizeof(header) &&
+        const auto count = pread(fd_, &header, sizeof(header), 0);
+        if (count < 0) return FailOpen(-errno);
+        // Incomplete readers have nothing to attach to. Return without LOCK_SH
+        // so recovery can acquire LOCK_EX. A live initializer is also safely
+        // retried; this check neither infers owner death nor reclaims anything.
+        if (count < static_cast<ssize_t>(sizeof(header)) || header.initialized == 0)
+            return FailOpen(-EAGAIN);
+        if (count == sizeof(header) &&
             header.magic == magic && header.format == 2 && header.initialized == 1 &&
             header.size == sizeof(T) && header.alignment == alignof(T) &&
             detail::OwnerDead(header.owner_pid)) return FailOpen(-EAGAIN);

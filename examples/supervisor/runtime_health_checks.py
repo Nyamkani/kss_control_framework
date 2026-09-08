@@ -20,7 +20,7 @@ probe = str(examples / 'kcf_runtime_supervision_test')
 
 
 def no_shm():
-    assert not Path('/dev/shm/kcf%2Fsystem%2Fstatus').exists()
+    assert not Path('/dev/shm/kcf%2Fsystem%2Fstatus%2Fstate').exists()
 
 
 def child_sockets(pid):
@@ -155,6 +155,9 @@ s = Supervisor([safe, '--next', runtime, '--element-name', 'paused', '--health-t
 try:
     s.wait('INITIALIZING -> RUNNING')
     pid = s.pid('paused')
+    # Establish periodic Loop progress after the startup response; otherwise
+    # a queued initial heartbeat=0 can legitimately trigger stall first.
+    time.sleep(.4)
     os.kill(pid, signal.SIGSTOP)
     s.paused.append(pid)
     s.wait('Origin name=paused')

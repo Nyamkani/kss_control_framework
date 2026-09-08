@@ -9,13 +9,13 @@ Linux/POSIX API의 반복 사용을 얇게 감싸고, 프로세스와 통신 구
 
 ## 현재 상태: v3.0
 
-Phase 3-7 통합 검증을 완료했으며, 현재 개발 기준은 **v3.0 PASS**입니다.
+Phase 3-7 통합 검증과 Phase 3-8/3-9A/3-9B hardening을 완료했습니다. 현재 개발 기준은 **v3.0 PASS**입니다.
 
 | 버전 | 완료 범위 |
 | --- | --- |
 | v1.0 | ProcessElement / ProcessRuntime / Process / Bringup 실행 기반 |
 | v2.0 | Topic / Timer / Service / Runtime Parameter / Action 통신 기반 |
-| v3.0 | Multi-Element supervision, ERROR/SAFE, crash IPC recovery, 명시적 Reset |
+| v3.0 | Multi-Element supervision, ERROR/SAFE, 명시적 Reset, Supervisor loss 및 SHM crash hardening |
 
 v3.0은 최초 오류를 유지하고, 사용자 Reset으로 전체 process generation을 교체한 뒤
 모든 Runtime이 RUNNING일 때만 정상 운전으로 복귀합니다. 자동 재시작은 하지 않습니다.
@@ -82,7 +82,7 @@ INITIALIZING → RUNNING → ERROR
 종료는 SIGTERM을 먼저 보내고 설정한 timeout 이후 살아 있는 child에 SIGKILL을 보낸 뒤 회수합니다.
 이 강제 정리는 Reset 또는 전체 종료에만 사용하며, health fault 감지 즉시 child를 강제 종료하지 않습니다.
 기존 generation이 모두 사라진 뒤 새 owner의 Create가 dead owner metadata를 확인하여 stale IPC를 복구합니다.
-SystemStatus Topic은 Reset 동안 유지하며, 기존 IPC mapping의 hot reconnect는 제공하지 않습니다.
+SystemStatus 전용 저장소는 Reset 동안 유지하며, 기존 IPC mapping의 hot reconnect는 제공하지 않습니다.
 Dead owner의 SHM을 Open하면 `-EAGAIN`을 반환하므로 새 owner의 Create 이후 재시도합니다.
 
 SafeElement 예제는 초기 output=0으로 시작하고 SystemStatus RUNNING 이후에만 정상 output을 허용합니다.
@@ -90,6 +90,38 @@ ERROR를 받은 generation의 SAFE latch는 이후 RUNNING snapshot으로 자동
 KCF의 software supervision/SAFE와 Device의 communication watchdog·hardware safety는 서로 다른 책임입니다.
 KCF나 SIGKILL이 Device watchdog을 대체하지 않습니다. Linux kernel uninterruptible sleep(D state)은
 SIGKILL 이후에도 userspace에서 bounded 종료를 보장할 수 없습니다.
+
+### Supervisor Loss Hardening — Phase 3-8
+
+Supervised Element는 기존 RuntimeStatusRequest로 Supervisor 생존을 확인합니다.
+Socket 연결이 끊기거나 유효 요청이 2초간 없으면 Runtime이 종료를 요청하고,
+main 경로에서 Shutdown 후 non-zero로 종료합니다. Standalone 실행에는 이 감시를 적용하지 않습니다.
+정상 Supervisor 종료와 Reset의 SIGTERM은 기존 정상 종료로 처리합니다.
+
+Setup/Loop가 무한 block되면 worker가 감지해도 main 경로의 Shutdown을 강제할 수 없습니다.
+Device watchdog과 외부 process manager가 필요하며, KCF 내부 자동 restart나 systemd 설정은 추가하지 않습니다.
+
+### Persistent SystemStatus Hardening — Phase 3-9A
+
+SystemStatus는 일반 Topic과 분리된 robust shared current-state 저장소를 사용합니다.
+`SystemStatusPublisher` / `SystemStatusSubscriber`가 기존 SharedParameter 동기화·복구를 재사용하여,
+reader crash가 Reset을 넘어 영구 reader pin으로 누적되는 구조를 제거했습니다.
+Subscriber는 초기/current snapshot 조회와 lock 밖 callback을 제공하며, Reset 동안 같은 저장소를 유지합니다.
+일반 고속 Topic의 triple buffer·1:N·latest-value 동작은 그대로입니다.
+
+새 저장소 이름은 `/kcf/system/status/state`입니다. 기존 Topic 형식의 `/kcf/system/status`와 혼용하거나
+자동 migration하지 않습니다. 같은 객체에서 reader crash 20회, inode·FD 유지 및 Reset 회귀를 검증했습니다.
+
+### Incomplete SHM Recovery Hardening — Phase 3-9B
+
+초기화 도중 owner가 종료된 SHM에서 Open과 replacement Create가 경합하던 결함을 수정했습니다.
+Topic·Parameter의 Open은 짧은 header 또는 `initialized=0`이면 flock 없이 `-EAGAIN`을 반환합니다.
+Caller는 초기화·복구 완료 후 제한된 횟수나 시간 안에서 재시도해야 합니다. Live initializer 보호와 잠금 후 검증은 유지하며,
+일반 Topic Publish/Read 및 Parameter Get/Set 경로는 변경하지 않았습니다.
+
+수정 전 실제 잠금 순서에서 replacement Create의 `-EEXIST` 실패를 재현했습니다.
+수정 후 Topic·Parameter 각각 400회 동시 시작과 4개 결정적 잠금 순서 테스트(각 404회)를 통과했습니다.
+Reset 중 initializer crash 후 새 generation의 값 수신과 전체 Runtime RUNNING 복귀도 확인했습니다.
 
 ## 통신과 실행 책임
 
@@ -178,8 +210,10 @@ cmake --build build
 | `kcf_action_server`, `kcf_action_client` | Count Action 예제 | `build/examples/action/` |
 
 추가 검증 target은 `examples/supervisor/`의 `kcf_supervisor_normal`, `kcf_supervisor_crash`,
-`kcf_supervisor_safe`, `kcf_supervisor_runtime_test`, `kcf_runtime_supervision_test`, `kcf_reset_test`와
-`examples/recovery/`의 `kcf_topic_recovery_test`, `kcf_parameter_recovery_test`입니다.
+`kcf_supervisor_safe`, `kcf_supervisor_runtime_test`, `kcf_runtime_supervision_test`, `kcf_reset_test`,
+`kcf_system_status_recovery_test`와
+`examples/recovery/`의 `kcf_topic_recovery_test`, `kcf_parameter_recovery_test`,
+`kcf_incomplete_recovery_test`입니다.
 Integration 예제는 `kcf_integration_backend`, `kcf_integration_client`입니다.
 
 최상위 CMake에서 하위 영역을 명시적으로 등록합니다. `build/`는 Git 추적에서 제외합니다.
@@ -221,10 +255,18 @@ Python 검증에는 Python 3가 필요합니다.
 ```sh
 ./build/examples/supervisor/kcf_runtime_supervision_test ./build/examples/supervisor/kcf_supervisor_runtime_test
 python3 examples/supervisor/runtime_health_checks.py build
+python3 examples/supervisor/supervisor_loss_checks.py build
 python3 examples/supervisor/reset_checks.py build
+./build/examples/supervisor/kcf_system_status_recovery_test
 ./build/examples/recovery/kcf_topic_recovery_test
 ./build/examples/recovery/kcf_parameter_recovery_test
+./build/examples/recovery/kcf_incomplete_recovery_test topic
+./build/examples/recovery/kcf_incomplete_recovery_test parameter
 ```
+
+Incomplete recovery 테스트는 transport별로 크기 0, 짧은 header, 미완료 header,
+전체 크기이나 초기화 미완료인 객체를 검증합니다. Consumer retry는 2초, 실행 전체는 60초로 제한합니다.
+`reset_checks.py`는 반복 Reset과 실패·종료 처리 외에 Topic/Parameter initializer crash 후 복구도 포함합니다.
 
 ### Topic
 
@@ -317,6 +359,18 @@ v3.0 Phase 3-7에서 다음을 재검증했습니다.
 - Reset 중 operational gate 및 사용자 종료 우선 처리, SIGKILL/reap, FD·child·SHM 정리.
 - 20 Element의 단일 Supervisor monitoring context와 control Loop 진행.
 - Topic latest-value/1:N, Timer, Service, Parameter transaction/watcher, Action EAGAIN, Integration 10 lifecycle.
+
+Phase 3-8~3-9B hardening까지 다음 검증을 추가로 완료했습니다. 결과는 모두 **PASS**입니다.
+
+| 단계 | 확인한 내용 |
+| --- | --- |
+| Phase 3-8 | Supervisor SIGKILL/SIGSTOP, supervised Element 자체 Shutdown·reap, standalone 영향 없음 |
+| Phase 3-9A | 동일 SystemStatus 객체에서 dead-reader 20회 복구, callback 재진입·join, Reset 동안 inode·최초 오류 유지 |
+| Phase 3-9B | Topic·Parameter 각각 404회 Open/Create race, live owner·unknown header 보호, stale attach 부재, initializer crash 후 Reset |
+| 최종 회귀 | Debug clean build, Topic/Parameter recovery, 1 MiB transaction, Reset 10회, Runtime supervision, 20 Element·1 kHz, 전체 통신 및 Integration 10 lifecycle |
+| 자원 정리 | FD baseline 유지, 잔여 process·zombie·SHM 없음, UDP 포트 재사용 |
+
+1 kHz 검증은 해당 테스트 환경에서의 Loop 진행 확인이며 hard real-time 보장을 의미하지 않습니다.
 
 ## 개발 기준 문서
 

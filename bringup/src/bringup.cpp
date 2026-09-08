@@ -62,7 +62,9 @@ int Bringup::Setup(std::vector<ElementSpec> elements)
         return -error;
     }
     sigterm_installed_ = true;
-    const int created = status_publisher_.Create(kcf::SYSTEM_STATUS_TOPIC);
+    kcf::SystemStatus initial{}; // current INITIALIZING exists before child exec
+    initial.sequence = 1;
+    const int created = status_publisher_.Create(initial);
     if (created)
     {
         std::cerr << "[Supervisor] SystemStatus Create error=" << created << std::endl;
@@ -70,7 +72,7 @@ int Bringup::Setup(std::vector<ElementSpec> elements)
         return created;
     }
     status_owned_ = true;
-    PublishSystemStatus(); // INITIALIZING, before any Element can open the Topic
+    status_sequence_ = initial.sequence;
     int result = StartGeneration();
     if (!result) result = AwaitRunning();
     if (result || stop_requested)
@@ -227,7 +229,7 @@ void Bringup::PublishSystemStatus()
     }
     // One attempt only. Saturate sequence at UINT64_MAX instead of wrapping.
     // Deduplicate persistent IPC errors; there is no new internal-error FSM.
-    if (result != 0 && result != -EAGAIN && result != last_publish_error_)
+    if (result != 0 && result != last_publish_error_)
         std::cerr << "[Supervisor] SystemStatus Publish error=" << result << std::endl;
     last_publish_error_ = result;
 }

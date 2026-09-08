@@ -7,7 +7,7 @@ import tempfile
 
 build = Path(sys.argv[1] if len(sys.argv) > 1 else 'build').resolve()
 root = build / 'examples/supervisor'
-for mode in ('repeat', 'failure', 'execfailure', 'shutdown', 'shutdown-new'):
+for mode in ('repeat', 'failure', 'execfailure', 'shutdown', 'shutdown-new', 'incomplete'):
     with tempfile.TemporaryFile(mode='w+') as log:
         result = subprocess.run([str(root/'kcf_reset_test'), str(root/'kcf_supervisor_safe'), mode],
                                 stdout=log, stderr=subprocess.STDOUT, timeout=100)

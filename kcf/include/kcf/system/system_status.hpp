@@ -5,7 +5,7 @@
 #include <type_traits>
 namespace kcf
 {
-inline constexpr char SYSTEM_STATUS_TOPIC[] = "/kcf/system/status";
+inline constexpr char SYSTEM_STATUS_STORAGE[] = "/kcf/system/status/state";
 enum class ProcessTerminationKind : std::uint8_t { NONE, EXITED, SIGNALED };
 struct SystemStatus
 {

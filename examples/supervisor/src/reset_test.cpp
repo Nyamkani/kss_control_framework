@@ -4,6 +4,7 @@
 #include "bringup/bringup.hpp"
 #include "kcf/process/process_runtime.hpp"
 #include "kcf/ipc/shared_channel.hpp"
+#include "kcf/system/system_status_channel.hpp"
 #include "kcf/parameter/shared_parameter.hpp"
 #include <cassert>
 #include <filesystem>
@@ -42,6 +43,21 @@ public:
         if (mode=="hang") for (;;) std::this_thread::sleep_for(1s);
         if (role=="B")
         {
+            if (mode=="incomplete")
+            {
+                // Test-only creator prefix: leave both real format-v2 headers
+                // initialized=0 with exclusive flock held until controller SIGKILL.
+                std::string encoded="/";
+                for(std::size_t i=1;i<topic.size();++i)
+                    encoded += topic[i]=='/' ? "%2F" : std::string(1,topic[i]);
+                const int topic_fd=kcf::detail::CreateOwnedShm(encoded.c_str(),
+                    0x4b4346545249504cULL,sizeof(pid_t),alignof(pid_t));
+                const int parameter_fd=kcf::detail::CreateOwnedShm((encoded+"%2Fparameter").c_str(),
+                    0x4b4346504152414dULL,sizeof(pid_t),alignof(pid_t));
+                assert(topic_fd>=0 && parameter_fd>=0);
+                Write(root/"incomplete.ready",std::to_string(getpid()));
+                for(;;) pause();
+            }
             const int created=channel.Create(topic);
             return created ? created : parameter.Create(topic+"/parameter",getpid());
         }
@@ -102,9 +118,9 @@ int main(int argc,char** argv)
     assert(initial.size()==3);
     std::thread controller([&]
     {
-        kcf::SharedChannel<kcf::SystemStatus> status;
-        assert(status.Open(kcf::SYSTEM_STATUS_TOPIC)==0);
-        auto snapshot=[&] { kcf::SystemStatus v{}; std::uint32_t seq=0; assert(status.ReadLatestSnapshot(v,seq)==0); return v; };
+        kcf::SystemStatusSubscriber status;
+        assert(status.Open()==0);
+        auto snapshot=[&] { kcf::SystemStatus v{}; assert(status.ReadCurrent(v)==0); return v; };
         auto state=[&](State s) { Until([&]{return snapshot().state==s;}); };
         auto ids=[&] {
             std::vector<pid_t> result;
@@ -113,7 +129,7 @@ int main(int argc,char** argv)
         };
         auto bpid=[&] { return static_cast<pid_t>(std::stoi(Read(root/"B.pid"))); };
         auto absent=[&](const auto& old) { for(auto pid:old)assert(!fs::exists("/proc/"+std::to_string(pid))); };
-        struct stat inode{}; assert(stat("/dev/shm/kcf%2Fsystem%2Fstatus",&inode)==0);
+        struct stat inode{}; assert(stat("/dev/shm/kcf%2Fsystem%2Fstatus%2Fstate",&inode)==0);
         const auto stable=Fds();
         app.RequestReset(); // RUNNING: no deferred restart
         std::this_thread::sleep_for(250ms);
@@ -131,7 +147,7 @@ int main(int argc,char** argv)
             if(scenario=="repeat" && cycle==2)assert(origin.failure_kind==kcf::ElementFailureKind::HEARTBEAT_STALL);
             std::this_thread::sleep_for(150ms);assert(snapshot().state==State::ERROR);
             Write(root/"stall","no");
-            Write(root/"B.mode", scenario=="failure"?"fail":"delay");
+            Write(root/"B.mode", scenario=="failure"?"fail":scenario=="incomplete"?"incomplete":"delay");
             if(scenario=="execfailure") fs::remove(executable);
             app.RequestReset();
             state(State::RESETTING);
@@ -163,6 +179,17 @@ int main(int argc,char** argv)
                 assert(snapshot().failed_pid==pid);
                 Write(root/"B.mode","delay");app.RequestReset();state(State::RESETTING);
             }
+            if(scenario=="incomplete")
+            {
+                Until([&]{return !Read(root/"incomplete.ready").empty();});
+                const auto initializing=static_cast<pid_t>(std::stoi(Read(root/"incomplete.ready")));
+                assert(initializing!=pid && kill(initializing,SIGKILL)==0);
+                state(State::ERROR);absent(old);assert(ids().empty());
+                assert(!fs::exists("/proc/"+std::to_string(initializing)));
+                assert(snapshot().error_valid && snapshot().failed_pid==pid);
+                Write(root/"B.mode","delay");
+                app.RequestReset();state(State::RESETTING);
+            }
             Until([&]{
                 auto v=snapshot();
                 if(v.state==State::RESETTING) assert(v.error_valid && v.failed_pid==pid);
@@ -171,7 +198,7 @@ int main(int argc,char** argv)
             absent(old);assert(ids().size()==3 && bpid()!=pid);
             assert(!snapshot().error_valid && snapshot().failure_kind==kcf::ElementFailureKind::NONE);
             assert(Fds()==stable);
-            struct stat current{};assert(stat("/dev/shm/kcf%2Fsystem%2Fstatus",&current)==0 && current.st_ino==inode.st_ino);
+            struct stat current{};assert(stat("/dev/shm/kcf%2Fsystem%2Fstatus%2Fstate",&current)==0 && current.st_ino==inode.st_ino);
             kcf::SharedChannel<pid_t> peer;assert(peer.Open(topic)==0);
             Until([&]{pid_t value=0;std::uint32_t seq=0;return peer.ReadLatestSnapshot(value,seq)==0 && value==bpid();});
             Until([&]{return Read(root/"A.observed")==std::to_string(bpid());});
@@ -194,7 +221,7 @@ int main(int argc,char** argv)
     for(const auto& e:app.GetElementStatuses())assert(!e.running);
     int status;assert(waitpid(-1,&status,WNOHANG)==-1 && errno==ECHILD);
     assert(Fds()==baseline);
-    assert(!fs::exists("/dev/shm/kcf%2Fsystem%2Fstatus"));
+    assert(!fs::exists("/dev/shm/kcf%2Fsystem%2Fstatus%2Fstate"));
     // Shutdown during Reset can leave a dead owner object, intentionally
     // retained for the next controlled generation. Test owns only this name.
     kcf::SharedChannel<pid_t> cleanup;assert(cleanup.Create(topic)==0);cleanup.Close();cleanup.Unlink();

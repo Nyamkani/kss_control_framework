@@ -28,7 +28,10 @@ private:
     void Finalize();
     int StartSupervision();
     void Supervise();
+    void SupervisorLost(int error);
 
+    // 0: no stop, 1: expected stop, negative errno: latched Supervisor loss.
+    std::atomic<int> stop_reason_{0};
     std::atomic<bool> running_{false};
     std::atomic<ProcessState> state_{ProcessState::STOPPED};
     double loop_frequency_hz_{10.0};

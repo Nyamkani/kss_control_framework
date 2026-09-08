@@ -1,7 +1,7 @@
 #include "kcf/process/process_element.hpp"
 #include "kcf/process/process_runtime.hpp"
 #include "kcf/system/system_status.hpp"
-#include "kcf/ipc/subscriber.hpp"
+#include "kcf/system/system_status_channel.hpp"
 #include <atomic>
 #include <iostream>
 #include <stdexcept>
@@ -11,7 +11,7 @@ class SafeElement : public kcf::ProcessElement
 public:
     int Setup() override
     {
-        const int result = status_sub_.Create(kcf::SYSTEM_STATUS_TOPIC, [this](const kcf::SystemStatus& status)
+        const int result = status_sub_.Open( [this](const kcf::SystemStatus& status)
         {
             operational_.store(status.state == kcf::ApplicationState::RUNNING);
             if (status.state == kcf::ApplicationState::ERROR) error_requested_.store(true);
@@ -43,7 +43,7 @@ public:
 private:
     std::atomic<bool> operational_{false};
     std::atomic<bool> error_requested_{false};
-    kcf::Subscriber<kcf::SystemStatus> status_sub_;
+    kcf::SystemStatusSubscriber status_sub_;
     bool safe_{false};
     int output_{0};
     unsigned ticks_{0};

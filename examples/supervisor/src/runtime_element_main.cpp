@@ -10,6 +10,7 @@
 class RuntimeTestElement : public kcf::ProcessElement
 {
 public:
+    const std::thread::id main_thread{std::this_thread::get_id()};
     std::string name{"runtime-test"};
     unsigned setup_delay{0}, setup_result{0}, stall_after{0}, stall_ms{0};
     unsigned throw_after{0}, shutdown_delay{0}, loops{0};
@@ -32,6 +33,7 @@ public:
     }
     void Shutdown() override
     {
+        if(std::this_thread::get_id()!=main_thread) throw std::runtime_error("Shutdown outside main context");
         std::this_thread::sleep_for(std::chrono::milliseconds(shutdown_delay));
         std::cout << "[RuntimeTest] " << name << " Shutdown loops=" << loops << std::endl;
     }
@@ -58,5 +60,7 @@ int main(int argc,char** argv)
     }
     kcf::ProcessRuntime runtime;
     runtime.SetLoopFrequency(frequency);
-    return runtime.Run(element);
+    const int result=runtime.Run(element);
+    std::cout << ("[RuntimeResult] " + element.name + " result=" + std::to_string(result) + " state=" + std::to_string(int(runtime.GetState())) + "\n") << std::flush;
+    return result;
 }

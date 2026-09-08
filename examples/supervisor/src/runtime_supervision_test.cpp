@@ -2,7 +2,7 @@
 #undef NDEBUG
 #endif
 #include "kcf/process/process.hpp"
-#include "kcf/ipc/shared_channel.hpp"
+#include "kcf/system/system_status_channel.hpp"
 #include "kcf/system/system_status.hpp"
 #include <cassert>
 #include <chrono>
@@ -33,12 +33,18 @@ static kcf::RuntimeStatusResponse Query(kcf::Process& process,std::uint64_t id)
 }
 int main(int argc,char**argv)
 {
+    if(argc==2 && std::string(argv[1])=="--recover-system-status")
+    {
+        kcf::SystemStatusPublisher owner;
+        assert(owner.Create(kcf::SystemStatus{})==0);
+        assert(owner.Close()==0);assert(owner.Unlink()==0);return 0;
+    }
     if(argc==2 && std::string(argv[1])=="--read-system-status")
     {
-        kcf::SharedChannel<kcf::SystemStatus> peer;
-        assert(peer.Open(kcf::SYSTEM_STATUS_TOPIC)==0);
-        kcf::SystemStatus status{};std::uint32_t seq=0;
-        assert(peer.ReadLatestSnapshot(status,seq)==0);
+        kcf::SystemStatusSubscriber peer;
+        assert(peer.Open()==0);
+        kcf::SystemStatus status{};
+        assert(peer.ReadCurrent(status)==0);
         std::cout<<"state="<<int(status.state)<<" failure_kind="<<int(status.failure_kind)
                  <<" origin="<<status.error_element<<" pid="<<status.failed_pid
                  <<" runtime_error="<<status.runtime_error<<" termination="<<int(status.termination_kind)<<std::endl;
@@ -85,22 +91,17 @@ int main(int argc,char**argv)
         assert(peer.ReceiveRuntimeStatus(r)==-ESTALE);assert(peer.ReceiveRuntimeStatus(r)==0&&r.request_id==55);
         assert(peer.Wait()==0&&peer.GetExitInfo().exit_code==7);unsetenv("KCF_TEST_ENV");
     }
-    // Losing the parent endpoint must stop only the worker, not the Element.
+    // Parent socket loss now terminates the supervised Element itself.
     {
         pid_t child;
         {
             kcf::Process detached;
             assert(detached.Start(argv[1])==0);
-            assert(Query(detached,1).state==kcf::ProcessState::RUNNING);
+            Query(detached,1);
             child=detached.GetPid();
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(150));
-        assert(kill(child,0)==0);
-        const auto tasks=std::filesystem::path("/proc")/std::to_string(child)/"task";
-        assert(std::distance(std::filesystem::directory_iterator(tasks),std::filesystem::directory_iterator{})==1);
-        assert(kill(child,SIGTERM)==0);
         int status=0;assert(waitpid(child,&status,0)==child);
-        assert(WIFEXITED(status)&&WEXITSTATUS(status)==0);
+        assert(WIFEXITED(status)&&WEXITSTATUS(status)==((-ECONNRESET)&255));
     }
     {kcf::Process missing;assert(missing.Start("/missing/kcf")==-ENOENT);assert(missing.GetSupervisionFd()==-1);}
     assert(Fds()==baseline);int status;assert(waitpid(-1,&status,WNOHANG)==-1&&errno==ECHILD);

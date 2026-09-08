@@ -8,7 +8,7 @@
 #include <atomic>
 #include "kcf/process/process.hpp"
 #include "kcf/system/system_status.hpp"
-#include "kcf/ipc/publisher.hpp"
+#include "kcf/system/system_status_channel.hpp"
 
 namespace bringup
 {
@@ -89,7 +89,7 @@ private:
     int exit_code_{0};
     ApplicationState application_state_{ApplicationState::INITIALIZING};
     ApplicationError application_error_{};
-    kcf::Publisher<kcf::SystemStatus> status_publisher_;
+    kcf::SystemStatusPublisher status_publisher_;
     bool status_owned_{false};
     std::uint64_t status_sequence_{0};
     int last_publish_error_{0};

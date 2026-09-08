@@ -6,17 +6,19 @@ Phase 2 통신 기능은 v2.0, Phase 3 supervision/recovery는 v3.0에 기록합
 버전은 최신순으로, 각 버전 내부는 Phase 진행 순서대로 정리합니다.
 이 문서의 버전 표기는 개발 이력 구분이며 Git tag 또는 배포 생성 여부를 의미하지 않습니다.
 
-## v4.1 — Mecanum M-0 / Runtime Lifecycle Contract
+## v4.3 — Pre-Application Execution / Concurrency Base
 
-### M-0 — Application Data Contract
+- ExecutionMode(STANDALONE/SUPERVISED)와 header-only DetectLaunchExecutionMode 추가. 기존 환경변수 상수를 재사용하고 Run 전에 존재 여부만 확인.
+- 실제 supervision FD 검증·Runtime scheduling·worker 동작은 유지. 잘못된 환경변수도 mode는 SUPERVISED이며 Runtime은 Setup 전에 실패.
+- Application 전용 common/time.hpp 추가: CLOCK_MONOTONIC microsecond 생성 및 -errno 반환, pure IsTimestampFresh helper 제공.
+- Freshness는 0/future timestamp 거부 및 max_age 경계 포함. 고정 timeout/retry 정책 없음.
+- Callback과 Loop의 동시 실행, 짧은 Application mutex 아래 snapshot 복사, unlock 후 Loop에서 제어·I/O 수행하는 계약 문서화.
+- v4.2 transient/fatal error 계약 유지. 실제 Motor watchdog·Driver·새 executor 및 Mecanum data contract 변경은 포함하지 않음.
+- C++17 clean build, ExecutionMode 존재/부재/잘못된 환경값, Runtime lifecycle·supervision·Supervisor loss·Reset 회귀 PASS.
+- 임시 time utility 테스트에서 실제 monotonic 시간, microsecond 변환·실패 -errno 및 freshness 경계값 검증 PASS.
+- 기존 통신 및 Timer 포함 Integration 10 lifecycle 회귀 PASS. **v4.3 PASS**.
 
-- `applications/mecanum/data/`에 common/motor/imu/lidar 헤더 추가. Framework 공통 타입과 분리.
-- Producer sequence·monotonic timestamp, 3축 VelocityCommand/OdometryData, IMU 단위·valid mask 정의.
-- 제품 독립적인 FixedLidarScan container와 타입 특성·양수 capacity static_assert 추가.
-- C++17 개별/통합 include, 기본값 및 잘못된 template 인자 거부 검증 PASS.
-- 실제 Motor/IMU/LiDAR Element 및 Driver 구현은 포함하지 않음.
-
-### Runtime Lifecycle / Error Contract
+## v4.2 — Runtime Lifecycle / Error Contract
 
 - **API 변경:** ProcessElement의 `void Loop()`를 `int Loop()`로 변경. 0은 정상 cycle, non-zero는 fatal runtime error.
 - Setup 진입 후 성공·오류 반환·예외와 관계없이 Shutdown을 정확히 1회 호출. Setup 전 내부 초기화 실패는 호출하지 않음.
@@ -29,10 +31,18 @@ Phase 2 통신 기능은 v2.0, Phase 3 supervision/recovery는 v3.0에 기록합
 - C++17 clean build와 기존 예제 빌드, lifecycle·Runtime supervision·20 Element/1 kHz·Reset 10회·Supervisor loss 회귀 PASS.
 - Topic/Service/Parameter/Action 및 Timer 포함 Integration 10 lifecycle PASS. 부분 초기화 자원·FD·child·SHM 정리 확인.
 
-## v4.0 — Mecanum 헤더 추가 전 기준
+## v4.1 — Mecanum M-0 / Application IPC Data Contract
+
+- `applications/mecanum/data/`에 common/motor/imu/lidar 헤더 추가. Framework 공통 타입과 분리.
+- Producer sequence·monotonic timestamp, 3축 VelocityCommand/OdometryData, IMU 단위·valid mask 정의.
+- 제품 독립적인 FixedLidarScan container와 타입 특성·양수 capacity static_assert 추가.
+- C++17 개별/통합 include, 기본값 및 잘못된 template 인자 거부 검증 PASS.
+- 실제 Motor/IMU/LiDAR Element 및 Driver 구현은 포함하지 않음.
+
+## v4.0 — Framework hardening baseline
 
 - v3.0 supervision/recovery 및 Phase 3-8/3-9A/3-9B hardening을 완료한 Framework 기준 상태.
-- 이후 v4.1 M-0 데이터 계약 및 Runtime lifecycle 보완 작업의 기준. 세부 이력은 아래 v3.0의 Phase별 항목 유지.
+- 이후 v4.1 Mecanum M-0 Application IPC Data Contract 및 v4.2 Runtime Lifecycle / Error Contract의 기준. 세부 이력은 아래 v3.0의 Phase별 항목 유지.
 
 ## v3.0 — System Supervision / Fault Management
 

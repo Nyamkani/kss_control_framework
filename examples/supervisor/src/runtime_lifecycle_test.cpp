@@ -2,6 +2,7 @@
 #undef NDEBUG
 #endif
 #include "kcf/process/process_runtime.hpp"
+#include "kcf/process/execution_mode.hpp"
 #include <cassert>
 #include <cerrno>
 #include <chrono>
@@ -75,6 +76,11 @@ public:
 int main()
 {
     alarm(30);
+    assert(unsetenv(kcf::SUPERVISION_FD_ENV)==0);
+    assert(kcf::DetectLaunchExecutionMode()==kcf::ExecutionMode::STANDALONE);
+    assert(setenv(kcf::SUPERVISION_FD_ENV,"",1)==0);
+    assert(kcf::DetectLaunchExecutionMode()==kcf::ExecutionMode::SUPERVISED);
+    assert(unsetenv(kcf::SUPERVISION_FD_ENV)==0);
     auto fds=[] {return std::distance(std::filesystem::directory_iterator("/proc/self/fd"),std::filesystem::directory_iterator{});};
     const auto baseline=fds();
     for(int mode=0;mode<11;++mode)
@@ -94,7 +100,9 @@ int main()
         int sockets[2]; assert(socketpair(AF_UNIX,SOCK_SEQPACKET,0,sockets)==0);
         element.peer=sockets[0];
         assert(setenv(kcf::SUPERVISION_FD_ENV,std::to_string(sockets[1]).c_str(),1)==0);
+        assert(kcf::DetectLaunchExecutionMode()==kcf::ExecutionMode::SUPERVISED);
         const int result=runtime.Run(element);
+        assert(std::getenv(kcf::SUPERVISION_FD_ENV)==nullptr);
         const int expected=mode==9 ? -EFAULT : element.expected;
         assert(result==expected && runtime.GetState()==(expected ? State::ERROR : State::STOPPED));
         assert(element.setups==1 && element.shutdowns==1);
@@ -107,9 +115,10 @@ int main()
     {
         kcf::ProcessRuntime runtime; Element element(runtime);
         assert(setenv(kcf::SUPERVISION_FD_ENV,"invalid",1)==0);
+        assert(kcf::DetectLaunchExecutionMode()==kcf::ExecutionMode::SUPERVISED);
         assert(runtime.Run(element)==-EINVAL && runtime.GetState()==State::ERROR);
         assert(element.setups==0 && element.loops==0 && element.shutdowns==0);
         assert(fds()==baseline);
     }
-    std::cout<<"Runtime lifecycle/cleanup/error precedence/heartbeat/FD PASS"<<std::endl;
+    std::cout<<"ExecutionMode / Runtime lifecycle/cleanup/error precedence/heartbeat/FD PASS"<<std::endl;
 }

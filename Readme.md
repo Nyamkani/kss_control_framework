@@ -7,17 +7,21 @@ IPC 및 command/state 구조를 공통화하기 위한 재사용 가능한 제�
 Linux/POSIX API의 반복 사용을 얇게 감싸고, 프로세스와 통신 구조가 코드에서
 명확하게 보이도록 설계합니다. ROS를 재구현하지 않으며, 매카넘 로봇은 향후 첫 Reference Application입니다.
 
-## 현재 상태: v4.1
+## 현재 상태: v4.3
 
-v3.0 hardening 완료 상태를 v4.0 기준으로 두고, v4.1에서 Mecanum M-0 데이터 헤더와 Runtime lifecycle/error 계약을 반영했습니다.
+v4.0은 Framework hardening baseline입니다. v4.1에서 Mecanum M-0 Application IPC Data Contract를 추가했고,
+v4.2에서 Runtime Lifecycle / Error Contract를 보완했습니다.
+v4.3에서는 launch execution mode, monotonic time utility와 Application concurrency 계약을 추가했습니다.
 
 | 버전 | 완료 범위 |
 | --- | --- |
 | v1.0 | ProcessElement / ProcessRuntime / Process / Bringup 실행 기반 |
 | v2.0 | Topic / Timer / Service / Runtime Parameter / Action 통신 기반 |
 | v3.0 | Multi-Element supervision, ERROR/SAFE, 명시적 Reset, Supervisor loss 및 SHM crash hardening |
-| v4.0 | Mecanum 데이터 헤더 추가 전 Framework 기준 상태 |
-| v4.1 | M-0 Application data contract, Setup 실패 정리 및 Loop fatal error 반환 |
+| v4.0 | Framework hardening baseline |
+| v4.1 | Mecanum M-0 — Application IPC Data Contract |
+| v4.2 | Runtime Lifecycle / Error Contract — Setup 실패 정리 및 Loop fatal error 반환 |
+| v4.3 | Pre-Application Execution / Concurrency Base |
 
 v3.0은 최초 오류를 유지하고, 사용자 Reset으로 전체 process generation을 교체한 뒤
 모든 Runtime이 RUNNING일 때만 정상 운전으로 복귀합니다. 자동 재시작은 하지 않습니다.
@@ -70,9 +74,33 @@ Setup/Loop 예외는 `-EFAULT`이며 Shutdown 예외가 기존 오류를 덮어�
 이미 latch된 Supervisor loss의 우선순위와 정상 signal/RequestStop의 STOPPING → Shutdown → STOPPED 흐름은 유지합니다.
 `Shutdown()`은 기본 빈 구현을 제공합니다.
 
-**기존 Element 이식:** `void Loop() override`를 `int Loop() override`로 바꾸고 정상 경로에서 `return 0;`을 추가해야 합니다.
+**v4.2 기존 Element 이식:** `void Loop() override`를 `int Loop() override`로 바꾸고 정상 경로에서 `return 0;`을 추가해야 합니다.
 새 API로 모든 Element를 다시 빌드해야 합니다. Unix process exit status는 음수 int를 그대로 보존하지 않으므로
 정확한 errno 확인에는 `ProcessRuntime::Run()` 반환값 또는 Runtime status를 사용합니다.
+
+## v4.3 실행 mode / Application concurrency
+
+`kcf/process/execution_mode.hpp`의 `DetectLaunchExecutionMode()`는 `ProcessRuntime::Run()` **호출 전**
+launch mode를 확인하는 helper입니다. `KCF_SUPERVISION_FD` 환경변수가 존재하면 SUPERVISED,
+없으면 STANDALONE입니다. 빈 값이나 잘못된 FD도 존재하면 SUPERVISED로 감지합니다.
+실제 FD 검증은 기존 StartSupervision이 수행하며, 검증 실패 시 Setup/Shutdown 호출 없이 Runtime ERROR로 종료합니다.
+Run이 환경변수를 소비하므로 실행 중 mode 조회용으로 사용하지 않습니다.
+
+Element::Loop는 Run을 호출한 Runtime thread에서 실행됩니다. Subscriber, Timer, Service callback과
+Parameter watcher는 각각의 worker에서 실행되어 Loop와 동시에 Application 상태에 접근할 수 있습니다.
+
+권장 흐름:
+
+- callback: Application mutex 획득 → 작은 command/event/snapshot 복사 → 즉시 unlock → return.
+- Loop: 같은 mutex 획득 → local snapshot 복사 → unlock → FSM/algorithm/Driver I/O 수행.
+
+실제 control/FSM/Driver mutable state는 가능하면 Loop 하나가 변경합니다. Callback에서 장치를 직접 제어하지 않으며,
+mutex를 보유한 채 serial I/O, sleep, 긴 계산을 수행하지 않습니다. KCF는 Application 공유 상태의 race를
+자동으로 보호하지 않습니다. `IntegrationElement`의 짧은 mutex 보호와 Loop 중심 실행 구조를 참고할 수 있습니다.
+
+Driver의 transient error는 Element 내부 retry/recovery 후 운전을 계속할 수 있을 때 Loop에서 0을 반환합니다.
+Fatal/unrecoverable error는 Loop non-zero → Runtime ERROR → Shutdown → process 종료 → Supervisor fault detection으로
+전달합니다. Retry 횟수와 timeout 값은 실제 Application/Driver 검토 후 정합니다.
 
 ## System Supervision / Fault Management
 
@@ -168,7 +196,7 @@ Service의 중복 보호는 최근 64개 응답 캐시, Action의 추가 보호�
 v3.0은 Topic/Parameter의 robust 동기화 복구와 controlled generation recovery를 제공합니다.
 Crash로 남은 reader pin은 개별 회수하지 않으며 전체 generation 교체로 복구합니다.
 
-## Mecanum Reference Application — M-0
+## v4.1 Mecanum M-0 — Application IPC Data Contract
 
 `applications/mecanum/data/`는 Framework와 분리된 Application 전용 IPC 데이터 계약입니다.
 
@@ -182,6 +210,17 @@ Crash로 남은 reader pin은 개별 회수하지 않으며 전체 generation �
 타입은 trivially copyable·standard layout 조건을 검증하며 heap ownership을 포함하지 않습니다.
 M-0에는 실제 Element·Driver·제품별 LiDAR payload 구현이 없습니다.
 
+### Monotonic timestamp / freshness utility
+
+`applications/mecanum/common/time.hpp`는 데이터 헤더와 분리된 Application utility입니다.
+`mecanum::common::GetMonotonicTimestampUs(timestamp)`는 CLOCK_MONOTONIC 시간을 microsecond로 변환하며
+성공 시 0, 실패 시 -errno를 반환합니다. SampleHeader::timestamp_us 생성에 사용할 수 있습니다.
+
+`IsTimestampFresh(sample, now, max_age)`는 sample이 0이거나 미래이면 false,
+그 외 `now - sample <= max_age`일 때 true입니다. 함수에 기본 timeout 값은 없습니다.
+현재 Motor watchdog은 구현하지 않았습니다. Stale packet 무시와 last valid command timeout 시 command 0/SAFE는
+향후 Motor Element에서 구현하며, timeout은 기존 ROS Motor 코드와 실제 command 주기를 검토한 뒤 결정합니다.
+
 ## 저장소 구조
 
 ```text
@@ -189,7 +228,9 @@ M-0에는 실제 Element·Driver·제품별 LiDAR payload 구현이 없습니다
 ├─ CMakeLists.txt
 ├─ Readme.md
 ├─ Changelog.md
-├─ applications/mecanum/data/
+├─ applications/mecanum/
+│  ├─ data/
+│  └─ common/
 ├─ kcf/
 │  ├─ CMakeLists.txt
 │  ├─ include/kcf/
@@ -402,14 +443,18 @@ Phase 3-8~3-9B hardening까지 다음 검증을 추가로 완료했습니다. �
 
 1 kHz 검증은 해당 테스트 환경에서의 Loop 진행 확인이며 hard real-time 보장을 의미하지 않습니다.
 
-v4.1 Runtime lifecycle 테스트에서는 Setup 성공·오류·예외, Loop 오류·예외, 양수/음수 오류 보존,
+v4.2 Runtime lifecycle 테스트에서는 Setup 성공·오류·예외, Loop 오류·예외, 양수/음수 오류 보존,
 실패 cycle의 heartbeat 미증가, Shutdown 예외의 우선순위, Setup 전 내부 실패의 cleanup 생략을 확인했습니다.
 직접 Run 반환값과 실제 supervision status를 함께 검사하며 부분 초기화 자원과 FD 정리도 검증합니다.
 C++17 clean build, 기존 Runtime·20 Element/1 kHz·Reset 10회·Supervisor loss, 통신 및 Integration 10 lifecycle 회귀까지 **PASS**입니다.
+
+v4.3 검증은 C++17 clean build, ExecutionMode, Runtime lifecycle·supervision, Supervisor loss,
+Reset 및 기존 통신·Integration 10 lifecycle까지 **PASS**입니다. 시간 utility는 임시 C++17 테스트로
+실제 CLOCK_MONOTONIC 호출, microsecond 변환·-errno 반환, 0/future timestamp와 max_age 경계값을 확인했습니다.
 
 ## 개발 기준 문서
 
 로컬 `docs/KCF_ARCHITECTURE_PLAN.md`와 `docs/KCF_CODEX_INSTRUCTION.md`를 설계 및 개발 기준으로
 사용합니다. 두 문서는 Git ignore 상태로 유지합니다.
 
-공개 개발 이력은 [Changelog](Changelog.md)의 v0.1~v4.1 항목을 참고하세요.
+공개 개발 이력은 [Changelog](Changelog.md)의 v0.1~v4.3 항목을 참고하세요.

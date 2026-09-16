@@ -1,4 +1,5 @@
 #include "kcf/process/process_runtime.hpp"
+#include "kcf/introspection/detail/runtime_registry.hpp"
 
 #include <chrono>
 #include <cmath>
@@ -40,6 +41,8 @@ int ProcessRuntime::Run(ProcessElement& element)
 
     loop_heartbeat_ = 0;
     runtime_error_ = 0;
+    const auto launch_mode = DetectLaunchExecutionMode();
+    detail::BeginRuntimeIntrospection(launch_mode);
     int initialized = Initialize();
     const int supervised = StartSupervision();
     if (!initialized) initialized = supervised;
@@ -48,7 +51,9 @@ int ProcessRuntime::Run(ProcessElement& element)
         running_ = false;
         runtime_error_ = initialized;
         state_ = ProcessState::ERROR;
+        detail::UpdateRuntimeIntrospection(state_.load(), runtime_error_.load());
         Finalize();
+        detail::EndRuntimeIntrospection(state_.load(), runtime_error_.load());
         return initialized;
     }
 
@@ -68,15 +73,21 @@ int ProcessRuntime::Run(ProcessElement& element)
         if (stop_reason_.load() < 0) setup_result = stop_reason_.load();
         runtime_error_ = setup_result;
         state_ = ProcessState::ERROR;
+        detail::UpdateRuntimeIntrospection(state_.load(), runtime_error_.load());
         try { element.Shutdown(); }
         catch (...) {} // preserve the original Setup/previously latched loss error
         Finalize();
+        detail::EndRuntimeIntrospection(state_.load(), runtime_error_.load());
         return setup_result;
     }
 
     running_ = true;
     if (stop_requested || stop_reason_.load() != 0) RequestStop();
-    if (running_) state_ = ProcessState::RUNNING;
+    if (running_)
+    {
+        state_ = ProcessState::RUNNING;
+        detail::UpdateRuntimeIntrospection(GetState(), runtime_error_.load());
+    }
 
     int result = 0;
     try
@@ -142,6 +153,7 @@ int ProcessRuntime::Run(ProcessElement& element)
     if (stop_reason_.load() < 0) result = stop_reason_.load();
     runtime_error_ = result;
     state_ = result ? ProcessState::ERROR : ProcessState::STOPPING;
+    detail::UpdateRuntimeIntrospection(state_.load(), runtime_error_.load());
     try
     {
         element.Shutdown();
@@ -154,7 +166,9 @@ int ProcessRuntime::Run(ProcessElement& element)
     running_ = false;
     runtime_error_ = result;
     state_ = result == 0 ? ProcessState::STOPPED : ProcessState::ERROR;
+    detail::UpdateRuntimeIntrospection(state_.load(), runtime_error_.load());
     Finalize();
+    detail::EndRuntimeIntrospection(state_.load(), runtime_error_.load());
     return result;
 }
 

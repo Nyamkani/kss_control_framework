@@ -9,8 +9,16 @@ int main(int argc, char* argv[])
         std::cerr << "Usage: " << argv[0] << " <executable> [args...] [--next <executable> [args...]]" << std::endl;
         return 1;
     }
+    int first = 1;
+    std::string application_name;
+    // Only a leading option is Supervisor metadata; child args keep old syntax.
+    if (std::string(argv[first]) == "--application-name")
+    {
+        if (argc < 4) return 1;
+        application_name = argv[first + 1]; first += 2;
+    }
     std::vector<bringup::ElementSpec> elements;
-    for (int i = 1; i < argc;)
+    for (int i = first; i < argc;)
     {
         if (std::string(argv[i]) == "--next") return 1;
         bringup::ElementSpec spec{"element" + std::to_string(elements.size() + 1), argv[i++], {}};
@@ -35,6 +43,6 @@ int main(int argc, char* argv[])
         if (i < argc && ++i == argc) return 1;
     }
     bringup::Bringup app;
-    if (app.Setup(std::move(elements)) != 0) return 1;
+    if (app.Setup(application_name, std::move(elements)) != 0) return 1;
     return app.Run();
 }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "kcf/parameter/shared_parameter.hpp"
+#include "kcf/introspection/detail/endpoint_registry.hpp"
 #include <atomic>
 #include <functional>
 #include <system_error>
@@ -32,6 +33,8 @@ public:
         if (result != 0) return result;
         const int watching = Watch(std::move(callback));
         if (watching != 0) { shared_.Unlink(); shared_.Close(); }
+        else registration_id_ = detail::RegisterEndpoint(EndpointKind::PARAMETER,
+            EndpointRole::PARAMETER_OWNER, name, sizeof(T), detail::DiagnosticTypeName<T>(), detail::RegisterEndpointType<T>());
         return watching;
     }
 
@@ -42,6 +45,8 @@ public:
         if (result != 0) return result;
         const int watching = Watch(std::move(callback));
         if (watching != 0) shared_.Close();
+        else registration_id_ = detail::RegisterEndpoint(EndpointKind::PARAMETER,
+            EndpointRole::PARAMETER_CLIENT, name, sizeof(T), detail::DiagnosticTypeName<T>(), detail::RegisterEndpointType<T>());
         return watching;
     }
 
@@ -61,6 +66,7 @@ public:
             if (result != 0) error_.store(result);
         }
         const int result = shared_.Close();
+        detail::UnregisterEndpoint(registration_id_); registration_id_ = 0;
         return result != 0 ? result : error_.load();
     }
 
@@ -108,6 +114,7 @@ private:
     }
 
     SharedParameter<T> shared_;
+    std::uint64_t registration_id_{0};
     std::thread worker_;
     std::atomic<bool> running_{false};
     std::atomic<int> error_{0};

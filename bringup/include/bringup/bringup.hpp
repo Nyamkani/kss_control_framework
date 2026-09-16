@@ -7,6 +7,7 @@
 #include <chrono>
 #include <atomic>
 #include "kcf/process/process.hpp"
+#include "kcf/introspection/detail/supervisor_registry.hpp"
 #include "kcf/system/system_status.hpp"
 #include "kcf/system/system_status_channel.hpp"
 
@@ -45,6 +46,7 @@ class Bringup
 {
 public:
     int Setup(std::vector<ElementSpec> elements);
+    int Setup(const std::string& application_name, std::vector<ElementSpec> elements);
     int Setup(const std::string& executable);
     int Run();
     void Shutdown();
@@ -62,6 +64,7 @@ private:
         ElementSpec spec;
         kcf::Process process;
         pid_t pid{-1}; // preserved for exit diagnostics after Process reaps
+        std::uint64_t process_start_ticks{0};
         bool started{false};
         bool failure_detected{false};
         kcf::ProcessExitInfo exit_info{};
@@ -78,6 +81,9 @@ private:
     // 0: closed, 1: ERROR accepts a request, 2: one pending request.
     std::atomic<unsigned> reset_gate_{0};
     void PublishSystemStatus();
+    void PublishIntrospection() noexcept;
+    char application_name_[128]{"supervisor"};
+    kcf::detail::SupervisorRegistry introspection_;
     void SetApplicationState(ApplicationState state);
     int PollRuntimeStatuses();
     void RecordFailure(ManagedElement& element,

@@ -9,7 +9,7 @@ namespace kcf
 {
 // Native-endian local IPC only: peers must share KCF version, ABI and types.
 constexpr std::uint32_t SERVICE_MAGIC = 0x4b434653;
-constexpr std::uint16_t SERVICE_PROTOCOL_VERSION = 1;
+constexpr std::uint16_t SERVICE_PROTOCOL_VERSION = 2;
 constexpr std::size_t SERVICE_MAX_PAYLOAD = 4096;
 
 enum class ServicePacketType : std::uint16_t { REQUEST = 1, RESPONSE = 2 };
@@ -26,8 +26,10 @@ struct ServiceHeader
     std::uint64_t request_id{0};
     std::int32_t framework_status{0};
     std::uint32_t reserved2{0};
+    std::uint64_t request_type_id{0}, response_type_id{0};
+    std::uint64_t request_layout_id{0}, response_layout_id{0};
 };
-static_assert(sizeof(ServiceHeader) == 40);
+static_assert(sizeof(ServiceHeader) == 72);
 static_assert(std::is_trivially_copyable_v<ServiceHeader>);
 
 namespace detail

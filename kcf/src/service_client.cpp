@@ -52,7 +52,8 @@ int ServiceClient::Create(std::uint16_t port, std::uint32_t timeout_ms, std::uin
 }
 
 int ServiceClient::CallRaw(std::uint16_t id, const void* input, std::size_t input_size,
-                           void* output, std::size_t output_size)
+                           void* output, std::size_t output_size,
+                           detail::StorageIdentity request_identity, detail::StorageIdentity response_identity)
 {
     // One outstanding request, including all its retries and response validation.
     std::lock_guard<std::mutex> lock(mutex_);
@@ -60,6 +61,10 @@ int ServiceClient::CallRaw(std::uint16_t id, const void* input, std::size_t inpu
     if (request_id_ == std::numeric_limits<std::uint64_t>::max()) return -EOVERFLOW;
     detail::ServicePacket request;
     request.header.service_id = id;
+    request.header.request_type_id = request_identity.type_id;
+    request.header.response_type_id = response_identity.type_id;
+    request.header.request_layout_id = request_identity.layout_id;
+    request.header.response_layout_id = response_identity.layout_id;
     request.header.client_id = client_id_;
     request.header.request_id = ++request_id_;
     request.header.payload_size = static_cast<std::uint32_t>(input_size);
@@ -107,6 +112,10 @@ int ServiceClient::CallRaw(std::uint16_t id, const void* input, std::size_t inpu
                 header.client_id != client_id_ || header.request_id != request_id_ || header.service_id != id ||
                 header.payload_size > SERVICE_MAX_PAYLOAD ||
                 received != static_cast<ssize_t>(sizeof(ServiceHeader) + header.payload_size)) continue;
+            if (header.request_type_id != request_identity.type_id ||
+                header.response_type_id != response_identity.type_id ||
+                header.request_layout_id != request_identity.layout_id ||
+                header.response_layout_id != response_identity.layout_id) return -EPROTOTYPE;
             if (header.framework_status < 0)
             {
                 if (header.payload_size == 0) return header.framework_status;

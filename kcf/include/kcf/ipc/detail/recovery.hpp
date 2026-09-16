@@ -1,4 +1,5 @@
 #pragma once
+#include "kcf/ipc/detail/storage_layout.hpp"
 #include <cerrno>
 #include <cstdint>
 #include <fcntl.h>
@@ -23,28 +24,29 @@ struct OwnerHeader
     std::uint32_t format, initialized;
     std::int32_t owner_pid;
     std::uint32_t reserved;
+    std::uint64_t type_id{0}, layout_id{0};
 };
-static_assert(sizeof(OwnerHeader) == 40);
+static_assert(sizeof(OwnerHeader) == 56);
 
 // Serialize only name creation/reclaim and initial flock acquisition. The
 // /dev/shm directory lock closes the shm_open -> flock gap without creating a
 // persistent lock file. All KCF creators use it; initialization keeps fd flock.
 // Reclaim requires old-generation peers stopped by the application. No reconnect.
 inline int CreateOwnedShm(const char* name, std::uint64_t magic,
-                          std::uint64_t size, std::uint64_t alignment)
+                          std::uint64_t size, std::uint64_t alignment, bool nonblocking = false)
 {
     const int directory = open("/dev/shm", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     if (directory < 0) return -errno;
-    if (flock(directory, LOCK_EX) != 0) { int e=errno; close(directory); return -e; }
+    if (flock(directory, LOCK_EX | (nonblocking ? LOCK_NB : 0)) != 0) { int e=errno; close(directory); return -e; }
     int result = -EEXIST;
     for (int attempt=0; attempt<2; ++attempt)
     {
         int fd = shm_open(name, O_CREAT | O_EXCL | O_RDWR, 0600);
         if (fd >= 0)
         {
-            if (flock(fd, LOCK_EX) != 0)
+            if (flock(fd, LOCK_EX | (nonblocking ? LOCK_NB : 0)) != 0)
             { result=-errno; shm_unlink(name); close(fd); break; }
-            const OwnerHeader header{magic,size,alignment,2,0,static_cast<std::int32_t>(getpid()),0};
+            const OwnerHeader header{magic,size,alignment,STORAGE_FORMAT,0,static_cast<std::int32_t>(getpid()),0};
             const auto written = pwrite(fd,&header,sizeof(header),0);
             if (written != sizeof(header))
             { result=written<0?-errno:-EIO; shm_unlink(name); close(fd); break; }
@@ -64,7 +66,7 @@ inline int CreateOwnedShm(const char* name, std::uint64_t magic,
             // No format migration. Unknown complete headers are never deleted.
             if (old.initialized==0)
                 reclaim=old.owner_pid<=0 || OwnerDead(old.owner_pid);
-            else if (old.initialized==1 && old.magic==magic && old.format==2 && old.owner_pid>0)
+            else if (old.initialized==1 && old.magic==magic && old.format==STORAGE_FORMAT && old.owner_pid>0)
                 reclaim=OwnerDead(old.owner_pid);
         }
         if (!reclaim) { close(fd); result=-EEXIST; break; }

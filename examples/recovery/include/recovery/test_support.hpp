@@ -18,7 +18,7 @@
 #include <unistd.h>
 #include "kcf/ipc/detail/recovery.hpp"
 
-// White-box format-v2 fixtures are test-only. No production crash/sleep hooks.
+// White-box format-v3 fixtures are test-only. No production crash/sleep hooks.
 namespace recovery_test
 {
 inline void Reap(pid_t pid)
@@ -66,7 +66,7 @@ template<class Create> void Incomplete(const std::string& name, Create create, b
         assert(flock(fd,LOCK_EX)==0);
         if (header_written)
         {
-            const kcf::detail::OwnerHeader header{0,0,0,2,0,static_cast<std::int32_t>(getpid()),0};
+            const kcf::detail::OwnerHeader header{0,0,0,kcf::detail::STORAGE_FORMAT,0,static_cast<std::int32_t>(getpid()),0};
             assert(pwrite(fd,&header,sizeof(header),0)==sizeof(header));
         }
         assert(write(ready[1],"x",1)==1);for(;;)pause();

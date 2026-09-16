@@ -7,6 +7,9 @@
 namespace mecanum::data
 {
 
+inline constexpr char MOTOR_COMMAND_TOPIC[] = "/kcf_mecanum_motor_command";
+inline constexpr char MOTOR_ODOMETRY_TOPIC[] = "/kcf_mecanum_motor_odometry";
+
 struct VelocityCommand
 {
     SampleHeader header;

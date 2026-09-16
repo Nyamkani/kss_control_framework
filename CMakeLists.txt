@@ -18,3 +18,5 @@ add_subdirectory(examples/integration)
 add_subdirectory(examples/supervisor)
 add_subdirectory(examples/recovery)
 add_subdirectory(bringup)
+
+add_subdirectory(applications/mecanum)

@@ -2,11 +2,23 @@
 
 ## 증거 구분
 
+### Historical temporary verification artifacts
+
+아래 `/tmp/...` script/log 경로는 당시 개발 검증 근거이며 repository의 영구 artifact가 아닙니다.
+These paths were used during development verification and are not part of the repository or reproducible release artifact.
+해당 파일의 존재는 v5.0 사용/빌드 조건이 아닙니다. 사용자 수동 검증은 별도 출처로 기록합니다.
+
+
 이번 문서 작업에서는 코드를 변경하거나 기능 테스트를 재실행하지 않았습니다.
 기존 코드/테스트/문서/최근 실제 실행 로그를 대조하고 `ctest --test-dir build -N`으로 등록 수를 확인했습니다.
 수치와 PASS는 아래 실행 출처의 범위에 한정됩니다. 하드웨어·hard real-time·무한 부하 보증이 아닙니다.
 
-## Framework: CTest 0, sequential runner 22
+## Automated / Regression Verification
+
+[AUTOMATED VERIFIED] Framework sequential runner 22/22 PASS.
+Introspection R1~R5, Runtime/Supervisor/recovery/timer/integration을 포함합니다.
+
+### Framework: CTest 0, sequential runner 22
 
 현재 Framework top-level CMake에는 CTest 등록이 없으며 `ctest -N` 결과는 **Total Tests: 0**입니다.
 최근 Action app 작업의 `/tmp/action-app-regressions.py`가 **20개 case + legacy Service + Integration = 22개 실행 항목**을
@@ -40,12 +52,12 @@
 
 현재 확인한 결과: **22/22 PASS**. 로그 디렉터리: `/tmp/action-app-regression/`.
 마지막 두 항목은 concurrent server/client pair를 runner가 관리합니다. `python3 /tmp/action-app-regressions.py`는
-현재 환경의 재현 명령이나 runner는 repository에 포함되지 않은 임시 artifact입니다.
+당시 개발 환경에서 사용한 실행 명령이며 runner는 repository에 포함되지 않은 임시 artifact입니다.
 배포된 checkout에 그 파일이 존재한다고 보장하지 않습니다. 개별 source/target은
 [supervisor](../examples/supervisor/), [introspection](../examples/introspection/), [recovery](../examples/recovery/),
 [integration](../examples/integration/)에서 확인할 수 있습니다.
 
-## Application-level 실제 검증
+### Application-level Automated Verification
 
 | 예제 | 확인된 결과 | 실제 근거 artifact |
 | --- | --- | --- |
@@ -66,10 +78,10 @@ Timer 숫자는 측정 구간별 값입니다. Timer app 로그 간격은 500.0/
 최근 Action 단계의 low-level Timer 회귀 2 Hz callback 평균은 **500.025 ms**입니다.
 다른 단계의 499.989 ms 측정과 혼합하지 않습니다.
 
-## Tool: 기존 문서에서 확인한 과거 결과
+### Tool: 기존 문서에서 확인한 과거 결과
 
-[KT-8](/home/kssvm/workspace/kcf/kcf_tools/docs/KT8_GENERIC_CROSS_APPLICATION_VALIDATION.md) 및
-[release notes](/home/kssvm/workspace/kcf/kcf_tools/docs/V0_1_RELEASE_NOTES.md), 기록일 2026-09-15:
+KT-8 (`Nyamkani/kcf_tools/docs/KT8_GENERIC_CROSS_APPLICATION_VALIDATION.md`) 및
+release notes (`Nyamkani/kcf_tools/docs/V0_1_RELEASE_NOTES.md`), 기록일 2026-09-15:
 KT-8 **1/1**, Tool regression **10/10**, KCF-less GUI **3/3**, KCF-less backend **1/1 PASS**.
 이는 이번 문서 작업의 재실행 결과가 아닙니다. 당시 Framework는 runner 19 + 추가 2 항목이며
 최근 22개 runner와 구성/시점이 다릅니다.
@@ -77,13 +89,53 @@ KT-8 **1/1**, Tool regression **10/10**, KCF-less GUI **3/3**, KCF-less backend 
 최근 app 예제의 Tool 검증은 기존 UI/backend source를 수정 없이 링크한 임시 Qt offscreen harness의 자동 입력·버튼 조작입니다.
 기존 v0.1 binary 실행도 별도 확인했지만, 기존 binary에 대한 모든 클릭을 OS automation으로 수행했다는 뜻은 아닙니다.
 
-수동 검증과의 구분:
+## Manual GUI Verification
 
-- Pub/Sub Echo, Parameter Apply, Service Call: 실제 backend를 사용한 **offscreen 자동 GUI 검증**.
-- Standalone discovery, app restart, Action lifecycle: 실제 process를 실행한 **자동 integration/로그 검증**.
-- SIGKILL → Supervisor ERROR: Action app 및 기존 fixture의 **failure injection 검증**.
-- 특정 pubsub subscriber SIGKILL + healthy publisher 지속 + Tool Refresh의 결합: 현재 로그에서 **확인되지 않음**.
-- 실제 데스크톱 수동 조작, 실제 hardware safety: **이번 기록에서 검증되지 않음**.
+[MANUALLY VERIFIED] 아래는 이번 보정 요청으로 사용자가 제공한 **직접 GUI/process 검증 이력**이다.
+자동 regression fixture 결과나 이번 문서 수정 중 재실행한 결과로 분류하지 않는다.
+
+### Pub/Sub
+
+- Supervised `pubsub_example` RUNNING 및 publisher/subscriber 2개 Element 확인.
+- Topic Echo의 5개 field와 실제 증가 값 확인.
+- Subscriber SIGKILL 후 Supervisor RUNNING → ERROR, healthy publisher 계속 실행 확인.
+- Tool Refresh 전 기존 snapshot 유지, Refresh 후 failed subscriber 제거 및 publisher만 남는 topology 확인.
+- Bringup 전체 종료·재실행 후 새 Supervisor/child PID/start_ticks generation 확인.
+- Standalone publisher/subscriber discovery 확인.
+
+Result: **Manual GUI / process failure / restart PASS**.
+이 결합 scenario는 manual integration verification이며 automated regression fixture가 아니다.
+
+### Parameter
+
+`parameter_example` RUNNING, `/example/config` OWNER, field descriptor 표시,
+Edit/Apply, 변경값 재조회, Owner readback, Revert를 직접 확인했다.
+Result: **Manual GUI PASS**.
+
+### Service
+
+`service_example` RUNNING과 `/example/add` 표시를 확인하고 request a=10, b=25를 입력했다.
+Response result=35, accepted=true를 확인했다. Result: **Manual GUI PASS**.
+
+## Manual Console Verification
+
+[MANUALLY VERIFIED] 사용자 직접 console/runtime 확인 이력이다.
+
+### Timer
+
+Standalone/supervised 500 ms periodic output, tick 증가, shutdown 후 tick 중단 확인.
+Result: **Manual console PASS**. 정밀한 hard real-time 보장을 의미하지 않는다.
+
+### Action
+
+- Success: target=10, IDLE → ACCEPTED → RUNNING → SUCCEEDED,
+  feedback sequence/count 1~10, progress 0.1 → 1.0, final=10, result_code=0.
+- Cancel: target=50, feedback 진행 후 약 500 ms에 Cancel, CANCELED,
+  result_code=-ECANCELED 및 cancel 이후 feedback 중단.
+- Client는 두 scenario 완료 후 idle/RUNNING 유지.
+
+Result: **Manual console PASS**. 취소 final count는 타이밍에 따라 달라진다.
+Hardware safety / hard real-time / 실제 Device I/O는 이번 v5.0 Framework 검증 범위가 아니다.
 
 ## Known Limitations
 

@@ -68,7 +68,9 @@ Publisher/Subscriber 출력 확인 후 Ctrl+C로 종료합니다. 독립 실행�
 - [설계 결정 기록](docs/07_DESIGN_DECISION_LOG.md)
 - [KCF Framework v5.0 Development Status](docs/V5_0_STATUS.md)
 
-이 문서 세트의 KCF Framework v5.0은 **development status / checkpoint candidate**입니다. 정확한 release commit/tag는
+v5.0 기능 구현과 검증은 현재 `feature/introspection` branch에 반영되어 있으며 정식 release tag만 아직 고정하지 않았습니다.
+이 문서 세트는 **development status / checkpoint candidate**입니다. 정확한 release commit/tag는
 TBD이며, 과거 v4.3 baseline이나 Tool v0.1과 같은 release 번호를 뜻하지 않습니다.
-[기존 Readme.md](Readme.md)와 [Changelog.md](Changelog.md)는 역사 기록으로 보존합니다.
+`README.md`는 현재 v5.0 entry point입니다. [Readme.md](Readme.md)는 historical v4.3 development record이며,
+[Changelog.md](Changelog.md)와 함께 역사 기록으로 보존합니다.
 현재 구현과 과거 기록의 차이는 [출처·차이 기록](docs/00_PROJECT_SCOPE_AND_DECISIONS.md)에 정리했습니다.

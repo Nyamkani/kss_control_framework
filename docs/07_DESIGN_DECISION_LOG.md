@@ -100,7 +100,7 @@ User 제공 승인 이력과 코드 존재를 별개 증거로 취급합니다. 
 | --- | --- |
 | ID | D-007 |
 | Date/Stage | 현재 checkpoint; 최초 날짜 미확인 |
-| Decision Source | User generic Tool requirement → AI/Codex implementation design |
+| Decision Source | User generic Tool requirement → AI/Codex implementation design → user review and validation |
 | Context | Application별 Tool 코드 종속 |
 | Decision | canonical name/type_id와 flat fields |
 | Reason | 일반 field decode/encode |
@@ -115,7 +115,7 @@ User 제공 승인 이력과 코드 존재를 별개 증거로 취급합니다. 
 | --- | --- |
 | ID | D-008 |
 | Date/Stage | 현재 checkpoint; 최초 날짜 미확인 |
-| Decision Source | User generic Tool requirement → AI-assisted implementation |
+| Decision Source | User generic Tool requirement → AI/Codex implementation design → user review and validation |
 | Context | generic structure 발견 |
 | Decision | 관찰 registry와 instance identity |
 | Reason | Tool 변경 없는 Application 발견 |
@@ -130,7 +130,7 @@ User 제공 승인 이력과 코드 존재를 별개 증거로 취급합니다. 
 | --- | --- |
 | ID | D-009 |
 | Date/Stage | R2B.1 / KT-7 이후 |
-| Decision Source | KT-7 failure → AI/Codex corrective design → user-approved (사용자 제공 이력) |
+| Decision Source | multiple Application 독립 실행 요구 = User; collision 발견 = validation; scoped corrective design = AI/Codex proposal; 적용/유지 = user accepted through implementation and validation |
 | Context | 두 번째 Bringup global SHM collision |
 | Decision | Supervisor PID/start_ticks scope; Reset scope 유지 |
 | Reason | 독립 multiple Applications |
@@ -175,7 +175,7 @@ User 제공 승인 이력과 코드 존재를 별개 증거로 취급합니다. 
 | --- | --- |
 | ID | D-012 |
 | Date/Stage | 현재 checkpoint; 최초 날짜 미확인 |
-| Decision Source | Current implementation; Action 예제에서 유지 사용자 명시 |
+| Decision Source | Current implementation → 이후 사용자 확인 및 현 버전 유지 결정; 최초 User 설계로 소급하지 않음 |
 | Context | port는 process endpoint |
 | Decision | Create(port), 사용자/Application 지정 |
 | Reason | 자동 registry/allocator 범위 확대 방지 |
@@ -190,7 +190,7 @@ User 제공 승인 이력과 코드 존재를 별개 증거로 취급합니다. 
 | --- | --- |
 | ID | D-013 |
 | Date/Stage | 현재 checkpoint; 최초 날짜 미확인 |
-| Decision Source | Current architecture; Timer 예제 범위 사용자 명시 |
+| Decision Source | Timer가 process-local feature라는 Current architecture; endpoint 누락 bug가 아님 |
 | Context | Timer는 process-local worker |
 | Decision | 외부 endpoint를 만들지 않음 |
 | Reason | IPC 기능과 구분 |
@@ -205,7 +205,7 @@ User 제공 승인 이력과 코드 존재를 별개 증거로 취급합니다. 
 | --- | --- |
 | ID | D-014 |
 | Date/Stage | 현재 checkpoint; 최초 날짜 미확인 |
-| Decision Source | Tool v0.1 scope (User) |
+| Decision Source | v0.1 Tool scope에서 defer된 기능 (User) |
 | Context | 현재 Tool 범위 제한 |
 | Decision | 전용 Action model/UI 미구현 |
 | Reason | Core Action 검증과 GUI 확장 분리 |
@@ -229,3 +229,6 @@ User 제공 승인 이력과 코드 존재를 별개 증거로 취급합니다. 
 | Current Status | Omitted; 최초 결정 당시 독립 기록은 확인되지 않음 |
 | Future Revisit Trigger | 권한·명령 계약을 포함한 별도 설계 시; 현재 결정/구현 약속 아님 |
 
+
+Repository branch/file 정리 및 문서 이동 과정에는 사용자가 직접 수행한 수동 Git 작업이 포함되어 있다.
+Decision Log는 기능 설계/구현 출처를 추적하며 모든 git operation의 수행 주체를 기록하는 문서는 아니다.

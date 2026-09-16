@@ -35,17 +35,17 @@ Application 이름은 표시 이름이며 instance identity가 아닙니다.
 ## R2B.1 corrective history
 
 1. User requirement: 여러 Application이 독립적으로 동작해야 함.
-2. [KT-7 기록](/home/kssvm/workspace/kcf/kcf_tools/docs/KT7_APPLICATION_ELEMENT_EXPLORER.md):
+2. KT-7 기록 (`Nyamkani/kcf_tools/docs/KT7_APPLICATION_ELEMENT_EXPLORER.md`):
    두 번째 Bringup의 global SystemStatus Create가 -EEXIST; 당시 실제 동시 실행은 FAIL.
 3. 이번 사용자 제공 이력: AI/Codex가 Application-instance scope를 corrective design으로 제안·구현하고 사용자 승인/후속 검증으로 수용.
    별도 최초 승인 commit artifact는 현재 확인되지 않음.
 4. [현재 코드](../kcf/include/kcf/system/system_status_scope.hpp): Supervisor PID/start_ticks scope,
    [Bringup](../bringup/src/bringup.cpp)이 자식에 전달. Reset에는 같은 scope, 새 child generation.
 5. [현재 scope test](../examples/supervisor/src/application_scope_test.cpp) 및
-   [KT-8 기록](/home/kssvm/workspace/kcf/kcf_tools/docs/KT8_GENERIC_CROSS_APPLICATION_VALIDATION.md):
+   KT-8 기록 (`Nyamkani/kcf_tools/docs/KT8_GENERIC_CROSS_APPLICATION_VALIDATION.md`):
    two supervisors / same application_name / state isolation PASS.
 
-global SystemStatus collision은 해결된 historical failure입니다. 일반 Topic namespace 자동 격리까지 해결했다는 뜻은 아닙니다.
+[HISTORICAL FAILURE] global SystemStatus collision은 현재 Application-scoped SystemStatus로 해결됐으며 현재 limitation이 아닙니다. 일반 Topic namespace 자동 격리까지 해결했다는 뜻은 아닙니다.
 
 ## R3 descriptor
 
@@ -57,8 +57,10 @@ Nested POD는 사용자가 offset을 합해 flat field로 명시할 수 있으�
 
 ## Tool v0.1 범위
 
-[Tool release notes](/home/kssvm/workspace/kcf/kcf_tools/docs/V0_1_RELEASE_NOTES.md)는 별도 repository의 문서입니다.
-위 절대 경로 링크는 이 개발 환경의 근거 위치이며 다른 checkout에서는 해당 Tool docs를 별도로 확인해야 합니다.
+kcf_tools는 별도 repository [Nyamkani/kcf_tools](https://github.com/Nyamkani/kcf_tools)에서 관리합니다.
+KT-7, KT-8 및 v0.1 Tool 검증 기록은 해당 repository의 `docs/`를 참조합니다.
+이 Framework 문서는 검증 결과를 요약하며 특정 개발 PC의 절대 filesystem path를 public contract로 사용하지 않습니다.
+Tool release notes는 `docs/V0_1_RELEASE_NOTES.md`입니다.
 
 | 지원 | 동작 |
 | --- | --- |
@@ -72,5 +74,6 @@ Parameter auto-watch, remote access. 화면의 Launch tab 존재를 실제 proce
 Topic Echo의 주기적 데이터 조회와 Application discovery의 수동 Refresh는 다릅니다.
 Reset은 Framework API/fixture에서 검증했으며 Tool 사용자용 Reset 기능으로 설명하지 않습니다.
 
-[VERIFIED] 최근 app 예제는 수정 없는 기존 UI/backend의 offscreen 자동 입력/클릭으로 검증했습니다.
-기존 Tool binary 실행도 별도로 확인했습니다. 실제 데스크톱 사용자의 수동 조작/시각 검토와 동일한 증거는 아닙니다.
+[AUTOMATED VERIFIED] 최근 app 예제는 수정 없는 기존 UI/backend의 offscreen 자동 입력/클릭으로 검증했습니다.
+기존 Tool binary 실행도 별도로 확인했습니다. 자동 검증과 별도로 사용자가 Topic Echo, Parameter Edit/Apply/Revert, Service Call을 직접 확인했습니다.
+[MANUALLY VERIFIED] 수동 GUI/process 검증의 범위는 [06](06_VERIFICATION_AND_LIMITATIONS.md)에 구분해 기록합니다.

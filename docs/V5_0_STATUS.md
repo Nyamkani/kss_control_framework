@@ -1,11 +1,17 @@
 # KCF Framework v5.0 Development Status
 
-**Development status / checkpoint candidate**, 문서 기준일 2026-09-16.
-대상 `/tmp/kcf-r1-introspection`, branch `feature/introspection`의 **uncommitted 작업 상태**입니다.
-확인한 HEAD: `234716b716f2f7e37c806bb9430dc9a9e11f74ab`.
-이는 baseline commit이며 현재 introspection/app 예제 전체를 담은 release commit이 아닙니다.
-`git tag --points-at HEAD` 출력은 없었습니다. Exact release commit/tag: **TBD**.
-새 tag/commit/version history를 생성하지 않았습니다. 기존 v4.x 이력 및 Tool v0.1은 별도 명명 범위입니다.
+
+문서 기준일: 2026-09-16.
+
+KCF Framework v5.0의 현재 development checkpoint는 `feature/introspection` branch에 반영되어 있다.
+문서 정리 전 확인한 implementation checkpoint:
+`cba15f55a7fca3b22a7c5584fc063c7b51b93dc9`.
+이 commit hash는 문서 수정 이후 branch HEAD와 달라질 수 있으므로 정식 release identity로 사용하지 않는다.
+Exact release tag: **TBD**.
+
+현재 v5.0 branch에는 Process / ProcessRuntime / Supervisor, Topic / Parameter / Service / Timer / Action,
+R1 / R2A / R2B / R2B.1 / R3 / R4 / R4.1 / R5, application-level examples와 v5.0 documentation set이 포함된다.
+기존 v4.x version history와 kcf_tools v0.1은 서로 다른 version namespace이다.
 
 ## 구현 snapshot
 
@@ -44,12 +50,14 @@ Discovery/state는 manual Refresh, Echo data는 periodic polling입니다. Tool�
 KCF-less GUI 3/3, backend 1/1 PASS는 과거 기록이며 이번 문서 작업에서 재실행하지 않았습니다.
 
 [검증 범위·artifact·실패 이력·17개 known limitations](06_VERIFICATION_AND_LIMITATIONS.md)를 release 판단의 일부로 함께 봐야 합니다.
-특정 pubsub SIGKILL/Tool Refresh 결합 검증, desktop manual/hardware/real-time 보장은 확인되지 않았습니다.
+[MANUALLY VERIFIED] 사용자 직접 검증으로 PubSub GUI·subscriber SIGKILL·healthy publisher 지속·Refresh·restart,
+Parameter Edit/Apply/Revert, Service Call, Timer 및 Action console lifecycle PASS를 확인했습니다.
+Hardware safety / hard real-time / 실제 Device I/O는 이번 Framework 검증 범위가 아닙니다.
 
-이 문서 작성은 README/docs만 추가합니다. 기존 기능·예제·Tool·mecanum·CMake·테스트 코드와 기존 개발 기록은 변경하지 않습니다.
+이번 보정은 README/docs 문구만 수정하며 기능·예제·Tool·CMake·테스트 코드는 변경하지 않습니다.
 
-## 문서 추적 상태
+## Repository State
 
-기존 `.gitignore`가 `docs/` 전체를 제외합니다. 상세 문서 9개는 파일로 존재하지만
-일반 git status의 신규 파일 목록에 나타나지 않습니다. 이번 허용 범위가 README/docs이므로
-.gitignore와 index는 변경하지 않았습니다. 향후 문서를 repository에 포함할 때 별도 추적 처리가 필요합니다.
+v5.0 문서 세트는 현재 repository의 `docs/`에 추적되고 있다.
+Application reference implementation인 Mecanum은 현재 v5.0 Framework branch 범위에서 제외되어 있으며,
+Framework와 Application 개발 이력을 분리하여 관리한다.

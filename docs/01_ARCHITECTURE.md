@@ -36,7 +36,7 @@ SIGKILL, process crash, 끝나지 않는 Setup/Loop에 대해 Shutdown 실행을
 기본 Loop 주기는 10 Hz이며 유효한 SetLoopFrequency 값으로 바꿉니다. 하나의 process에는
 하나의 active ProcessRuntime을 사용합니다. missed scheduler tick을 무제한 catch-up하지 않습니다.
 
-[VERIFIED] Runtime lifecycle, runtime health, Supervisor loss 회귀 및 app 예제.
+[AUTOMATED VERIFIED] Runtime lifecycle, runtime health, Supervisor loss 회귀 및 app 예제.
 오류 우선순위·blocking 한계는 [02](02_RUNTIME_AND_SUPERVISION.md)에서 상세히 다룹니다.
 
 ## Standalone / Supervised

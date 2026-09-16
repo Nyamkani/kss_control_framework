@@ -60,12 +60,13 @@ Reset은 Supervisor identity/scope를 유지하고 child generation을 교체합
 
 ## 사례와 검증 경계
 
-[VERIFIED] Action app에서 startup barrier 완료 후 server SIGKILL → RUNNING→ERROR, cleanup,
+[AUTOMATED VERIFIED] Action app에서 startup barrier 완료 후 server SIGKILL → RUNNING→ERROR, cleanup,
 새 Supervisor/child identity로 restart와 Success/Cancel 반복을 확인했습니다.
-[VERIFIED] scope 회귀에서 두 Supervisor, 같은 이름, state isolation, Reset을 확인했습니다.
+[AUTOMATED VERIFIED] scope 회귀에서 두 Supervisor, 같은 이름, state isolation, Reset을 확인했습니다.
 
-Subscriber SIGKILL → PROCESS_EXIT → Supervisor RUNNING→ERROR → healthy publisher 계속 실행은
-[RecordFailure/Run](../bringup/src/bringup.cpp) 구조와 일치하는 **예상 경로**입니다.
-그러나 최근 `examples/pubsub` 로그에는 이 특정 fault injection과 Tool Refresh까지의 결합 검증이 없습니다.
-따라서 그 조합을 새 PASS로 기록하지 않습니다. 유사 failure/restart는 KT-8의 별도 app fixture에서 검증됐습니다.
-Tool topology/state 갱신은 [수동 Refresh](04_INTROSPECTION_AND_TOOL.md)이며 자동 이벤트 스트림이 아닙니다.
+[MANUALLY VERIFIED] 사용자 직접 PubSub 검증에서 subscriber SIGKILL → Supervisor RUNNING→ERROR,
+healthy publisher 계속 실행, Tool Refresh 전 snapshot 유지 및 Refresh 후 failed subscriber 제거를 확인했습니다.
+Process exit의 [RecordFailure](../bringup/src/bringup.cpp) 분류는 PROCESS_EXIT입니다.
+Bringup 종료·재실행 후 새 Supervisor/child PID/start_ticks generation과 Standalone discovery도 확인했습니다.
+이 결합 결과는 자동 fixture가 아닌 manual integration verification입니다.
+Tool topology/state는 [수동 Refresh](04_INTROSPECTION_AND_TOOL.md)로 갱신됩니다.

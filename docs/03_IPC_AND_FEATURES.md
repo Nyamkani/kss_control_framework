@@ -20,7 +20,8 @@ DynamicTopicReader는 descriptor와 현재 named object에 바인딩하여 ReadL
 
 **Verified.** pubsub standalone/supervised 송수신, 양 역할 endpoint 발견, 기존 UI Echo의 다섯 field와 값 증가,
 정상 종료 정리 PASS. R4.1 재생성 stale, Topic recovery 및 KT-8 fixture failure/restart/재발견도 각각 PASS.
-이들을 pubsub 예제 자체의 SIGKILL 전체 scenario PASS와 혼합하지 않습니다.
+[MANUALLY VERIFIED] 별도로 사용자 직접 PubSub subscriber SIGKILL, healthy publisher 지속, Tool Refresh,
+restart/generation rediscovery를 확인했습니다. 자동 fixture와 수동 integration의 출처는 구분합니다.
 
 **Current Limitation.** Dead reader의 pin이 남아 slot 사용을 방해할 수 있으며 publish는 -EAGAIN일 수 있습니다.
 Global logical name의 Publisher ownership은 Application name으로 자동 분리되지 않습니다.

@@ -1,14 +1,17 @@
 # 00. Project Scope and Decisions
 
-문서 기준: 2026-09-16, `/tmp/kcf-r1-introspection`의 현재 작업 트리.
-코드가 현재 구현의 source of truth입니다. 이 문서는 기능 변경이나 release 선언이 아닙니다.
+문서 기준: 2026-09-16, KCF Framework `feature/introspection` v5.0 checkpoint.
+현재 repository code가 구현 상태의 source of truth입니다. 이 문서는 기능 변경이나 release 선언이 아닙니다.
 
 ## 근거와 표기
 
 - **[USER REQUIREMENT / DECISION]**: 이번 문서 요청 또는 대화에 명시된 사용자 요구·선택.
 - **[IMPLEMENTED]**: 링크된 현재 코드에서 확인한 동작.
 - **[IMPLEMENTATION ORIGIN]**: 요구 출처와 구현 주체를 분리한 기록. 확인되지 않은 개별 기여는 추정하지 않습니다.
-- **[VERIFIED]**: 실제 테스트 로그 또는 명시된 과거 검증 문서의 결과. 실행 시점·종류는 [검증 문서](06_VERIFICATION_AND_LIMITATIONS.md) 참조.
+- **[AUTOMATED VERIFIED]**: 자동 test/regression으로 확인한 결과.
+- **[MANUALLY VERIFIED]**: 사용자가 GUI/console/process 실행으로 직접 확인한 결과.
+- **[HISTORICAL FAILURE]**: 과거 발견됐으나 현재 수정 완료된 문제.
+- 실행 시점·출처·종류는 [검증 문서](06_VERIFICATION_AND_LIMITATIONS.md) 참조.
 - **[CURRENT LIMITATION]**: 보장하지 않거나 미구현인 사항.
 - **[FUTURE OPTION]**: 미결정 개선 후보이며 현재 API 약속이 아님.
 
@@ -57,9 +60,13 @@ Core 전체의 line별 작성자를 이 문서만으로 판정하지 않습니�
 | --- | --- |
 | [Readme.md](../Readme.md)의 v4.3, discovery 제외 설명 | 과거 baseline 기록. 현재 R1–R5 API가 존재하므로 현재 범위 설명으로 사용하지 않음 |
 | [R1 README](../examples/introspection/README.md)의 R2 이후 Deferred | R1 단계의 미래 계획. 현재 R4는 Topic/Parameter dynamic access, R5는 Service dynamic call |
-| R1 README의 `R2B1.md` 링크 | 대상 파일은 현재 worktree에서 확인되지 않음. scoped 코드·scope test·Tool KT-8로 현재 동작 확인 |
-| 요청된 과거 KCF_ARCHITECTURE_PLAN / KCF_CODEX_INSTRUCTION | 이번 worktree의 docs에 존재하지 않음. 내용을 복원·추정하지 않음 |
+| R1 README의 `R2B1.md` 링크 | [R2B.1 문서](../examples/introspection/R2B1.md)가 현재 존재함. 초기 Deferred 표시는 historical stage 기록이며 R2A/R2B/R2B.1/R3/R4/R4.1/R5는 후속 구현됨 |
+| 과거 KCF_ARCHITECTURE_PLAN / KCF_CODEX_INSTRUCTION | 과거 설계 지시 문서의 보관/이동 이력과 현재 구현 상태를 구분하며, 현재 repository code를 우선함 |
 | 과거 v0.1 / v4.x와 이번 Framework v5.0 | [Changelog](../Changelog.md)의 과거 단계 번호를 변경하지 않음. 이번 것은 사용자 지정 Framework v5.0 development status / checkpoint candidate |
 | KT-7 두 번째 Supervisor 충돌 | 과거 failure. R2B.1 현재 구현 및 후속 검증으로 해결; 현재 일반 제한으로 나열하지 않음 |
 
 기존 상세 기록은 삭제·수정하지 않았습니다. 새 README와 이 문서 세트가 현재 상태의 상위 안내입니다.
+
+[IMPLEMENTATION ORIGIN] v5.0 Framework의 introspection/dynamic access 확장은 사용자의 generic Tool 요구를
+기준으로 AI-assisted implementation(Codex)으로 구현되었다. 문서 정리 및 branch/file 이동은 사용자가
+직접 수행한 부분도 있으며, repository history만으로 작업 주체를 임의 추정하지 않는다.

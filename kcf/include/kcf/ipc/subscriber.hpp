@@ -7,6 +7,7 @@
 #include <thread>
 #include <utility>
 #include "kcf/ipc/shared_channel.hpp"
+#include "kcf/introspection/detail/endpoint_registry.hpp"
 
 namespace kcf
 {
@@ -77,6 +78,8 @@ public:
             channel_.Close();
             return -ENOMEM;
         }
+        registration_id_ = detail::RegisterEndpoint(EndpointKind::TOPIC,
+            EndpointRole::SUBSCRIBER, name, sizeof(T), detail::DiagnosticTypeName<T>(), detail::RegisterEndpointType<T>());
         return 0;
     }
 
@@ -92,11 +95,13 @@ public:
             if (result != 0) error_.store(result);
         }
         const int result = channel_.Close();
+        detail::UnregisterEndpoint(registration_id_); registration_id_ = 0;
         return result != 0 ? result : error_.load();
     }
 
 private:
     SharedChannel<T> channel_;
+    std::uint64_t registration_id_{0};
     std::thread worker_;
     std::atomic<bool> running_{false};
     std::atomic<int> error_{0};

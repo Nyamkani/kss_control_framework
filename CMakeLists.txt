@@ -18,3 +18,15 @@ add_subdirectory(examples/integration)
 add_subdirectory(examples/supervisor)
 add_subdirectory(examples/recovery)
 add_subdirectory(bringup)
+
+add_subdirectory(examples/introspection)
+
+add_subdirectory(examples/pubsub)
+
+add_subdirectory(examples/parameter_app)
+
+add_subdirectory(examples/service_app)
+
+add_subdirectory(examples/timer_app)
+
+add_subdirectory(examples/action_app)

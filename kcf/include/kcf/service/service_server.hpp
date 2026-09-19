@@ -1,6 +1,10 @@
 #pragma once
 
 #include "kcf/service/service_protocol.hpp"
+#include "kcf/introspection/detail/endpoint_registry.hpp"
+#include "kcf/introspection/detail/service_registry.hpp"
+#include "kcf/ipc/detail/storage_identity.hpp"
+#include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <cstring>
@@ -26,19 +30,41 @@ public:
     template <typename Request, typename Response>
     int Register(std::uint16_t service_id, std::function<void(const Request&, Response&)> callback)
     {
+        return Register<Request, Response>(service_id, "", std::move(callback));
+    }
+
+    template <typename Request, typename Response>
+    int Register(std::uint16_t service_id, const std::string& service_name,
+                 std::function<void(const Request&, Response&)> callback)
+    {
         static_assert(std::is_trivially_copyable_v<Request> && std::is_trivially_copyable_v<Response>);
         static_assert(!std::is_pointer_v<Request> && !std::is_pointer_v<Response>);
         static_assert(sizeof(Request) <= SERVICE_MAX_PAYLOAD && sizeof(Response) <= SERVICE_MAX_PAYLOAD);
         if (!callback) return -EINVAL;
-        return RegisterHandler(service_id, {sizeof(Request), sizeof(Response),
-            [callback = std::move(callback)](const unsigned char* input, unsigned char* output)
-            {
-                Request request{};
-                Response response{};
-                std::memcpy(&request, input, sizeof(Request));
-                callback(request, response);
-                std::memcpy(output, &response, sizeof(Response));
-            }});
+        Handler handler{};
+        handler.request_size = sizeof(Request); handler.response_size = sizeof(Response);
+        handler.request_identity = detail::DeclaredStorageIdentity<Request>();
+        handler.response_identity = detail::DeclaredStorageIdentity<Response>();
+        handler.register_request = &detail::RegisterEndpointType<Request>;
+        handler.register_response = &detail::RegisterEndpointType<Response>;
+        handler.info.service_id = service_id;
+        handler.info.request_size = sizeof(Request); handler.info.response_size = sizeof(Response);
+        // Display metadata failures must never change registration/communication.
+        if (service_name.size() < sizeof(handler.info.name) && service_name.find('\0') == std::string::npos)
+            std::memcpy(handler.info.name, service_name.data(), service_name.size());
+        const auto copy = [](char* target, const char* source, std::size_t size) {
+            std::memcpy(target, source, std::min(std::strlen(source), size - 1));
+        };
+        copy(handler.info.diagnostic_request_type_name, detail::DiagnosticTypeName<Request>(), sizeof(handler.info.diagnostic_request_type_name));
+        copy(handler.info.diagnostic_response_type_name, detail::DiagnosticTypeName<Response>(), sizeof(handler.info.diagnostic_response_type_name));
+        handler.invoke = [callback = std::move(callback)](const unsigned char* input, unsigned char* output)
+        {
+            Request request{}; Response response{};
+            std::memcpy(&request, input, sizeof(Request));
+            callback(request, response);
+            std::memcpy(output, &response, sizeof(Response));
+        };
+        return RegisterHandler(service_id, std::move(handler));
     }
 
     int Start();
@@ -48,6 +74,10 @@ private:
     struct Handler
     {
         std::size_t request_size, response_size;
+        detail::StorageIdentity request_identity, response_identity;
+        ServiceInfo info{};
+        std::uint64_t (*register_request)() noexcept;
+        std::uint64_t (*register_response)() noexcept;
         std::function<void(const unsigned char*, unsigned char*)> invoke;
     };
     struct Cached
@@ -60,6 +90,9 @@ private:
     };
     int RegisterHandler(std::uint16_t service_id, Handler handler);
     void Run();
+    void PublishServices() noexcept;
+    void RemoveServices() noexcept;
+    std::uint16_t port_{0};
     int fd_{-1};
     std::atomic<bool> running_{false};
     std::thread worker_;

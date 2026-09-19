@@ -96,6 +96,7 @@ for mode in ('normal','crash','hang','setup-crash','safe-crash','safe-hang'):
             args += [executable,'--element-name',name]
             if mode=='setup-crash':args+=['--setup-delay-ms','2800']
         p=sp.Popen([bringup,*args],stdout=log,stderr=sp.STDOUT)
+        start_ticks=Path(f"/proc/{p.pid}/stat").read_text().rsplit(")",1)[1].split()[19]
         children=[]
         completed=False
         try:
@@ -122,14 +123,14 @@ for mode in ('normal','crash','hang','setup-crash','safe-crash','safe-hang'):
                         return bool(reaped)
                     until(exited)
                     assert os.WIFEXITED(status[0]) and os.WEXITSTATUS(status[0])==((-errno.ECONNRESET)&255),read(log)
-                sp.run([probe,'--recover-system-status'],check=True,timeout=3)
+                sp.run([probe,'--recover-system-status',str(p.pid),start_ticks],check=True,timeout=3)
             out=read(log)
             assert out.count('Shutdown loops=')==(2 if mode.startswith('safe-') else 3),out
             if mode.startswith('safe-'):assert 'Shutdown safe=' in out and 'output=0 error=0' in out,out
             if mode=='setup-crash':assert out.count('Shutdown loops=0')==3 and 'INITIALIZING -> RUNNING' not in out,out
             if mode=='normal':assert out.count('result=0 ')==3,out
             for pid in children:assert not Path(f'/proc/{pid}').exists()
-            assert not Path('/dev/shm/kcf%2Fsystem%2Fstatus%2Fstate').exists()
+            assert not Path(f'/dev/shm/kcf%2Fsystem%2Fstatus%2Fstate_{p.pid}_{start_ticks}').exists()
             completed=True
             print(f'Real Supervisor {mode}: A/B/C exit/reap PASS',flush=True)
         finally:

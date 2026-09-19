@@ -27,7 +27,9 @@ public:
     Process(const Process&) = delete;
     Process& operator=(const Process&) = delete;
 
-    int Start(const std::string& executable, const std::vector<std::string>& args = {});
+    // Empty scope preserves the inherited SystemStatus scope; Bringup supplies its own.
+    int Start(const std::string& executable, const std::vector<std::string>& args = {},
+              const std::string& system_status_scope = {});
     int RequestStop();
     int ForceStop(); // explicit controlled cleanup only
     bool IsRunning();

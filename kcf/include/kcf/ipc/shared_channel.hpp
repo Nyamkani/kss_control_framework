@@ -1,5 +1,7 @@
 #pragma once
 #include "kcf/ipc/detail/recovery.hpp"
+#include "kcf/ipc/detail/storage_access.hpp"
+#include "kcf/ipc/detail/storage_identity.hpp"
 
 #include <atomic>
 #include <cerrno>
@@ -31,29 +33,8 @@ class SharedChannel
                   "SharedChannel requires lock-free 32-bit atomics");
 
     static constexpr std::uint32_t writing = 0x80000000u;
-    struct Slot
-    {
-        std::atomic<std::uint32_t> users{0}; // writer bit or reader count
-        std::atomic<std::uint32_t> version{0};
-        std::uint32_t sequence{0}; // protected by users, belongs to this payload
-        alignas(T) unsigned char data[sizeof(T)];
-    };
-    struct Storage
-    {
-        std::uint64_t magic{0};
-        std::uint64_t size{sizeof(T)};
-        std::uint64_t alignment{alignof(T)};
-        std::uint32_t format{2};
-        std::uint32_t initialized{0}; // read/written under initialization flock
-        std::int32_t owner_pid{0};
-        std::uint32_t reserved{0};
-        std::atomic<std::uint32_t> published_index{3}; // no snapshot yet
-        std::atomic<std::uint32_t> publish_sequence{0};
-        Slot slots[3];
-        pthread_mutex_t notify_mutex;
-        pthread_cond_t notify_cond;
-        std::uint32_t notify_sequence{0}; // only under notify_mutex
-    };
+    using Slot = detail::ChannelSlot<T>;
+    using Storage = detail::ChannelStorage<T>;
 
 public:
     SharedChannel() = default;
@@ -61,12 +42,17 @@ public:
     SharedChannel(const SharedChannel&) = delete;
     SharedChannel& operator=(const SharedChannel&) = delete;
 
-    int Create(const std::string& name)
+    int Create(const std::string& name) { return CreateImpl(name, false); }
+    // No waiting on the discovery-directory flock; failure is retryable.
+    int TryCreate(const std::string& name) { return CreateImpl(name, true); }
+
+private:
+    int CreateImpl(const std::string& name, bool nonblocking)
     {
         if (fd_ >= 0 || owns_name_) return -EBUSY;
         int result = SetName(name);
         if (result != 0) return result;
-        fd_ = detail::CreateOwnedShm(name_.c_str(), magic, sizeof(T), alignof(T));
+        fd_ = detail::CreateOwnedShm(name_.c_str(), magic, sizeof(T), alignof(T), nonblocking);
         if (fd_ < 0) { const int error = fd_; fd_ = -1; return error; }
         owns_name_ = true;
         if (ftruncate(fd_, sizeof(Storage)) != 0) return FailCreate(-errno);
@@ -75,6 +61,9 @@ public:
         // Explicitly start atomic object lifetimes before exposing metadata.
         new (storage_) Storage;
         storage_->owner_pid = getpid();
+        const auto identity = detail::DeclaredStorageIdentity<T>();
+        storage_->type_id = identity.type_id;
+        storage_->layout_id = identity.layout_id;
         result = InitializeNotify();
         if (result != 0) return FailCreate(result);
         storage_->magic = magic;
@@ -84,6 +73,7 @@ public:
         return 0;
     }
 
+public:
     int Open(const std::string& name)
     {
         if (fd_ >= 0 || owns_name_) return -EBUSY;
@@ -102,7 +92,7 @@ public:
         if (count < static_cast<ssize_t>(sizeof(header)) || header.initialized == 0)
             return FailOpen(-EAGAIN);
         if (count == sizeof(header) &&
-            header.magic == magic && header.format == 2 && header.initialized == 1 &&
+            header.magic == magic && header.format == detail::STORAGE_FORMAT && header.initialized == 1 &&
             header.size == sizeof(T) && header.alignment == alignof(T) &&
             detail::OwnerDead(header.owner_pid)) return FailOpen(-EAGAIN);
         // If Open wins before the creator's flock, zero size yields EAGAIN.
@@ -116,7 +106,7 @@ public:
         if (result != 0) return FailOpen(result);
         if (storage_->owner_pid <= 0) return FailOpen(-EPROTO);
         if (storage_->initialized != 1) return FailOpen(-EAGAIN);
-        if (storage_->magic != magic || storage_->format != 2 ||
+        if (storage_->magic != magic || storage_->format != detail::STORAGE_FORMAT ||
             storage_->size != sizeof(T) || storage_->alignment != alignof(T))
             return FailOpen(-EPROTO);
         // A new generation must not attach to a dead owner's stale mapping
@@ -166,6 +156,43 @@ public:
         return -pthread_cond_broadcast(&storage_->notify_cond);
     }
 
+    // Polling-only snapshot publication. No notification mutex/condition,
+    // allocation or reader wait. At most three slot CAS attempts; EAGAIN if
+    // readers pin all usable slots. Use ReadLatestSnapshot, not Wait, to observe.
+    // Same single-publisher-thread contract as Publish. Do not mix modes.
+    int TryPublishSnapshot(const T& value)
+    {
+        if (!storage_) return -EBADF;
+        if (!publisher_) return -EPERM;
+        const auto current = storage_->published_index.load();
+        std::uint32_t target = 3;
+        for (std::uint32_t offset = 1; offset <= 3; ++offset)
+        {
+            const auto index = (current + offset) % 3;
+            if (index == current) continue;
+            std::uint32_t free = 0;
+            if (storage_->slots[index].users.compare_exchange_strong(free, writing))
+            {
+                target = index;
+                break;
+            }
+        }
+        // Never overwrite a reader's non-atomic memcpy or wait indefinitely.
+        // Caller may retry when both non-published slots are still being copied.
+        if (target == 3) return -EAGAIN;
+        Slot& slot = storage_->slots[target];
+        slot.version.fetch_add(1); // odd: write in progress
+        std::memcpy(slot.data, &value, sizeof(T));
+        const auto sequence = storage_->publish_sequence.load() + 1u;
+        slot.sequence = sequence;
+        slot.version.fetch_add(1); // even: complete
+        slot.users.store(0);
+        storage_->published_index.store(target);
+        storage_->publish_sequence.store(sequence);
+
+        return 0;
+    }
+
     int Wait(std::uint32_t& last_notify_sequence)
     {
         if (!storage_) return -EBADF;
@@ -195,32 +222,11 @@ public:
             const auto index = storage_->published_index.load();
             if (index >= 3) return -EAGAIN;
             Slot& slot = storage_->slots[index];
-            auto users = slot.users.load();
-            if (users >= writing - 1 ||
-                !slot.users.compare_exchange_weak(users, users + 1))
-            {
-                std::this_thread::yield();
-                continue;
-            }
-            // Pin excludes writer access: a version-only seqlock around plain
-            // memcpy would still be a C++ data race, even if retried afterwards.
-            const auto before = slot.version.load();
-            const auto published = storage_->publish_sequence.load();
-            if ((before & 1u) || storage_->published_index.load() != index ||
-                slot.sequence != published)
-            {
-                slot.users.fetch_sub(1);
-                continue;
-            }
-            std::memcpy(&value, slot.data, sizeof(T));
-            const auto copied_sequence = slot.sequence;
-            const auto after = slot.version.load();
-            slot.users.fetch_sub(1);
-            if (before == after && !(after & 1u))
-            {
-                sequence = copied_sequence;
-                return 0;
-            }
+            const int result = detail::CopyChannelSnapshot(storage_->published_index,
+                storage_->publish_sequence, {slot.users, slot.version, slot.sequence, slot.data},
+                index, &value, sizeof(T), sequence);
+            if (result == 0) return 0;
+            std::this_thread::yield();
         }
         return -ECANCELED;
     }

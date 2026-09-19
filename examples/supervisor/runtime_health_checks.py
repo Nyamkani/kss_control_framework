@@ -19,8 +19,9 @@ crash = str(examples / 'kcf_supervisor_crash')
 probe = str(examples / 'kcf_runtime_supervision_test')
 
 
-def no_shm():
-    assert not Path('/dev/shm/kcf%2Fsystem%2Fstatus%2Fstate').exists()
+def no_shm(scope=""):
+    suffix="_"+scope if scope else ""
+    assert not Path("/dev/shm/kcf%2Fsystem%2Fstatus%2Fstate"+suffix).exists()
 
 
 def child_sockets(pid):
@@ -32,6 +33,7 @@ class Supervisor:
         no_shm()
         self.log = tempfile.TemporaryFile(mode='w+')
         self.process = sp.Popen([bringup, *args], stdout=self.log, stderr=sp.STDOUT)
+        self.start_ticks = Path(f"/proc/{self.process.pid}/stat").read_text().rsplit(")",1)[1].split()[19]
         self.started = time.monotonic()
         self.paused = []
 
@@ -75,13 +77,13 @@ class Supervisor:
             assert self.process.returncode == expected, text
         for pid in re.findall(r'started name=\S+ pid=(\d+)', text):
             assert not Path('/proc/' + pid).exists(), text
-        no_shm()
+        no_shm(f"{self.process.pid}_{self.start_ticks}")
         self.log.close()
         return text
 
 
-def status(kind, origin, error=0):
-    out = sp.check_output([probe, '--read-system-status'], text=True)
+def status(supervisor, kind, origin, error=0):
+    out = sp.check_output([probe, '--read-system-status', str(supervisor.process.pid), supervisor.start_ticks], text=True)
     assert 'state=2' in out and f'failure_kind={kind}' in out and f'origin={origin} ' in out, out
     assert f'runtime_error={error}' in out, out
     if kind in (3, 4):
@@ -138,11 +140,11 @@ s = Supervisor([safe, '--element-name', 'safe', '--next', runtime, '--element-na
                 '--next', crash, '--element-name', 'LiDAR', '--crash-after-ms', '1100'])
 try:
     s.wait('Origin name=IMU')
-    status(4, 'IMU')
+    status(s, 4, 'IMU')
     assert Path(f'/proc/{s.pid("IMU")}').exists()
     s.wait('Enter SAFE state output=0')
     s.wait('unexpected exit name=LiDAR')
-    status(4, 'IMU')
+    status(s, 4, 'IMU')
     time.sleep(.4)
     assert s.process.poll() is None and 'stop name=IMU' not in s.text()
     assert s.text().count('Origin name=IMU') == 1 and 'ERROR -> RUNNING' not in s.text()
@@ -161,7 +163,7 @@ try:
     os.kill(pid, signal.SIGSTOP)
     s.paused.append(pid)
     s.wait('Origin name=paused')
-    status(3, 'paused')
+    status(s, 3, 'paused')
     s.wait('Enter SAFE state output=0')
     assert Path(f'/proc/{pid}').exists() and 'stop name=paused' not in s.text()
 finally:
@@ -171,7 +173,7 @@ print('SIGSTOP -> STATUS_TIMEOUT, SIGCONT only in test cleanup PASS', flush=True
 s = Supervisor([runtime, '--element-name', 'exception', '--throw-after-loops', '20', '--shutdown-delay-ms', '800'])
 try:
     s.wait('Origin name=exception')
-    status(2, 'exception', -14)  # EFAULT for the test's Loop exception
+    status(s, 2, 'exception', -14)  # EFAULT for the test's Loop exception
 finally:
     s.stop(1)
 print('Runtime ERROR response while Shutdown in progress PASS', flush=True)

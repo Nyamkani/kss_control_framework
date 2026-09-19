@@ -1,5 +1,6 @@
 #pragma once
 #include "kcf/system/system_status.hpp"
+#include "kcf/system/system_status_scope.hpp"
 #include "kcf/parameter/shared_parameter.hpp"
 #include <atomic>
 #include <thread>
@@ -14,11 +15,24 @@ namespace kcf
 class SystemStatusPublisher
 {
 public:
-    int Create(const SystemStatus& initial) { return storage_.Create(SYSTEM_STATUS_STORAGE, initial); }
+    int Create(const SystemStatus& initial) { return CreateScoped(initial,detail::InheritedSystemStatusScope()); }
+    // Supervisor instance, independent of any scope inherited from its own parent.
+    int CreateForApplication(const SystemStatus& initial) {
+        std::string scope;const int result=detail::CurrentSystemStatusScope(scope);
+        return result?result:CreateScoped(initial,scope);
+    }
+    const std::string& Scope() const { return scope_; }
     int Publish(const SystemStatus& value) { return storage_.Set(value); }
     int Close() { return storage_.Close(); }
     int Unlink() { return storage_.Unlink(); }
 private:
+    int CreateScoped(const SystemStatus& initial,const std::string& scope) {
+        std::string name;int result=detail::SystemStatusName(scope,name);
+        if(!result)result=storage_.Create(name,initial);
+        if(!result)scope_=scope;
+        return result;
+    }
+    std::string scope_;
     SharedParameter<SystemStatus> storage_;
 };
 
@@ -31,9 +45,20 @@ class SystemStatusSubscriber
 public:
     ~SystemStatusSubscriber() { Close(); }
     int Open(std::function<void(const SystemStatus&)> callback = {})
+    { return OpenScoped(detail::InheritedSystemStatusScope(),std::move(callback)); }
+    // Explicit public identity for observers outside the application's exec tree.
+    int OpenForApplication(std::int32_t pid,std::uint64_t start_ticks,
+                           std::function<void(const SystemStatus&)> callback = {}) {
+        if(pid<=0 || !start_ticks)return -EINVAL;
+        return OpenScoped(detail::SystemStatusScope(pid,start_ticks),std::move(callback));
+    }
+private:
+    int OpenScoped(const std::string& scope,std::function<void(const SystemStatus&)> callback)
     {
         if (worker_.joinable()) return -EBUSY;
-        const int opened=storage_.Open(SYSTEM_STATUS_STORAGE);
+        std::string name;const int resolved=detail::SystemStatusName(scope,name);
+        if(resolved)return resolved;
+        const int opened=storage_.Open(name);
         if (opened) return opened;
         error_=0;
         if (!callback) return 0;
@@ -67,6 +92,7 @@ public:
         { running_=false;storage_.Close();return -ENOMEM; }
         return 0;
     }
+public:
     int ReadCurrent(SystemStatus& value) { return storage_.Get(value); }
     int Close()
     {

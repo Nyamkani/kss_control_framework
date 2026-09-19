@@ -1,5 +1,7 @@
 #pragma once
 #include "kcf/ipc/detail/recovery.hpp"
+#include "kcf/ipc/detail/storage_access.hpp"
+#include "kcf/ipc/detail/storage_identity.hpp"
 
 #include <cerrno>
 #include <atomic>
@@ -27,23 +29,7 @@ class SharedParameter
     static_assert(std::is_trivially_copyable_v<T>);
     static_assert(!std::is_pointer_v<T>);
     static_assert(std::atomic<std::uint32_t>::is_always_lock_free);
-    struct Storage
-    {
-        std::uint64_t magic{0};
-        std::uint64_t payload_size{sizeof(T)};
-        std::uint64_t payload_alignment{alignof(T)};
-        std::uint32_t format{2};
-        std::uint32_t initialized{0};
-        std::int32_t owner_pid{0};
-        std::uint32_t reserved{0};
-        pthread_mutex_t mutex;
-        pthread_cond_t condition;
-        std::uint64_t version{0};
-        std::uint64_t previous_version{0};
-        std::uint32_t active_index{0}, previous_active{0};
-        std::atomic<std::uint32_t> transaction_active{0};
-        alignas(T) unsigned char value_slots[2][sizeof(T)];
-    };
+    using Storage = detail::ParameterStorage<T>;
 
 public:
     SharedParameter() = default;
@@ -64,6 +50,9 @@ public:
         if (result != 0) return FailCreate(result);
         new (storage_) Storage;
         storage_->owner_pid = getpid();
+        const auto identity = detail::DeclaredStorageIdentity<T>();
+        storage_->type_id = identity.type_id;
+        storage_->layout_id = identity.layout_id;
         result = InitializeSync();
         if (result != 0) return FailCreate(result);
         std::memcpy(storage_->value_slots[0], &initial_value, sizeof(T));
@@ -91,7 +80,7 @@ public:
         if (count < static_cast<ssize_t>(sizeof(header)) || header.initialized == 0)
             return FailOpen(-EAGAIN);
         if (count == sizeof(header) &&
-            header.magic == magic_ && header.format == 2 && header.initialized == 1 &&
+            header.magic == magic_ && header.format == detail::STORAGE_FORMAT && header.initialized == 1 &&
             header.size == sizeof(T) && header.alignment == alignof(T) &&
             detail::OwnerDead(header.owner_pid)) return FailOpen(-EAGAIN);
         // If Open wins the lock before Create, zero size returns EAGAIN.
@@ -104,7 +93,7 @@ public:
         if (result != 0) return FailOpen(result);
         if (storage_->owner_pid <= 0) return FailOpen(-EPROTO);
         if (storage_->initialized != 1) return FailOpen(-EAGAIN);
-        if (storage_->magic != magic_ || storage_->format != 2) return FailOpen(-EPROTO);
+        if (storage_->magic != magic_ || storage_->format != detail::STORAGE_FORMAT) return FailOpen(-EPROTO);
         if (storage_->payload_size != sizeof(T) || storage_->payload_alignment != alignof(T))
             return FailOpen(-EMSGSIZE);
         // A new generation must not attach to a dead owner's stale mapping
@@ -119,35 +108,13 @@ public:
     int Get(T& value, std::uint64_t* version = nullptr)
     {
         if (!storage_) return -EBADF;
-        const int result = RecoverLock(pthread_mutex_lock(&storage_->mutex));
-        if (result != 0) return -result;
-        std::memcpy(&value, storage_->value_slots[storage_->active_index], sizeof(T));
-        if (version) *version = storage_->version;
-        return -pthread_mutex_unlock(&storage_->mutex);
+        return detail::GetParameter(detail::View(*storage_), &value, version);
     }
 
     int Set(const T& value)
     {
         if (!storage_) return -EBADF;
-        int result = RecoverLock(pthread_mutex_lock(&storage_->mutex));
-        if (result != 0) return -result;
-        if (storage_->version == std::numeric_limits<std::uint64_t>::max())
-        {
-            pthread_mutex_unlock(&storage_->mutex);
-            return -EOVERFLOW;
-        }
-        storage_->previous_active = storage_->active_index;
-        storage_->previous_version = storage_->version;
-        storage_->transaction_active.store(1);
-        std::atomic_thread_fence(std::memory_order_seq_cst);
-        const auto inactive = 1u - storage_->active_index;
-        std::memcpy(storage_->value_slots[inactive], &value, sizeof(T));
-        storage_->active_index = inactive;
-        storage_->version = storage_->previous_version + 1;
-        storage_->transaction_active.store(0); // commit: all new bytes precede this store
-        result = pthread_mutex_unlock(&storage_->mutex);
-        if (result != 0) return -result;
-        return -pthread_cond_broadcast(&storage_->condition);
+        return detail::SetParameter(detail::View(*storage_), &value);
     }
 
     int Wait(T& value, std::uint64_t& last_version)
@@ -262,16 +229,7 @@ private:
     }
     int RecoverLock(int result)
     {
-        if (result != EOWNERDEAD) return result;
-        if (storage_->transaction_active.load())
-        {
-            storage_->active_index = storage_->previous_active;
-            storage_->version = storage_->previous_version;
-            storage_->transaction_active.store(0);
-        }
-        result = pthread_mutex_consistent(&storage_->mutex);
-        if (result != 0) pthread_mutex_unlock(&storage_->mutex);
-        return result;
+        return detail::RecoverParameter(detail::View(*storage_), result);
     }
     int FailOpen(int error) { Close(); return error; }
     int FailCreate(int error) { Unlink(); Close(); return error; }

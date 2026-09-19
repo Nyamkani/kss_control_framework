@@ -1,4 +1,12 @@
 add_library(kcf_core
+    src/service_registry.cpp
+    src/dynamic_service_client.cpp
+    src/dynamic_access.cpp
+    src/type_registry.cpp
+    src/supervisor_registry.cpp
+    src/endpoint_registry.cpp
+    src/introspection_client.cpp
+    src/runtime_registry.cpp
     src/process_runtime.cpp
     src/process.cpp
     src/timer.cpp

@@ -45,7 +45,7 @@ public:
         {
             if (mode=="incomplete")
             {
-                // Test-only creator prefix: leave both real format-v2 headers
+                // Test-only creator prefix: leave both real format-v3 headers
                 // initialized=0 with exclusive flock held until controller SIGKILL.
                 std::string encoded="/";
                 for(std::size_t i=1;i<topic.size();++i)
@@ -115,12 +115,14 @@ int main(int argc,char** argv)
         {"A",executable.string(),{"--element",root.string(),"A",topic},1500,1000,300},
         {"B",executable.string(),{"--element",root.string(),"B",topic},1000,300,300}};
     assert(app.Setup(specs)==0);
+    std::uint64_t ticks=0;assert(kcf::detail::ReadProcessIdentity(getpid(),ticks));
+    const auto status_path="/dev/shm/kcf%2Fsystem%2Fstatus%2Fstate_"+kcf::detail::SystemStatusScope(getpid(),ticks);
     const auto initial=app.GetElementStatuses();
     assert(initial.size()==3);
     std::thread controller([&]
     {
         kcf::SystemStatusSubscriber status;
-        assert(status.Open()==0);
+        assert(status.OpenForApplication(getpid(),ticks)==0);
         auto snapshot=[&] { kcf::SystemStatus v{}; assert(status.ReadCurrent(v)==0); return v; };
         auto state=[&](State s) { Until([&]{return snapshot().state==s;}); };
         auto ids=[&] {
@@ -130,7 +132,7 @@ int main(int argc,char** argv)
         };
         auto bpid=[&] { return static_cast<pid_t>(std::stoi(Read(root/"B.pid"))); };
         auto absent=[&](const auto& old) { for(auto pid:old)assert(!fs::exists("/proc/"+std::to_string(pid))); };
-        struct stat inode{}; assert(stat("/dev/shm/kcf%2Fsystem%2Fstatus%2Fstate",&inode)==0);
+        struct stat inode{}; assert(stat(status_path.c_str(),&inode)==0);
         const auto stable=Fds();
         app.RequestReset(); // RUNNING: no deferred restart
         std::this_thread::sleep_for(250ms);
@@ -199,7 +201,7 @@ int main(int argc,char** argv)
             absent(old);assert(ids().size()==3 && bpid()!=pid);
             assert(!snapshot().error_valid && snapshot().failure_kind==kcf::ElementFailureKind::NONE);
             assert(Fds()==stable);
-            struct stat current{};assert(stat("/dev/shm/kcf%2Fsystem%2Fstatus%2Fstate",&current)==0 && current.st_ino==inode.st_ino);
+            struct stat current{};assert(stat(status_path.c_str(),&current)==0 && current.st_ino==inode.st_ino);
             kcf::SharedChannel<pid_t> peer;assert(peer.Open(topic)==0);
             Until([&]{pid_t value=0;std::uint32_t seq=0;return peer.ReadLatestSnapshot(value,seq)==0 && value==bpid();});
             Until([&]{return Read(root/"A.observed")==std::to_string(bpid());});
@@ -222,7 +224,7 @@ int main(int argc,char** argv)
     for(const auto& e:app.GetElementStatuses())assert(!e.running);
     int status;assert(waitpid(-1,&status,WNOHANG)==-1 && errno==ECHILD);
     assert(Fds()==baseline);
-    assert(!fs::exists("/dev/shm/kcf%2Fsystem%2Fstatus%2Fstate"));
+    assert(!fs::exists(status_path));
     // Shutdown during Reset can leave a dead owner object, intentionally
     // retained for the next controlled generation. Test owns only this name.
     kcf::SharedChannel<pid_t> cleanup;assert(cleanup.Create(topic)==0);cleanup.Close();cleanup.Unlink();

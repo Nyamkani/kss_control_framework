@@ -23,3 +23,8 @@ target_link_libraries(kcf_reset_test PRIVATE kcf_core)
 add_executable(kcf_system_status_recovery_test src/system_status_recovery_test.cpp)
 target_include_directories(kcf_system_status_recovery_test PRIVATE ../recovery/include)
 target_link_libraries(kcf_system_status_recovery_test PRIVATE kcf_core)
+
+add_executable(kcf_application_scope_test src/application_scope_test.cpp ../../bringup/src/bringup.cpp)
+target_include_directories(kcf_application_scope_test PRIVATE ../../bringup/include)
+target_link_libraries(kcf_application_scope_test PRIVATE kcf_core)
+target_compile_options(kcf_application_scope_test PRIVATE -UNDEBUG)

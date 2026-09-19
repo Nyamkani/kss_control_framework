@@ -1,2 +1,6 @@
 build/
-docs/
+/build-r4-clean/
+
+/build-r2b1/
+/applications/      
+/docs/instructions

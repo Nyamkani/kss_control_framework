@@ -1,4 +1,5 @@
 #include "bringup/bringup.hpp"
+#include "kcf/introspection/detail/runtime_registry.hpp"
 #include <cerrno>
 #include <chrono>
 #include <iostream>
@@ -34,6 +35,10 @@ int Bringup::Setup(const std::string& executable)
 }
 int Bringup::Setup(std::vector<ElementSpec> elements)
 {
+    return Setup("", std::move(elements));
+}
+int Bringup::Setup(const std::string& application_name, std::vector<ElementSpec> elements)
+{
     // Setup is only for the initial lifecycle; Reset is processed by Run.
     if (application_state_ != ApplicationState::INITIALIZING ||
         setup_ || sigint_installed_ || sigterm_installed_) return -EBUSY;
@@ -64,7 +69,7 @@ int Bringup::Setup(std::vector<ElementSpec> elements)
     sigterm_installed_ = true;
     kcf::SystemStatus initial{}; // current INITIALIZING exists before child exec
     initial.sequence = 1;
-    const int created = status_publisher_.Create(initial);
+    const int created = status_publisher_.CreateForApplication(initial);
     if (created)
     {
         std::cerr << "[Supervisor] SystemStatus Create error=" << created << std::endl;
@@ -73,6 +78,16 @@ int Bringup::Setup(std::vector<ElementSpec> elements)
     }
     status_owned_ = true;
     status_sequence_ = initial.sequence;
+    // Display identity only. Failure to obtain a fallback never affects Setup.
+    try
+    {
+        const auto name = application_name.empty() ? kcf::detail::CurrentExecutableBasename() : application_name;
+        std::memset(application_name_, 0, sizeof(application_name_));
+        std::memcpy(application_name_, name.data(), std::min(name.size(), sizeof(application_name_) - 1));
+    }
+    catch (...) {}
+    introspection_.Begin();
+    PublishIntrospection();
     int result = StartGeneration();
     if (!result) result = AwaitRunning();
     if (result || stop_requested)
@@ -91,7 +106,7 @@ int Bringup::StartGeneration()
     {
         if (stop_requested) return -ECANCELED;
         int result;
-        try { result = entry->process.Start(entry->spec.executable, entry->spec.arguments); }
+        try { result = entry->process.Start(entry->spec.executable, entry->spec.arguments, status_publisher_.Scope()); }
         catch (...) { result = -ENOMEM; }
         if (result)
         {
@@ -102,6 +117,9 @@ int Bringup::StartGeneration()
         entry->started = entry->process_alive = true;
         entry->started_at = entry->last_response_time = entry->last_heartbeat_change_time = Clock::now();
         entry->pid = entry->process.GetPid();
+        // An unavailable generation only limits metadata; child ownership is unchanged.
+        try { (void)kcf::detail::ReadProcessIdentity(entry->pid, entry->process_start_ticks); }
+        catch (...) { entry->process_start_ticks = 0; }
         std::cout << "[Bringup] started name=" << entry->spec.name << " pid=" << entry->pid << std::endl;
         PublishSystemStatus();
     }
@@ -168,6 +186,7 @@ void Bringup::ResetGeneration()
         for (auto& entry : elements_)
         {
             entry->pid = -1;
+            entry->process_start_ticks = 0;
             entry->failure_detected = false;
             entry->exit_info = {};
             entry->failure_kind = kcf::ElementFailureKind::NONE;
@@ -176,6 +195,7 @@ void Bringup::ResetGeneration()
             entry->last_runtime_status = {};
             entry->started_at = entry->last_response_time = entry->last_heartbeat_change_time = {};
         }
+        PublishIntrospection();
         request_id_ = 0;
         result = StartGeneration();
         if (!result) result = AwaitRunning();
@@ -202,8 +222,27 @@ void Bringup::SetApplicationState(ApplicationState state)
     application_state_ = state;
     PublishSystemStatus();
 }
+void Bringup::PublishIntrospection() noexcept
+{
+    kcf::SupervisorInfo snapshot{};
+    std::memcpy(snapshot.application_name, application_name_, sizeof(application_name_));
+    snapshot.application_state = application_state_;
+    snapshot.element_count = static_cast<std::uint32_t>(std::min(elements_.size(), kcf::MAX_SUPERVISOR_ELEMENTS));
+    for (std::size_t i = 0; i < snapshot.element_count; ++i)
+    {
+        const auto& entry = *elements_[i];
+        auto& child = snapshot.elements[i];
+        std::memcpy(child.name, entry.spec.name.data(), std::min(entry.spec.name.size(), sizeof(child.name) - 1));
+        std::memcpy(child.executable, entry.spec.executable.data(), std::min(entry.spec.executable.size(), sizeof(child.executable) - 1));
+        child.pid = entry.pid;
+        child.process_start_ticks = entry.process_start_ticks;
+        child.process_alive = entry.process_alive ? 1 : 0;
+    }
+    introspection_.Update(snapshot);
+}
 void Bringup::PublishSystemStatus()
 {
+    PublishIntrospection();
     if (!status_owned_) return;
     int result = -EOVERFLOW;
     if (status_sequence_ != std::numeric_limits<std::uint64_t>::max())
@@ -399,6 +438,7 @@ int Bringup::StopGeneration()
                           << " error=" << result << std::endl;
             }
         }
+        PublishIntrospection();
         if (!remaining) return failure;
         PublishSystemStatus();
         std::this_thread::sleep_until(cycle + std::chrono::milliseconds(100));
@@ -408,6 +448,8 @@ void Bringup::Shutdown()
 {
     SetApplicationState(ApplicationState::SHUTTING_DOWN);
     if (StopGeneration()) exit_code_ = 1;
+    PublishIntrospection();
+    introspection_.End();
     if (status_owned_)
     {
         const int closed = status_publisher_.Close();

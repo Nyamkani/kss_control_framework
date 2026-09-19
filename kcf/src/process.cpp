@@ -1,4 +1,5 @@
 #include "kcf/process/process.hpp"
+#include "kcf/system/system_status_scope.hpp"
 
 #include <cerrno>
 #include <fcntl.h>
@@ -13,7 +14,8 @@ extern char** environ;
 namespace kcf
 {
 
-int Process::Start(const std::string& executable, const std::vector<std::string>& args)
+int Process::Start(const std::string& executable, const std::vector<std::string>& args,
+                   const std::string& system_status_scope)
 {
     if (pid_ > 0)
     {
@@ -21,6 +23,9 @@ int Process::Start(const std::string& executable, const std::vector<std::string>
         if (result <= 0) return result == 0 ? -EBUSY : result;
     }
     if (executable.empty() || executable.find('\0') != std::string::npos) return -EINVAL;
+    std::string status_name;
+    const int scope_result=detail::SystemStatusName(system_status_scope,status_name);
+    if(scope_result)return scope_result;
     // Prepare argv before fork; the child only uses async-signal-safe syscalls.
     std::vector<char*> argv;
     argv.reserve(args.size() + 2);
@@ -32,10 +37,13 @@ int Process::Start(const std::string& executable, const std::vector<std::string>
     }
     argv.push_back(nullptr);
     // Environment storage is prepared before fork. Preserve user variables and
-    // replace only the framework's internal FD entry.
+    // replace the internal FD entry and any explicitly supplied SystemStatus scope.
     std::vector<std::string> environment;
     for (char** entry = environ; *entry; ++entry)
-        if (std::strncmp(*entry, "KCF_SUPERVISION_FD=", 19) != 0) environment.emplace_back(*entry);
+        if (std::strncmp(*entry, "KCF_SUPERVISION_FD=", 19) != 0 &&
+            (system_status_scope.empty() || std::strncmp(*entry,"KCF_SYSTEM_STATUS_SCOPE=",sizeof("KCF_SYSTEM_STATUS_SCOPE=")-1)!=0))
+            environment.emplace_back(*entry);
+    if(!system_status_scope.empty())environment.emplace_back(std::string(detail::SYSTEM_STATUS_SCOPE_ENV)+"="+system_status_scope);
     int sockets[2];
     if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC | SOCK_NONBLOCK, 0, sockets) != 0) return -errno;
     try { environment.emplace_back(std::string(SUPERVISION_FD_ENV) + "=" + std::to_string(sockets[1])); }

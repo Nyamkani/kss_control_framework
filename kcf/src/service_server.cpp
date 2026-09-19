@@ -28,6 +28,7 @@ int ServiceServer::Create(std::uint16_t port)
         return -error;
     }
     fd_ = socket_fd;
+    port_ = port;
     handlers_.clear();
     for (auto& entry : cache_) entry.valid = false;
     next_cache_ = 0;
@@ -57,6 +58,7 @@ int ServiceServer::Start()
         return -error.code().value();
     }
     catch (const std::bad_alloc&) { running_.store(false); return -ENOMEM; }
+    PublishServices();
     return 0;
 }
 
@@ -68,7 +70,9 @@ void ServiceServer::Stop()
         if (worker_.get_id() == std::this_thread::get_id()) return;
         worker_.join();
     }
+    RemoveServices();
     if (fd_ >= 0) { close(fd_); fd_ = -1; }
+    port_ = 0;
 }
 
 void ServiceServer::Run()
@@ -130,7 +134,11 @@ void ServiceServer::Run()
         }
         if (duplicate)
         {
-            if (duplicate->request.header.payload_size == request.header.payload_size &&
+            if (duplicate->request.header.request_type_id == request.header.request_type_id &&
+                duplicate->request.header.response_type_id == request.header.response_type_id &&
+                duplicate->request.header.request_layout_id == request.header.request_layout_id &&
+                duplicate->request.header.response_layout_id == request.header.response_layout_id &&
+                duplicate->request.header.payload_size == request.header.payload_size &&
                 std::memcmp(duplicate->request.payload.data(), request.payload.data(), request.header.payload_size) == 0)
                 send_response(duplicate->response);
             else
@@ -145,6 +153,11 @@ void ServiceServer::Run()
         if (handler == handlers_.end()) response.header.framework_status = -ENOENT;
         else if (handler->second.request_size != request.header.payload_size)
             response.header.framework_status = -EMSGSIZE;
+        else if (handler->second.request_identity.type_id != request.header.request_type_id ||
+                 handler->second.response_identity.type_id != request.header.response_type_id ||
+                 handler->second.request_identity.layout_id != request.header.request_layout_id ||
+                 handler->second.response_identity.layout_id != request.header.response_layout_id)
+            response.header.framework_status = -EPROTOTYPE;
         else
         {
             try
@@ -153,6 +166,12 @@ void ServiceServer::Run()
                 response.header.payload_size = static_cast<std::uint32_t>(handler->second.response_size);
             }
             catch (...) { response.header.framework_status = -EFAULT; }
+        }
+        if (handler != handlers_.end()) {
+            response.header.request_type_id = handler->second.request_identity.type_id;
+            response.header.response_type_id = handler->second.response_identity.type_id;
+            response.header.request_layout_id = handler->second.request_identity.layout_id;
+            response.header.response_layout_id = handler->second.response_identity.layout_id;
         }
         auto& entry = cache_[next_cache_];
         entry.request = request;
@@ -166,3 +185,27 @@ void ServiceServer::Run()
     running_.store(false);
 }
 } // namespace kcf
+
+namespace kcf {
+void ServiceServer::PublishServices() noexcept {
+    try {
+        for (auto& item : handlers_) {
+            auto& h=item.second;h.info.port=port_;
+            if (!h.info.name[0]) {
+                const auto name="service@"+std::to_string(port_)+":"+std::to_string(item.first);
+                std::memcpy(h.info.name,name.data(),name.size());
+            }
+            const auto request=h.register_request();const auto response=h.register_response();
+            h.info.request_type_id=request==h.request_identity.type_id?request:0;
+            h.info.response_type_id=response==h.response_identity.type_id?response:0;
+            h.info.registration_id=detail::RegisterService(h.info);
+        }
+    } catch (...) {}
+}
+void ServiceServer::RemoveServices() noexcept {
+    for (auto& item : handlers_) {
+        detail::UnregisterService(item.second.info.registration_id);
+        item.second.info.registration_id=0;
+    }
+}
+}

@@ -33,16 +33,18 @@ static kcf::RuntimeStatusResponse Query(kcf::Process& process,std::uint64_t id)
 }
 int main(int argc,char**argv)
 {
-    if(argc==2 && std::string(argv[1])=="--recover-system-status")
+    if((argc==2 || argc==4) && std::string(argv[1])=="--recover-system-status")
     {
+        if(argc==4){const auto scope=kcf::detail::SystemStatusScope(std::stoi(argv[2]),std::stoull(argv[3]));
+            assert(!scope.empty());assert(setenv(kcf::detail::SYSTEM_STATUS_SCOPE_ENV,scope.c_str(),1)==0);}
         kcf::SystemStatusPublisher owner;
         assert(owner.Create(kcf::SystemStatus{})==0);
         assert(owner.Close()==0);assert(owner.Unlink()==0);return 0;
     }
-    if(argc==2 && std::string(argv[1])=="--read-system-status")
+    if((argc==2 || argc==4) && std::string(argv[1])=="--read-system-status")
     {
         kcf::SystemStatusSubscriber peer;
-        assert(peer.Open()==0);
+        assert((argc==4?peer.OpenForApplication(std::stoi(argv[2]),std::stoull(argv[3])):peer.Open())==0);
         kcf::SystemStatus status{};
         assert(peer.ReadCurrent(status)==0);
         std::cout<<"state="<<int(status.state)<<" failure_kind="<<int(status.failure_kind)

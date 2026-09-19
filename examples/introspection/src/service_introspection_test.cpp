@@ -145,12 +145,14 @@ void Lifecycle(int mode){int commands[2],replies[2];assert(pipe(commands)==0&&pi
         Check(runtime);assert(kill(observer,SIGKILL)==0);Reap(observer,SIGKILL);Check(runtime);
         Send(commands[1],1);assert(Receive(replies[0])==1);assert(c.ListServices(runtime,entries)==0&&entries.empty());
         Send(commands[1],2);assert(Receive(replies[0])==2);Check(runtime);assert(c.ListServices(runtime,entries)==0&&entries.front().registration_id>info.registration_id);
-        using Storage=detail::ChannelStorage<detail::ServiceRegistrySnapshot>;
+        using Payload=detail::ServiceRegistrySnapshot;
+        using Slot=detail::ChannelSlot<Payload>;
+        detail::ChannelLayout layout;assert(detail::ComputeChannelLayout(sizeof(Payload),alignof(Payload),1,layout));
         auto name=detail::ServiceRegistryName(runtime.pid,runtime.process_start_ticks);int fd=shm_open(name.c_str(),O_RDWR,0);assert(fd>=0);
-        auto* mapped=static_cast<Storage*>(mmap(nullptr,sizeof(Storage),PROT_READ|PROT_WRITE,MAP_SHARED,fd,0));assert(mapped!=MAP_FAILED);
-        for(auto& slot:mapped->slots)slot.users.store(1);
+        auto* mapped=static_cast<unsigned char*>(mmap(nullptr,layout.length,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0));assert(mapped!=MAP_FAILED);
+        for(unsigned i=0;i<3;++i)reinterpret_cast<Slot*>(mapped+layout.slots+i*layout.stride)->users.store(1);
         Send(commands[1],1);assert(Receive(replies[0])==1);assert(c.ListServices(runtime,entries)==-ENOENT);
-        assert(munmap(mapped,sizeof(Storage))==0);close(fd);
+        assert(munmap(mapped,layout.length)==0);close(fd);
         Send(commands[1],2);assert(Receive(replies[0])==2);Check(runtime);
     }
     assert(kill(child,mode==2?SIGKILL:SIGTERM)==0);Reap(child,mode==2?SIGKILL:0);assert(c.ListServices(runtime,entries)==-ENOENT);

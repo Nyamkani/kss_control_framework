@@ -1,5 +1,8 @@
 # KCF Framework v5.0 Development Status
 
+> Historical v5.0 checkpoint 기록입니다. 아래의 현재/이번 표기는 당시 기준입니다.
+> Topic Queue와 현재 버전은 [v5.1 상태](V5_1_STATUS.md)를 참조하세요.
+
 
 문서 기준일: 2026-09-16.
 

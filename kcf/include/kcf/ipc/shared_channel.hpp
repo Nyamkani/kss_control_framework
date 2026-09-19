@@ -2,6 +2,8 @@
 #include "kcf/ipc/detail/recovery.hpp"
 #include "kcf/ipc/detail/storage_access.hpp"
 #include "kcf/ipc/detail/storage_identity.hpp"
+#include "kcf/ipc/topic_read_info.hpp"
+#include <limits>
 
 #include <atomic>
 #include <cerrno>
@@ -21,7 +23,9 @@
 namespace kcf
 {
 
-// Linux/POSIX, one publishing thread and one reader per local channel object.
+// Linux/POSIX, one publishing thread. Serialize ReadNext calls per local object.
+// Snapshot reads use no cursor and may overlap sequential reads. Finish all
+// local operations before Close. No automatic reconnect to a replacement SHM.
 // All processes must use the same T/layout/ABI. T must contain no pointers or
 // heap ownership; trivially_copyable alone cannot inspect aggregate members.
 template <typename T>
@@ -34,7 +38,7 @@ class SharedChannel
 
     static constexpr std::uint32_t writing = 0x80000000u;
     using Slot = detail::ChannelSlot<T>;
-    using Storage = detail::ChannelStorage<T>;
+    using Storage = detail::ChannelHeader;
 
 public:
     SharedChannel() = default;
@@ -42,24 +46,28 @@ public:
     SharedChannel(const SharedChannel&) = delete;
     SharedChannel& operator=(const SharedChannel&) = delete;
 
-    int Create(const std::string& name) { return CreateImpl(name, false); }
+    int Create(const std::string& name, std::uint32_t depth = 1) { return CreateImpl(name, depth, false); }
     // No waiting on the discovery-directory flock; failure is retryable.
-    int TryCreate(const std::string& name) { return CreateImpl(name, true); }
+    int TryCreate(const std::string& name, std::uint32_t depth = 1) { return CreateImpl(name, depth, true); }
 
 private:
-    int CreateImpl(const std::string& name, bool nonblocking)
+    int CreateImpl(const std::string& name, std::uint32_t depth, bool nonblocking)
     {
         if (fd_ >= 0 || owns_name_) return -EBUSY;
+        if (!detail::ComputeChannelLayout(sizeof(T), alignof(T), depth, layout_) ||
+            layout_.length > static_cast<std::uint64_t>(std::numeric_limits<off_t>::max())) return -EINVAL;
         int result = SetName(name);
         if (result != 0) return result;
-        fd_ = detail::CreateOwnedShm(name_.c_str(), magic, sizeof(T), alignof(T), nonblocking);
+        fd_ = detail::CreateOwnedShm(name_.c_str(), magic, sizeof(T), alignof(T), nonblocking, detail::TOPIC_STORAGE_FORMAT);
         if (fd_ < 0) { const int error = fd_; fd_ = -1; return error; }
         owns_name_ = true;
-        if (ftruncate(fd_, sizeof(Storage)) != 0) return FailCreate(-errno);
+        if (ftruncate(fd_, layout_.length) != 0) return FailCreate(-errno);
         result = Map();
         if (result != 0) return FailCreate(result);
         // Explicitly start atomic object lifetimes before exposing metadata.
         new (storage_) Storage;
+        storage_->size = sizeof(T); storage_->alignment = alignof(T); storage_->depth = depth;
+        for (std::size_t i=0; i<static_cast<std::size_t>(depth)*3; ++i) new (&SlotAt(i)) Slot;
         storage_->owner_pid = getpid();
         const auto identity = detail::DeclaredStorageIdentity<T>();
         storage_->type_id = identity.type_id;
@@ -74,7 +82,7 @@ private:
     }
 
 public:
-    int Open(const std::string& name)
+    int Open(const std::string& name, TopicStartPosition start = TopicStartPosition::NEXT)
     {
         if (fd_ >= 0 || owns_name_) return -EBUSY;
         int result = SetName(name);
@@ -92,7 +100,7 @@ public:
         if (count < static_cast<ssize_t>(sizeof(header)) || header.initialized == 0)
             return FailOpen(-EAGAIN);
         if (count == sizeof(header) &&
-            header.magic == magic && header.format == detail::STORAGE_FORMAT && header.initialized == 1 &&
+            header.magic == magic && header.format == detail::TOPIC_STORAGE_FORMAT && header.initialized == 1 &&
             header.size == sizeof(T) && header.alignment == alignof(T) &&
             detail::OwnerDead(header.owner_pid)) return FailOpen(-EAGAIN);
         // If Open wins before the creator's flock, zero size yields EAGAIN.
@@ -101,12 +109,16 @@ public:
         struct stat info {};
         if (fstat(fd_, &info) != 0) return FailOpen(-errno);
         if (info.st_size == 0) return FailOpen(-EAGAIN);
-        if (info.st_size != static_cast<off_t>(sizeof(Storage))) return FailOpen(-EPROTO);
+        std::uint32_t depth=0;
+        if (pread(fd_, &depth, sizeof(depth), offsetof(Storage,depth)) != sizeof(depth)) return FailOpen(-EPROTO);
+        if (!detail::ComputeChannelLayout(sizeof(T), alignof(T), depth, layout_) ||
+            info.st_size < 0 || static_cast<std::uint64_t>(info.st_size) != layout_.length) return FailOpen(-EPROTO);
         result = Map();
         if (result != 0) return FailOpen(result);
+        if (storage_->depth != depth) return FailOpen(-EPROTO);
         if (storage_->owner_pid <= 0) return FailOpen(-EPROTO);
         if (storage_->initialized != 1) return FailOpen(-EAGAIN);
-        if (storage_->magic != magic || storage_->format != detail::STORAGE_FORMAT ||
+        if (storage_->magic != magic || storage_->format != detail::TOPIC_STORAGE_FORMAT ||
             storage_->size != sizeof(T) || storage_->alignment != alignof(T))
             return FailOpen(-EPROTO);
         // A new generation must not attach to a dead owner's stale mapping
@@ -114,121 +126,111 @@ public:
         // retain their mappings; this is not hot reconnect or payload health.
         if (detail::OwnerDead(storage_->owner_pid)) return FailOpen(-EAGAIN);
         if (flock(fd_, LOCK_UN) != 0) return FailOpen(-errno);
+        const auto latest=storage_->publish_sequence.load();
+        // Store the last consumed sequence, avoiding UINT64_MAX + 1 overflow.
+        cursor_ = start == TopicStartPosition::NEXT ? latest : (latest > depth ? latest-depth : 0);
         return 0;
     }
 
-    int Publish(const T& value)
+    int Publish(const T& value) { return PublishImpl(value, true); }
+
+    // Polling-only publication: no notify lock, allocation, or reader wait.
+    // Do not mix this mode with Wait-based observation on the same channel.
+    int TryPublishSnapshot(const T& value) { return PublishImpl(value, false); }
+
+private:
+    int PublishImpl(const T& value, bool notify)
     {
         if (!storage_) return -EBADF;
         if (!publisher_) return -EPERM;
-        const auto current = storage_->published_index.load();
-        std::uint32_t target = 3;
-        for (std::uint32_t offset = 1; offset <= 3; ++offset)
-        {
-            const auto index = (current + offset) % 3;
-            if (index == current) continue;
-            std::uint32_t free = 0;
-            if (storage_->slots[index].users.compare_exchange_strong(free, writing))
-            {
-                target = index;
-                break;
-            }
+        // Acquire/recover notification BEFORE mutation. A poisoned mutex must
+        // not turn a failed Publish into a committed message.
+        if (notify) {
+            const int error=RecoverLock(pthread_mutex_lock(&storage_->notify_mutex));
+            if (error) return -error;
         }
-        // Never overwrite a reader's non-atomic memcpy or wait indefinitely.
-        // Caller may retry when both non-published slots are still being copied.
-        if (target == 3) return -EAGAIN;
-        Slot& slot = storage_->slots[target];
-        slot.version.fetch_add(1); // odd: write in progress
-        std::memcpy(slot.data, &value, sizeof(T));
-        const auto sequence = storage_->publish_sequence.load() + 1u;
-        slot.sequence = sequence;
-        slot.version.fetch_add(1); // even: complete
-        slot.users.store(0);
-        storage_->published_index.store(target);
-        storage_->publish_sequence.store(sequence);
-
-        // Payload is complete before entering notification's critical section.
-        int result = RecoverLock(pthread_mutex_lock(&storage_->notify_mutex));
-        if (result != 0) return -result;
-        storage_->notify_sequence = sequence;
-        result = pthread_mutex_unlock(&storage_->notify_mutex);
-        if (result != 0) return -result;
-        return -pthread_cond_broadcast(&storage_->notify_cond);
-    }
-
-    // Polling-only snapshot publication. No notification mutex/condition,
-    // allocation or reader wait. At most three slot CAS attempts; EAGAIN if
-    // readers pin all usable slots. Use ReadLatestSnapshot, not Wait, to observe.
-    // Same single-publisher-thread contract as Publish. Do not mix modes.
-    int TryPublishSnapshot(const T& value)
-    {
-        if (!storage_) return -EBADF;
-        if (!publisher_) return -EPERM;
-        const auto current = storage_->published_index.load();
-        std::uint32_t target = 3;
-        for (std::uint32_t offset = 1; offset <= 3; ++offset)
-        {
-            const auto index = (current + offset) % 3;
-            if (index == current) continue;
-            std::uint32_t free = 0;
-            if (storage_->slots[index].users.compare_exchange_strong(free, writing))
-            {
-                target = index;
-                break;
-            }
+        const auto unlock=[&] { if (notify) pthread_mutex_unlock(&storage_->notify_mutex); };
+        const auto previous=storage_->publish_sequence.load();
+        if (previous==std::numeric_limits<std::uint64_t>::max()) { unlock(); return -EOVERFLOW; }
+        const auto sequence=previous+1;
+        const auto base=static_cast<std::size_t>((sequence-1)%storage_->depth)*3;
+        const auto retained=sequence>storage_->depth ? sequence-storage_->depth : 0;
+        Slot* target=nullptr;
+        for (unsigned i=0; i<3; ++i) {
+            Slot& slot=SlotAt(base+i);
+            std::uint32_t free=0;
+            if (!slot.users.compare_exchange_strong(free,writing)) continue;
+            if (retained && slot.sequence==retained) { slot.users.store(0); continue; }
+            target=&slot; break;
         }
-        // Never overwrite a reader's non-atomic memcpy or wait indefinitely.
-        // Caller may retry when both non-published slots are still being copied.
-        if (target == 3) return -EAGAIN;
-        Slot& slot = storage_->slots[target];
-        slot.version.fetch_add(1); // odd: write in progress
-        std::memcpy(slot.data, &value, sizeof(T));
-        const auto sequence = storage_->publish_sequence.load() + 1u;
-        slot.sequence = sequence;
-        slot.version.fetch_add(1); // even: complete
-        slot.users.store(0);
-        storage_->published_index.store(target);
-        storage_->publish_sequence.store(sequence);
-
+        if (!target) { unlock(); return -EAGAIN; }
+        // Waking under the mutex is safe: waiters cannot test the predicate
+        // until commit and unlock. Check all fallible notification work first.
+        if (notify) {
+            const int error=pthread_cond_broadcast(&storage_->notify_cond);
+            if (error) { target->users.store(0); unlock(); return -error; }
+        }
+        target->version.fetch_add(1);
+        std::memcpy(target->data,&value,sizeof(T));
+        target->sequence=sequence;
+        target->version.fetch_add(1);
+        target->users.store(0);
+        storage_->publish_sequence.store(sequence); // single commit point
+        if (notify) storage_->notify_sequence=sequence;
+        // Mutex is valid and owned here. No post-commit failure return: callers
+        // must never retry a payload that was already accepted.
+        unlock();
         return 0;
     }
 
-    int Wait(std::uint32_t& last_notify_sequence)
-    {
-        if (!storage_) return -EBADF;
-        int result = RecoverLock(pthread_mutex_lock(&storage_->notify_mutex));
-        if (result != 0) return -result;
-        while (!stopped_.load() && storage_->notify_sequence == last_notify_sequence)
-        {
-            const auto deadline = detail::RecoveryDeadline();
-            result = pthread_cond_timedwait(&storage_->notify_cond, &storage_->notify_mutex, &deadline);
-            if (result == ETIMEDOUT) result = 0;
-            if (result == EOWNERDEAD) result = RecoverLock(result);
-            else if (result != 0 && result != ENOTRECOVERABLE)
-                pthread_mutex_unlock(&storage_->notify_mutex);
-            if (result != 0) return -result;
-        }
-        const bool stopped = stopped_.load();
-        last_notify_sequence = storage_->notify_sequence;
-        result = pthread_mutex_unlock(&storage_->notify_mutex);
-        return stopped ? -ECANCELED : -result;
-    }
+public:
+    int Wait(std::uint64_t& last) { return WaitImpl(last); }
+    // Legacy notification API exposes the low 32 bits only.
+    int Wait(std::uint32_t& last) { return WaitImpl(last); }
+    std::uint32_t GetDepth() const { return storage_ ? storage_->depth : 0; }
 
-    int ReadLatestSnapshot(T& value, std::uint32_t& sequence)
+    int ReadLatest(T& value, TopicReadInfo& info)
     {
         if (!storage_) return -EBADF;
-        while (!stopped_.load())
-        {
-            const auto index = storage_->published_index.load();
-            if (index >= 3) return -EAGAIN;
-            Slot& slot = storage_->slots[index];
-            const int result = detail::CopyChannelSnapshot(storage_->published_index,
-                storage_->publish_sequence, {slot.users, slot.version, slot.sequence, slot.data},
-                index, &value, sizeof(T), sequence);
-            if (result == 0) return 0;
+        if (stopped_.load()) return -ECANCELED;
+        const auto sequence=storage_->publish_sequence.load();
+        if (!sequence) return -EAGAIN;
+        const int result=ReadSequence(value,sequence);
+        if (!result) info={sequence,0};
+        return result;
+    }
+    // Cursor changes only after a successful copy. ReadLatest is independent.
+    int ReadNext(T& value, TopicReadInfo& info)
+    {
+        if (!storage_) return -EBADF;
+        if (stopped_.load()) return -ECANCELED;
+        const auto latest=storage_->publish_sequence.load();
+        if (cursor_>=latest) return -EAGAIN;
+        const auto oldest=latest>=storage_->depth ? latest-storage_->depth+1 : 1;
+        const auto expected=cursor_+1;
+        const auto wanted=expected<oldest ? oldest : expected;
+        const int result=ReadSequence(value,wanted);
+        if (!result) { info={wanted,wanted-expected}; cursor_=wanted; }
+        return result;
+    }
+    int ReadLatestSnapshot(T& value, std::uint64_t& sequence)
+    {
+        if (!storage_) return -EBADF;
+        while (!stopped_.load()) {
+            TopicReadInfo info;
+            const int result=ReadLatest(value,info);
+            if (!result) { sequence=info.sequence; return 0; }
+            if (result!=-EAGAIN || storage_->publish_sequence.load()==0) return result;
             std::this_thread::yield();
         }
         return -ECANCELED;
+    }
+    int ReadLatestSnapshot(T& value, std::uint32_t& sequence)
+    {
+        std::uint64_t wide=0;
+        const int result=ReadLatestSnapshot(value,wide);
+        if (!result) sequence=static_cast<std::uint32_t>(wide);
+        return result;
     }
 
     int StopWait()
@@ -248,7 +250,7 @@ public:
         int result = 0;
         if (storage_)
         {
-            if (munmap(storage_, sizeof(Storage)) != 0) result = -errno;
+            if (munmap(storage_, layout_.length) != 0) result = -errno;
             storage_ = nullptr;
         }
         if (fd_ >= 0)
@@ -257,6 +259,7 @@ public:
             fd_ = -1;
         }
         publisher_ = false;
+        cursor_ = 0;
         stopped_.store(false);
         return result;
     }
@@ -272,6 +275,22 @@ public:
     }
 
 private:
+    Slot& SlotAt(std::size_t index) const
+    {
+        return *reinterpret_cast<Slot*>(reinterpret_cast<unsigned char*>(storage_)+layout_.slots+index*layout_.stride);
+    }
+    int ReadSequence(T& value, std::uint64_t sequence)
+    {
+        const auto base=static_cast<std::size_t>((sequence-1)%storage_->depth)*3;
+        alignas(T) unsigned char copy[sizeof(T)];
+        for (unsigned i=0; i<3; ++i) {
+            Slot& slot=SlotAt(base+i);
+            const int result=detail::CopyChannelSequence(storage_->publish_sequence,storage_->depth,
+                {slot.users,slot.version,slot.sequence,slot.data},sequence,copy,sizeof(T));
+            if (!result) { std::memcpy(&value,copy,sizeof(T)); return 0; }
+        }
+        return -EAGAIN;
+    }
     int SetName(const std::string& name)
     {
         if (name.size() < 2 || name[0] != '/' || name.size() > 240 ||
@@ -290,8 +309,8 @@ private:
     int Map()
     {
         const long page = sysconf(_SC_PAGESIZE);
-        if (page <= 0 || alignof(Storage) > static_cast<std::size_t>(page)) return -EINVAL;
-        void* address = mmap(nullptr, sizeof(Storage), PROT_READ | PROT_WRITE, MAP_SHARED, fd_, 0);
+        if (page <= 0 || alignof(T) > static_cast<std::size_t>(page) || alignof(Storage) > static_cast<std::size_t>(page)) return -EINVAL;
+        void* address = mmap(nullptr, layout_.length, PROT_READ | PROT_WRITE, MAP_SHARED, fd_, 0);
         if (address == MAP_FAILED) return -errno;
         storage_ = static_cast<Storage*>(address);
         return 0;
@@ -320,6 +339,28 @@ private:
         return -result;
     }
 
+    template<class Sequence>
+    int WaitImpl(Sequence& last_notify_sequence)
+    {
+        if (!storage_) return -EBADF;
+        int result = RecoverLock(pthread_mutex_lock(&storage_->notify_mutex));
+        if (result != 0) return -result;
+        while (!stopped_.load() && static_cast<Sequence>(storage_->notify_sequence) == last_notify_sequence)
+        {
+            const auto deadline = detail::RecoveryDeadline();
+            result = pthread_cond_timedwait(&storage_->notify_cond, &storage_->notify_mutex, &deadline);
+            if (result == ETIMEDOUT) result = 0;
+            if (result == EOWNERDEAD) result = RecoverLock(result);
+            else if (result != 0 && result != ENOTRECOVERABLE)
+                pthread_mutex_unlock(&storage_->notify_mutex);
+            if (result != 0) return -result;
+        }
+        const bool stopped = stopped_.load();
+        last_notify_sequence = static_cast<Sequence>(storage_->notify_sequence);
+        result = pthread_mutex_unlock(&storage_->notify_mutex);
+        return stopped ? -ECANCELED : -result;
+    }
+
     int RecoverLock(int result)
     {
         if (result != EOWNERDEAD) return result;
@@ -333,6 +374,8 @@ private:
     static constexpr std::uint64_t magic = 0x4b4346545249504cULL;
     int fd_{-1};
     Storage* storage_{nullptr};
+    detail::ChannelLayout layout_{};
+    std::uint64_t cursor_{0};
     std::string name_;
     bool owns_name_{false};
     bool publisher_{false};

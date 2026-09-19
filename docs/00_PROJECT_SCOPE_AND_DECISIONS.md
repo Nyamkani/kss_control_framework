@@ -1,6 +1,7 @@
 # 00. Project Scope and Decisions
 
-문서 기준: 2026-09-16, KCF Framework `feature/introspection` v5.0 checkpoint.
+현재 안내 기준: KCF Framework v5.1, `dev`. 아래 요구·출처 기록은 2026-09-16 v5.0 checkpoint에서 시작되었으며
+현재 버전의 GitHub 상태는 [v5.1 상태](V5_1_STATUS.md)에 정리합니다.
 현재 repository code가 구현 상태의 source of truth입니다. 이 문서는 기능 변경이나 release 선언이 아닙니다.
 
 ## 근거와 표기
@@ -58,14 +59,16 @@ Core 전체의 line별 작성자를 이 문서만으로 판정하지 않습니�
 
 | 기록 | 현재 해석 |
 | --- | --- |
-| [Readme.md](../Readme.md)의 v4.3, discovery 제외 설명 | 과거 baseline 기록. 현재 R1–R5 API가 존재하므로 현재 범위 설명으로 사용하지 않음 |
+| 통합 전 README의 v4.3, discovery 제외 설명 | 과거 baseline 기록. 원문은 Git history, 보존 이력은 [Changelog](../Changelog.md)와 [검증 문서](06_VERIFICATION_AND_LIMITATIONS.md). 현재 R1–R5 API 지원 |
 | [R1 README](../examples/introspection/README.md)의 R2 이후 Deferred | R1 단계의 미래 계획. 현재 R4는 Topic/Parameter dynamic access, R5는 Service dynamic call |
 | R1 README의 `R2B1.md` 링크 | [R2B.1 문서](../examples/introspection/R2B1.md)가 현재 존재함. 초기 Deferred 표시는 historical stage 기록이며 R2A/R2B/R2B.1/R3/R4/R4.1/R5는 후속 구현됨 |
 | 과거 KCF_ARCHITECTURE_PLAN / KCF_CODEX_INSTRUCTION | 과거 설계 지시 문서의 보관/이동 이력과 현재 구현 상태를 구분하며, 현재 repository code를 우선함 |
-| 과거 v0.1 / v4.x와 이번 Framework v5.0 | [Changelog](../Changelog.md)의 과거 단계 번호를 변경하지 않음. 이번 것은 사용자 지정 Framework v5.0 development status / checkpoint candidate |
+| 과거 v0.1 / v4.x / v5.0와 현재 v5.1 | 과거 단계 번호와 [v5.0 checkpoint](V5_0_STATUS.md)는 보존. 현재 Topic Queue와 호환성은 [v5.1](V5_1_STATUS.md) 기준 |
 | KT-7 두 번째 Supervisor 충돌 | 과거 failure. R2B.1 현재 구현 및 후속 검증으로 해결; 현재 일반 제한으로 나열하지 않음 |
 
-기존 상세 기록은 삭제·수정하지 않았습니다. 새 README와 이 문서 세트가 현재 상태의 상위 안내입니다.
+루트 README를 하나로 통합했습니다. 구 Readme.md는 삭제하고 유효한 실행법·검증 요약은 개발 가이드·검증 문서에 보존했습니다.
+새 historical README 사본은 만들지 않으며 과거 원문은 Git history에서 확인합니다.
+Mecanum Application은 현재 Framework repository에 포함되지 않습니다. 공개 docs와 달리 `docs/instructions/`는 Git ignore된 로컬 지침입니다.
 
 [IMPLEMENTATION ORIGIN] v5.0 Framework의 introspection/dynamic access 확장은 사용자의 generic Tool 요구를
 기준으로 AI-assisted implementation(Codex)으로 구현되었다. 문서 정리 및 branch/file 이동은 사용자가

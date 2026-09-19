@@ -3,12 +3,16 @@
 #include "kcf/ipc/subscriber.hpp"
 using namespace recovery_test;
 struct Message { std::uint64_t value; };
-struct Slot {std::atomic<std::uint32_t> users,version;std::uint32_t sequence;alignas(Message) unsigned char data[sizeof(Message)];};
-struct Storage
-{
-    kcf::detail::OwnerHeader header;
-    std::atomic<std::uint32_t> published_index,publish_sequence;
-    Slot slots[3];pthread_mutex_t mutex;pthread_cond_t condition;std::uint32_t notify_sequence;
+using Storage = kcf::detail::ChannelHeader;
+struct HeaderMapping {
+    Storage* p;
+    explicit HeaderMapping(const std::string& name) {
+        int fd=shm_open(name.c_str(),O_RDWR,0);assert(fd>=0);
+        struct stat st{};assert(fstat(fd,&st)==0 && st.st_size>=sizeof(Storage));
+        p=static_cast<Storage*>(mmap(nullptr,sizeof(Storage),PROT_READ|PROT_WRITE,MAP_SHARED,fd,0));
+        assert(p!=MAP_FAILED);close(fd);
+    }
+    ~HeaderMapping(){munmap(p,sizeof(Storage));}
 };
 int main()
 {
@@ -48,24 +52,24 @@ int main()
     }
     {
         auto name=base+"_mutex";kcf::Publisher<Message> owner;assert(owner.Create(name)==0);assert(owner.Publish({7})==0);
-        kcf::SharedChannel<Message> peer;assert(peer.Open(name)==0);Mapping<Storage> raw(name);
-        KillLocked([&]{assert(pthread_mutex_lock(&raw.p->mutex)==0);raw.p->notify_sequence=999;});
+        kcf::SharedChannel<Message> peer;assert(peer.Open(name)==0);HeaderMapping raw(name);
+        KillLocked([&]{assert(pthread_mutex_lock(&raw.p->notify_mutex)==0);raw.p->notify_sequence=999;});
         std::uint32_t seq=0;assert(peer.Wait(seq)==0&&seq==1); // lock EOWNERDEAD repair
         int wait_result=0;
         std::thread waiter([&]{wait_result=peer.Wait(seq);});
         std::this_thread::sleep_for(std::chrono::milliseconds(30));
-        KillLocked([&]{assert(pthread_mutex_lock(&raw.p->mutex)==0);raw.p->publish_sequence.store(2);});
+        KillLocked([&]{assert(pthread_mutex_lock(&raw.p->notify_mutex)==0);raw.p->publish_sequence.store(2);});
         waiter.join();assert(wait_result==0&&seq==2); // cond timed reacquire EOWNERDEAD
         kcf::Subscriber<Message> subscriber;assert(subscriber.Create(name,[](const auto&){})==0);
-        KillLocked([&]{assert(pthread_mutex_lock(&raw.p->mutex)==0);});
+        KillLocked([&]{assert(pthread_mutex_lock(&raw.p->notify_mutex)==0);});
         assert(subscriber.Close()==0);assert(peer.StopWait()==0);assert(peer.Close()==0);
         assert(owner.Close()==0);assert(owner.Unlink()==0);
     }
     {
-        auto name=base+"_poison";kcf::Publisher<Message> owner;assert(owner.Create(name)==0);Mapping<Storage> raw(name);
+        auto name=base+"_poison";kcf::Publisher<Message> owner;assert(owner.Create(name)==0);HeaderMapping raw(name);
         kcf::Subscriber<Message> peer;
-        KillLocked([&]{assert(pthread_mutex_lock(&raw.p->mutex)==0);});
-        assert(pthread_mutex_lock(&raw.p->mutex)==EOWNERDEAD);assert(pthread_mutex_unlock(&raw.p->mutex)==0);
+        KillLocked([&]{assert(pthread_mutex_lock(&raw.p->notify_mutex)==0);});
+        assert(pthread_mutex_lock(&raw.p->notify_mutex)==EOWNERDEAD);assert(pthread_mutex_unlock(&raw.p->notify_mutex)==0);
         assert(peer.Create(name,[](const auto&){})==0); // start waiter after deterministic poisoning
         assert(owner.Publish({8})==-ENOTRECOVERABLE);assert(peer.Close()==-ENOTRECOVERABLE);
         assert(owner.Close()==0);assert(owner.Unlink()==0);

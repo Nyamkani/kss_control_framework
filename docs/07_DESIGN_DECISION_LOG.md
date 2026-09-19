@@ -232,3 +232,22 @@ User 제공 승인 이력과 코드 존재를 별개 증거로 취급합니다. 
 
 Repository branch/file 정리 및 문서 이동 과정에는 사용자가 직접 수행한 수동 Git 작업이 포함되어 있다.
 Decision Log는 기능 설계/구현 출처를 추적하며 모든 git operation의 수행 주체를 기록하는 문서는 아니다.
+
+## D-016 — Topic Depth Queue / Snapshot compatibility
+
+| 항목 | 기록 |
+| --- | --- |
+| ID | D-016 |
+| Date/Stage | v5.1 Topic Queue; dev 작업 트리에서 버전 확정 |
+| Decision Source | 사용자 Topic Queue 구현 요청 및 문서 반영 요청; AI-assisted implementation |
+| Context | 기존 Snapshot API와 복구·pin 보호를 유지하면서 최근 N개 메시지 순차 소비 추가 |
+| Decision | 기본 depth=1, depth=N KEEP_LAST, 논리 Entry별 Triple Buffer; Subscriber 독립 Cursor와 NEXT/OLDEST |
+| Read contract | ReadNext만 순차 Cursor 이동; ReadLatest/Callback/DynamicTopicReader/Tool Echo는 최신값 유지 |
+| Failure contract | 안전한 Write Slot 부족은 -EAGAIN, 실패한 Publish는 Queue/Sequence 불변; 읽기 실패도 Cursor 불변 |
+| Sequence / Payload | Commit 성공 시 64-bit Transport Sequence 증가, Overflow 누락 수 제공; 측정 Sequence/Timestamp/Validity는 Application 책임 |
+| Compatibility | Topic SHM Format 4, Parameter Format 3 유지; 이전 Topic과 바이너리 비호환, 참여 바이너리 재빌드, 자동 삭제·변환 없음 |
+| Retained limits | 단일 Publisher, dead-reader pin 잔존, 명시적 재연결, KEEP_LAST 유실 가능성 |
+| Implementation | SharedChannel/Publisher/Subscriber 및 DynamicTopicReader |
+| Verification | 구현 완료 보고: 전체 빌드, Queue 10개 영역, 기존 회귀 19개, Tool Backend/Topic Echo PASS; 당시 문서 반영 시 재실행 없음. [이전 보고](06_VERIFICATION_AND_LIMITATIONS.md#topic-queue-verification) |
+| Current Status | KCF Framework v5.1로 확정; GitHub dev [82fa3b2](https://github.com/Nyamkani/kss_control_framework/commit/82fa3b274f51d847602b2a5e4936778ebd631257) 반영 확인; tag/Release는 [상태 문서](V5_1_STATUS.md) 참조. [최종 검증](06_VERIFICATION_AND_LIMITATIONS.md#v51-final-verification) |
+| Future Revisit Trigger | reader-liveness 회수 또는 전달 보장 요구 변경 시 별도 설계 |

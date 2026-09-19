@@ -49,16 +49,8 @@ void CleanupCrash(const kcf::SupervisorInfo& snapshot) {
 }
 // White-box fixture only: simulate readers paused with slots pinned and the
 // legacy notification mutex held. The public Tool API never sees this layout.
-struct Slot {
-    std::atomic<std::uint32_t> users{0},version{0};std::uint32_t sequence{0};
-    alignas(kcf::SupervisorInfo) unsigned char data[sizeof(kcf::SupervisorInfo)];
-};
-struct Storage {
-    std::uint64_t magic,size,alignment;std::uint32_t format,initialized;
-    std::int32_t owner_pid;std::uint32_t reserved;std::uint64_t type_id,layout_id;
-    std::atomic<std::uint32_t> published_index,publish_sequence;
-    Slot slots[3];pthread_mutex_t notify_mutex;pthread_cond_t notify_cond;std::uint32_t notify_sequence;
-};
+using Storage = kcf::detail::ChannelHeader;
+using Slot = kcf::detail::ChannelSlot<kcf::SupervisorInfo>;
 void Missing(const std::string& name){int fd=shm_open(name.c_str(),O_RDONLY,0);assert(fd<0 && errno==ENOENT);}
 }
 int main(int argc,char** argv) {
@@ -110,13 +102,15 @@ int main(int argc,char** argv) {
     std::this_thread::sleep_for(400ms);assert(FindSupervisor(supervisor,info)&&info.revision==old.revision);
     std::cout<<"PASS discovery, membership identity, endpoint chain, standalone separation, stable revision\n";
     const auto name=kcf::detail::SupervisorRegistryName(supervisor,info.process_start_ticks);
-    int fd=shm_open(name.c_str(),O_RDWR,0);assert(fd>=0);struct stat st{};assert(fstat(fd,&st)==0 && st.st_size==sizeof(Storage));
-    auto* raw=static_cast<Storage*>(mmap(nullptr,sizeof(Storage),PROT_READ|PROT_WRITE,MAP_SHARED,fd,0));assert(raw!=MAP_FAILED);close(fd);
+    kcf::detail::ChannelLayout layout;assert(kcf::detail::ComputeChannelLayout(sizeof(kcf::SupervisorInfo),alignof(kcf::SupervisorInfo),1,layout));
+    int fd=shm_open(name.c_str(),O_RDWR,0);assert(fd>=0);struct stat st{};assert(fstat(fd,&st)==0 && static_cast<std::size_t>(st.st_size)==layout.length);
+    auto* raw=static_cast<Storage*>(mmap(nullptr,layout.length,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0));assert(raw!=MAP_FAILED);close(fd);
+    auto slot=[&](unsigned i)->Slot&{return *reinterpret_cast<Slot*>(reinterpret_cast<unsigned char*>(raw)+layout.slots+i*layout.stride);};
     int ready[2];assert(pipe(ready)==0);
     pid_t observer=fork();assert(observer>=0);
     if(!observer){close(ready[0]);kcf::SupervisorInfo seen{};for(int i=0;i<20;++i)assert(FindSupervisor(supervisor,seen));
         assert(pthread_mutex_lock(&raw->notify_mutex)==0);
-        for(auto& slot:raw->slots)slot.users.fetch_add(1);
+        for(unsigned i=0;i<3;++i)slot(i).users.fetch_add(1);
         Send(ready[1],1);for(;;)pause();}
     close(ready[1]);assert(Receive(ready[0])==1);close(ready[0]);
     // No introspection read while fixture pins are installed. Observe the unchanged
@@ -128,11 +122,11 @@ int main(int argc,char** argv) {
     Until([&]{kcf::SystemStatus s{};return status.ReadCurrent(s)==0 && s.state==kcf::ApplicationState::RUNNING;});
     assert(kill(observer,SIGKILL)==0);int code;assert(waitpid(observer,&code,0)==observer&&WIFSIGNALED(code));
     // Test-owned abandoned pins are released; dirty snapshot can be retried.
-    for(auto& slot:raw->slots)slot.users.fetch_sub(1);
+    for(unsigned i=0;i<3;++i)slot(i).users.fetch_sub(1);
     Until([&]{return FindSupervisor(supervisor,info)&&info.application_state==kcf::ApplicationState::RUNNING&&info.elements[0].pid!=old.elements[0].pid;});
     assert(info.revision>old.revision);
     for(std::uint32_t i=0;i<info.element_count;++i){assert(info.elements[i].pid!=old.elements[i].pid);Runtime(info.elements[i].pid,info.elements[i].process_start_ticks);}
-    assert(status.Close()==0);assert(munmap(raw,sizeof(Storage))==0);
+    assert(status.Close()==0);assert(munmap(raw,layout.length)==0);
     std::cout<<"PASS pinned/dead observer: health ERROR, Reset, new generations and dirty retry without control blocking\n";
     Send(command[1],9);assert(kill(supervisor,SIGTERM)==0);
     assert(waitpid(supervisor,&code,0)==supervisor&&WIFEXITED(code)&&WEXITSTATUS(code)==0);

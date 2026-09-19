@@ -45,13 +45,14 @@ public:
         {
             if (mode=="incomplete")
             {
-                // Test-only creator prefix: leave both real format-v3 headers
+                // Test-only creator prefix: leave current Topic/Parameter headers
                 // initialized=0 with exclusive flock held until controller SIGKILL.
                 std::string encoded="/";
                 for(std::size_t i=1;i<topic.size();++i)
                     encoded += topic[i]=='/' ? "%2F" : std::string(1,topic[i]);
                 const int topic_fd=kcf::detail::CreateOwnedShm(encoded.c_str(),
-                    0x4b4346545249504cULL,sizeof(pid_t),alignof(pid_t));
+                    0x4b4346545249504cULL,sizeof(pid_t),alignof(pid_t),false,
+                    kcf::detail::TOPIC_STORAGE_FORMAT);
                 const int parameter_fd=kcf::detail::CreateOwnedShm((encoded+"%2Fparameter").c_str(),
                     0x4b4346504152414dULL,sizeof(pid_t),alignof(pid_t));
                 assert(topic_fd>=0 && parameter_fd>=0);

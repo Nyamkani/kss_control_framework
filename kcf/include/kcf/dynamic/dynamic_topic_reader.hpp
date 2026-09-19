@@ -20,6 +20,7 @@ public:
     int Open(const std::string& name, const TypeDescriptor& descriptor);
     int Open(const std::string& name, std::uint64_t expected_type_id,
              const TypeDescriptor& descriptor);
+    // Latest committed payload at any depth; no sequential cursor is consumed.
     int ReadLatest(DynamicPayload& payload);
     void Close() noexcept;
 private:

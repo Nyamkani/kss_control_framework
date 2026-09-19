@@ -87,9 +87,9 @@ void Check(const kcf::RuntimeInfo& r,const std::string& base){
     assert(c.GetType(r,kcf::StableTypeId("kcf.test.NestedData.v1"),d)==0);
     assert(std::string(d.fields[1].name)=="header.timestamp_us"&&d.fields[1].offset==offsetof(NestedData,header)+offsetof(Header,timestamp_us));
 }
-// Test-only channel layout to hold reader pins without instrumenting production.
-struct Slot{std::atomic<std::uint32_t> users,version;std::uint32_t sequence;alignas(kcf::detail::TypeRegistrySnapshot) unsigned char bytes[sizeof(kcf::detail::TypeRegistrySnapshot)];};
-struct Storage{std::uint64_t magic,size,alignment;std::uint32_t format,initialized;std::int32_t owner;std::uint32_t reserved;std::uint64_t type_id,layout_id;std::atomic<std::uint32_t> index,sequence;Slot slots[3];pthread_mutex_t mutex;pthread_cond_t cond;std::uint32_t notify;};
+// Test-only slot access to hold reader pins without production hooks.
+using Payload = kcf::detail::TypeRegistrySnapshot;
+using Slot = kcf::detail::ChannelSlot<Payload>;
 }
 int main(int argc,char** argv){
     if(argc==3&&std::string(argv[1])=="--child"){Element e(argv[2]);kcf::ProcessRuntime r;r.SetLoopFrequency(500);return r.Run(e)?1:0;}
@@ -125,15 +125,18 @@ int main(int argc,char** argv){
     IntrospectionClient c;std::vector<TypeDescriptor> types;assert(c.ListTypes(runtime,types)==0&&types.size()==2);
     std::cout<<"PASS stable ID, descriptor discovery, dedup, undefined/bad/conflict isolation and flattened fields\n";
     const auto name=detail::TypeRegistryName(child,runtime.process_start_ticks);int fd=shm_open(name.c_str(),O_RDWR,0);assert(fd>=0);
-    struct stat st{};assert(fstat(fd,&st)==0&&st.st_size==sizeof(Storage));auto* raw=static_cast<Storage*>(mmap(nullptr,sizeof(Storage),PROT_READ|PROT_WRITE,MAP_SHARED,fd,0));assert(raw!=MAP_FAILED);close(fd);
+    detail::ChannelLayout layout;assert(detail::ComputeChannelLayout(sizeof(Payload),alignof(Payload),1,layout));
+    struct stat st{};assert(fstat(fd,&st)==0&&static_cast<std::size_t>(st.st_size)==layout.length);
+    auto* raw=static_cast<unsigned char*>(mmap(nullptr,layout.length,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0));assert(raw!=MAP_FAILED);close(fd);
+    auto slot=[&](unsigned i)->Slot&{return *reinterpret_cast<Slot*>(raw+layout.slots+i*layout.stride);};
     int ready[2];assert(pipe(ready)==0);pid_t observer=fork();assert(observer>=0);
-    if(!observer){close(ready[0]);assert(c.ListTypes(runtime,types)==0);for(auto& s:raw->slots)s.users.fetch_add(1);Send(ready[1],1);for(;;)pause();}
+    if(!observer){close(ready[0]);assert(c.ListTypes(runtime,types)==0);for(unsigned i=0;i<3;++i)slot(i).users.fetch_add(1);Send(ready[1],1);for(;;)pause();}
     close(ready[1]);assert(Receive(ready[0])==1);close(ready[0]);
     Send(commands[1],1);assert(Receive(reply[0])==1);
     std::vector<EndpointInfo> endpoints;assert(c.ListEndpoints(runtime,endpoints)==0);bool extra=false;
     for(const auto& e:endpoints)if(e.name==base+"_extra"){extra=true;assert(!e.type_id);}assert(extra);
     assert(kill(observer,SIGKILL)==0);int code;assert(waitpid(observer,&code,0)==observer&&WIFSIGNALED(code));
-    for(auto& s:raw->slots)s.users.fetch_sub(1);assert(munmap(raw,sizeof(Storage))==0);
+    for(unsigned i=0;i<3;++i)slot(i).users.fetch_sub(1);assert(munmap(raw,layout.length)==0);
     Send(commands[1],2);assert(Receive(reply[0])==2);assert(c.ListTypes(runtime,types)==0&&types.size()==3);
     Send(commands[1],3);assert(Receive(reply[0])==3);assert(c.ListTypes(runtime,types)==0&&types.size()==64);
     assert(c.ListEndpoints(runtime,endpoints)==0);bool capacity=false;

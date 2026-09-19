@@ -41,14 +41,14 @@ public:
                 try
                 {
                     T snapshot {};
-                    std::uint32_t last_notify = 0, last_publish = 0;
+                    std::uint64_t last_notify = 0, last_publish = 0;
                     bool delivered = false;
                     while (running_.load())
                     {
                         int result = channel_.Wait(last_notify);
                         if (result == -ECANCELED) break;
                         if (result != 0) { error_.store(result); break; }
-                        std::uint32_t sequence = 0;
+                        std::uint64_t sequence = 0;
                         result = channel_.ReadLatestSnapshot(snapshot, sequence);
                         if (result == -ECANCELED) break;
                         if (result == -EAGAIN) continue;
@@ -82,6 +82,24 @@ public:
             EndpointRole::SUBSCRIBER, name, sizeof(T), detail::DiagnosticTypeName<T>(), detail::RegisterEndpointType<T>());
         return 0;
     }
+
+    // Pull-only subscription. The callback overload remains latest-only.
+    int Create(const std::string& name, TopicStartPosition start = TopicStartPosition::NEXT)
+    {
+        if (worker_.joinable()) return -EBUSY;
+        const int result=channel_.Open(name,start);
+        if (!result) {
+            error_.store(0);
+            registration_id_=detail::RegisterEndpoint(EndpointKind::TOPIC,
+                EndpointRole::SUBSCRIBER,name,sizeof(T),detail::DiagnosticTypeName<T>(),detail::RegisterEndpointType<T>());
+        }
+        return result;
+    }
+    // Caller serializes pull operations and finishes them before Close.
+    // Callback delivery has no queue cursor and cannot consume these reads.
+    int ReadNext(T& value, TopicReadInfo& info) { return channel_.ReadNext(value,info); }
+    int ReadLatest(T& value, TopicReadInfo& info) { return channel_.ReadLatest(value,info); }
+    std::uint32_t GetDepth() const { return channel_.GetDepth(); }
 
     int Close()
     {

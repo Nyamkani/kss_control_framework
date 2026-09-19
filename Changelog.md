@@ -6,6 +6,18 @@ Phase 2 통신 기능은 v2.0, Phase 3 supervision/recovery는 v3.0에 기록합
 버전은 최신순으로, 각 버전 내부는 Phase 진행 순서대로 정리합니다.
 이 문서의 버전 표기는 개발 이력 구분이며 Git tag 또는 배포 생성 여부를 의미하지 않습니다.
 
+## v5.1 — Topic Queue
+
+- Depth 기반 Bounded Ring Buffer 추가: 기본 Depth=1 Snapshot, Depth=N KEEP_LAST.
+- Subscriber별 독립 Cursor, NEXT/OLDEST, ReadNext 및 누락 검출. ReadLatest/기존 Callback은 최신값 계약 유지.
+- Transport Sequence 64-bit, Commit 성공 시 증가. -EAGAIN 실패 시 Queue/Sequence 및 읽기 Cursor 유지.
+- Payload 측정 Sequence·Timestamp·Validity는 Application 책임이며 valid=false도 변경 없이 전달.
+- Topic SHM Format 4로 변경, Parameter Format 3 유지. 기존 Topic 바이너리 재빌드 필요; 자동 SHM migration 없음.
+- pin/CAS·복구 보호, 단일 Publisher, dead-reader pin 및 명시적 재연결 제한 유지.
+- 기존 v5.0 구현·검증 기록은 [별도 이력](docs/V5_0_STATUS.md)으로 보존.
+- 최종 실제 실행: C++17 전체 빌드, Queue 10개 영역, Framework 회귀 22/22 (19+3), Tool Backend/Echo 1/1 PASS.
+- [v5.1 상태 및 최종 검증](docs/V5_1_STATUS.md). 버전 확정과 Git commit/push/tag 생성은 별개.
+
 ## v4.3 — Pre-Application Execution / Concurrency Base
 
 - ExecutionMode(STANDALONE/SUPERVISED)와 header-only DetectLaunchExecutionMode 추가. 기존 환경변수 상수를 재사용하고 Run 전에 존재 여부만 확인.

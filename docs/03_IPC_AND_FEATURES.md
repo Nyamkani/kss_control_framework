@@ -6,26 +6,64 @@ R3 field 선언에는 standard-layout도 필요합니다. Native ABI를 자동 p
 
 ## Topic
 
-**Purpose / User Decision.** [USER REQUIREMENT / DECISION] 연속 데이터의 최신 상태를 process 간 명시적으로 공유합니다.
+**Purpose / User Decision.** [USER REQUIREMENT / DECISION] 최신값 Snapshot과 최근 N개 메시지의 순차 소비를
+동일 Topic에서 제공합니다. Queue 확장은 **KCF Framework v5.1 (`dev`)** 기능입니다. 기존 v5.0 Snapshot 이력은 별도로 보존합니다.
 
 **Implementation.** [Publisher](../kcf/include/kcf/ipc/publisher.hpp) /
 [Subscriber](../kcf/include/kcf/ipc/subscriber.hpp)는 [SharedChannel](../kcf/include/kcf/ipc/shared_channel.hpp)을 사용합니다.
-POSIX SHM, 3개 slot, reader pin/writer ownership 및 sequence를 사용한 latest/current snapshot입니다.
-Subscriber worker가 callback을 호출하며 느린 reader는 중간 sample을 건너뛸 수 있습니다. 이벤트 queue가 아닙니다.
-[storage_layout](../kcf/include/kcf/ipc/detail/storage_layout.hpp)의 **SHM format은 3**입니다.
-DynamicTopicReader는 descriptor와 현재 named object에 바인딩하여 ReadLatest합니다.
+POSIX SHM의 Depth 기반 Bounded Ring Buffer이며, 논리 Entry마다 3개 물리 Slot을 둡니다.
+기존 reader pin/CAS writer ownership 보호를 유지하여 복사 중인 Slot을 강제로 덮어쓰지 않습니다.
+robust notification, incomplete storage 검사, owner recovery, Stop/join 계약도 유지합니다.
 
-**Implementation Origin.** 사용자 latest-value IPC 요구 기반 AI-assisted 구현. Triple-buffer/pin 세부 알고리즘의
-최초 승인 시점은 이번에 확인한 기록만으로 특정하지 않습니다.
+| 항목 | 계약 |
+| --- | --- |
+| Depth | `Publisher<T>::Create(name, depth=1)`; 양수만 허용. Publisher가 설정하고 Subscriber는 Header에서 확인 (`GetDepth()`) |
+| 보관 | depth=1은 기존 최신값 Snapshot, depth=N은 최근 N개 성공한 Publish를 KEEP_LAST로 보관 |
+| Cursor | Subscriber별 로컬 상태. 다른 Subscriber가 읽어도 메시지가 제거되지 않음 |
+| NEXT | `Subscriber<T>::Create(name)`의 기본값; 연결 시점 이후 새 메시지부터 처리 |
+| OLDEST | `Create(name, TopicStartPosition::OLDEST)`; 연결 당시 보관된 가장 오래된 메시지부터 처리 |
+| ReadNext | `ReadNext(value, info)` 성공 시 다음 미처리 메시지를 반환하고 해당 Cursor만 이동 |
+| ReadLatest | `ReadLatest(value, info)`는 Depth와 무관하게 최신값 반환; 순차 Cursor는 불변 |
+| Callback | 기존 `Create(name, callback)` 유지. Worker는 최신값을 전달하며 중간 메시지를 건너뛸 수 있음; 순차 Cursor와 독립 |
+| 누락 | 성공한 ReadNext의 `TopicReadInfo::missed`는 다음 예상 Sequence부터 반환 Sequence 전까지 덮어써진 메시지 수. OLDEST 연결 이전의 이미 유실된 이력은 포함하지 않음 |
+| Publish -EAGAIN | 안전한 Write Slot이 없을 때 반환. 실패한 Publish는 Queue와 Sequence를 변경하지 않음 |
+| Read -EAGAIN | 읽을 값 없음, ReadNext에 새 메시지 없음 또는 일시적인 복사 경합. 실패 시 출력/metadata와 Cursor는 불변 |
 
-**Verified.** pubsub standalone/supervised 송수신, 양 역할 endpoint 발견, 기존 UI Echo의 다섯 field와 값 증가,
+`TopicReadInfo::sequence`는 **64-bit Transport Sequence**입니다. Payload Commit 성공 시에만 증가하며
+SHM 새 세대에서는 다시 시작합니다. 최대값 도달 시 Publish는 wrap하지 않고 `-EOVERFLOW`를 반환합니다.
+Application의 측정 Sequence와는 별개입니다. Payload Timestamp/Validity와 측정 Sequence의 생성·판단은 Application 책임이며
+KCF는 이를 해석하거나 변경하지 않습니다. `valid=false`인 Payload도 정상적으로 Publish·전달됩니다.
+
+[DynamicTopicReader](../kcf/include/kcf/dynamic/dynamic_topic_reader.hpp)는 Depth와 무관하게 최신값을 조회합니다.
+기존 Tool Echo의 polling/latest 방식도 유지하며 Queue 전체를 순차 출력하는 기능으로 바뀌지 않습니다.
+
+**Compatibility.** [storage_layout](../kcf/include/kcf/ipc/detail/storage_layout.hpp)의 Topic SHM은 **Format 4**,
+Parameter SHM은 **Format 3**입니다. 기존 Topic Format 3과 바이너리 호환되지 않습니다.
+기본 Depth 및 Snapshot Source API 호환은 유지하지만, Publisher/Subscriber/Tool 등 참여 바이너리는
+호환 Core 및 동일 Payload ABI로 재빌드해야 합니다. 이전 Topic SHM을 임의 삭제하거나 자동 변환하지 않습니다.
+기존 세대를 종료하고 명시적인 소유자 정리·재생성 절차를 적용해야 합니다.
+
+**Implementation Origin.** 사용자 latest-value IPC 요구 기반 AI-assisted 구현에, 사용자 Topic Queue 요청을 반영했습니다.
+논리 Entry별 Triple Buffer 재사용으로 기존 pin 보호와 최신값 API를 유지했습니다.
+최초 Triple-buffer/pin 알고리즘 승인 시점은 기존 기록만으로 특정하지 않습니다.
+
+**Verified — 기존 v5.0 기록.** pubsub standalone/supervised 송수신, 양 역할 endpoint 발견, 기존 UI Echo의 다섯 field와 값 증가,
 정상 종료 정리 PASS. R4.1 재생성 stale, Topic recovery 및 KT-8 fixture failure/restart/재발견도 각각 PASS.
-[MANUALLY VERIFIED] 별도로 사용자 직접 PubSub subscriber SIGKILL, healthy publisher 지속, Tool Refresh,
-restart/generation rediscovery를 확인했습니다. 자동 fixture와 수동 integration의 출처는 구분합니다.
+[MANUALLY VERIFIED] 사용자 직접 PubSub subscriber SIGKILL, healthy publisher 지속, Tool Refresh,
+restart/generation rediscovery 기록은 자동 fixture와 구분합니다.
 
-**Current Limitation.** Dead reader의 pin이 남아 slot 사용을 방해할 수 있으며 publish는 -EAGAIN일 수 있습니다.
-Global logical name의 Publisher ownership은 Application name으로 자동 분리되지 않습니다.
-일반 Tool Topic Publish와 callback형 Dynamic Monitor는 미구현; Tool Echo는 polling입니다.
+**Reported — Queue 구현 완료 보고.** 전체 빌드, 신규 Queue 필수 검증 10개 영역, 기존 회귀 19개 항목,
+기존 kcf_tools Backend/Topic Echo PASS. 이는 이전 문서 반영 시 재실행 없이 기록한 보고입니다.
+v5.1 최종 실행 결과는 [별도 항목](06_VERIFICATION_AND_LIMITATIONS.md#v51-final-verification)에 기록합니다.
+[별도 검증 기록](06_VERIFICATION_AND_LIMITATIONS.md#topic-queue-verification)을 참조합니다.
+
+**Current Limitation.** Topic당 단일 Publisher/쓰기 thread, 복수 Subscriber입니다. 같은 로컬 객체의 ReadNext는 호출자가 직렬화하고,
+Close 전에 로컬 작업을 완료해야 합니다. Dead reader의 pin은 자동 회수하지 않으며 Slot 부족은 `-EAGAIN`으로 나타납니다.
+KEEP_LAST는 유실 없는 전달 보장이 아니며 메모리는 Depth당 Payload Slot 3개와 metadata가 필요합니다.
+Global logical name의 ownership은 Application name으로 자동 분리되지 않습니다.
+Producer 재시작/SHM 재생성에 Typed Subscriber는 기존 mapping을 유지하므로 명시적 Close/Open이 필요합니다
+(Subscriber는 Close/Create). DynamicTopicReader는 named object의 교체를 `-ESTALE`로 알리며 명시적 재연결합니다.
+일반 Tool Topic Publish와 callback형 Dynamic Monitor는 미구현입니다.
 
 **Future Option.** reader-liveness 기반 pin 회수, 명시적 namespace 정책은 후보이며 현재 보장 아님.
 
@@ -35,7 +73,7 @@ Global logical name의 Publisher ownership은 Application name으로 자동 분�
 
 **Implementation.** [Parameter](../kcf/include/kcf/parameter/parameter.hpp)는
 [SharedParameter](../kcf/include/kcf/parameter/shared_parameter.hpp) Owner/Client와 watcher를 감쌉니다.
-Owner Create(initial), Client Open, Get/Set, Close와 Owner Unlink. SharedParameter는 robust process-shared mutex,
+SHM Format은 **3**으로 유지합니다. Owner Create(initial), Client Open, Get/Set, Close와 Owner Unlink. SharedParameter는 robust process-shared mutex,
 condition/version, 두 value slot의 transaction 정보를 사용합니다. Watcher는 등록 당시 version 이후 변경을 알리며
 초기값은 Get으로 읽습니다. Callback은 내부 shared lock 밖의 worker에서 실행됩니다.
 [DynamicParameterClient](../kcf/include/kcf/dynamic/dynamic_parameter_client.hpp)는 descriptor/type/layout 검증 후 Get/Set합니다.

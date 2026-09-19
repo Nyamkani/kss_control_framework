@@ -53,27 +53,25 @@ inline int SetParameter(ParameterView s,const void* value) {
 }
 struct ChannelSlotView {
     std::atomic<std::uint32_t>& users; std::atomic<std::uint32_t>& version;
-    std::uint32_t& sequence; unsigned char* data;
+    std::uint64_t& sequence; unsigned char* data;
 };
-// One attempt. Retry is controlled by the reader; never touches notification.
-// Pinning excludes the writer during non-atomic memcpy; a version-only check
-// would not prevent a C++ data race. A dead reader can leave this pin behind.
-inline int CopyChannelSnapshot(std::atomic<std::uint32_t>& index,
-                               std::atomic<std::uint32_t>& sequence,
-                               ChannelSlotView slot, std::uint32_t selected,
-                               void* output,std::size_t size,std::uint32_t& copied) {
+// A version-only seqlock does not make non-atomic memcpy safe. Retain a pin
+// until copying finishes; callbacks never execute with this pin held.
+inline int CopyChannelSequence(std::atomic<std::uint64_t>& published,
+                               std::uint32_t depth, ChannelSlotView slot,
+                               std::uint64_t wanted, void* output, std::size_t size)
+{
     constexpr auto writing=0x80000000u;
     auto users=slot.users.load();
-    if(users>=writing-1 || !slot.users.compare_exchange_weak(users,users+1))return -EAGAIN;
+    if(users>=writing-1 || !slot.users.compare_exchange_strong(users,users+1)) return -EAGAIN;
     const auto before=slot.version.load();
-    const auto published=sequence.load();
-    if((before&1u) || index.load()!=selected || slot.sequence!=published) {
-        slot.users.fetch_sub(1);return -EAGAIN;
+    const auto latest=published.load();
+    if ((before&1u) || slot.sequence!=wanted || wanted>latest || latest-wanted>=depth) {
+        slot.users.fetch_sub(1); return -EAGAIN;
     }
     std::memcpy(output,slot.data,size);
-    const auto value_sequence=slot.sequence;
-    const auto after=slot.version.load();slot.users.fetch_sub(1);
-    if(before!=after || (after&1u))return -EAGAIN;
-    copied=value_sequence;return 0;
+    const auto after=slot.version.load();
+    slot.users.fetch_sub(1);
+    return before==after && !(after&1u) ? 0 : -EAGAIN;
 }
 }

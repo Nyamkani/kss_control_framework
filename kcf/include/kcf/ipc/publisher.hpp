@@ -11,9 +11,9 @@ class Publisher
 {
 public:
     ~Publisher() { Close(); }
-    int Create(const std::string& name)
+    int Create(const std::string& name, std::uint32_t depth = 1)
     {
-        const int result = channel_.Create(name);
+        const int result = channel_.Create(name, depth);
         if (result == 0) registration_id_ = detail::RegisterEndpoint(EndpointKind::TOPIC,
             EndpointRole::PUBLISHER, name, sizeof(T), detail::DiagnosticTypeName<T>(), detail::RegisterEndpointType<T>());
         return result;

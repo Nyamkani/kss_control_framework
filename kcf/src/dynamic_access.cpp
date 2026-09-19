@@ -10,7 +10,7 @@
 
 namespace kcf::detail {
 namespace {
-using Channel = ChannelStorage<std::byte>;
+using Channel = ChannelHeader;
 using Param = ParameterStorage<std::byte>;
 using Slot = ChannelSlot<std::byte>;
 static_assert(offsetof(Channel,type_id)==offsetof(OwnerHeader,type_id));
@@ -62,15 +62,7 @@ public:
         static_assert(sizeof(std::size_t)>=8);
         const std::size_t a=d.payload_alignment,n=d.payload_size;
         topic_=topic;
-        if(topic) {
-            slots_=Align(offsetof(Channel,slots),std::max(a,alignof(Slot)));
-            data_=Align(offsetof(Slot,data),a);
-            stride_=Align(data_+n,std::max(a,alignof(Slot)));
-            const auto notify=Align(slots_+3*stride_,alignof(pthread_mutex_t));
-            const auto cond=Align(notify+sizeof(pthread_mutex_t),alignof(pthread_cond_t));
-            const auto sequence=Align(cond+sizeof(pthread_cond_t),alignof(std::uint32_t));
-            length_=Align(sequence+sizeof(std::uint32_t),std::max(a,alignof(Channel)));
-        } else {
+        if(!topic) {
             data_=Align(offsetof(Param,value_slots),a);
             length_=Align(data_+2*n,std::max(a,alignof(Param)));
         }
@@ -86,10 +78,16 @@ public:
         count=pread(fd_,&h,sizeof(h),0);
         if(count<0)return -errno;
         if(count!=sizeof(h))return -EPROTO;
-        if(h.magic!=(topic?TOPIC_MAGIC:PARAMETER_MAGIC) || h.format!=STORAGE_FORMAT || h.owner_pid<=0)return -EPROTO;
+        if(h.magic!=(topic?TOPIC_MAGIC:PARAMETER_MAGIC) || h.format!=(topic_?TOPIC_STORAGE_FORMAT:STORAGE_FORMAT) || h.owner_pid<=0)return -EPROTO;
         if(h.initialized!=1 || OwnerDead(h.owner_pid))return -EAGAIN;
         if(!h.type_id || h.type_id!=expected || h.layout_id!=LayoutId(d))return -EPROTOTYPE;
         if(h.size!=n || h.alignment!=a)return -EMSGSIZE;
+        if(topic) {
+            if(pread(fd_,&depth_,sizeof(depth_),offsetof(Channel,depth))!=sizeof(depth_))return -EPROTO;
+            ChannelLayout layout;
+            if(!ComputeChannelLayout(n,a,depth_,layout))return -EPROTO;
+            slots_=layout.slots; data_=layout.data; stride_=layout.stride; length_=layout.length;
+        }
         if(st.st_size<0 || static_cast<std::uint64_t>(st.st_size)!=length_)return -EPROTO;
         identity_.Capture(std::move(encoded),st);
         void* address=mmap(nullptr,length_,PROT_READ|PROT_WRITE,MAP_SHARED,fd_,0);
@@ -102,9 +100,10 @@ public:
     int Validate() const {
         const int identity_result=identity_.Validate();if(identity_result)return identity_result;
         OwnerHeader h{};std::memcpy(&h,base_,sizeof(h));
-        if(h.magic!=header_.magic || h.format!=STORAGE_FORMAT || h.initialized!=1 || h.owner_pid!=header_.owner_pid)return -EPROTO;
+        if(h.magic!=header_.magic || h.format!=(topic_?TOPIC_STORAGE_FORMAT:STORAGE_FORMAT) || h.initialized!=1 || h.owner_pid!=header_.owner_pid)return -EPROTO;
         if(h.type_id!=header_.type_id || h.layout_id!=header_.layout_id)return -EPROTOTYPE;
         if(h.size!=header_.size || h.alignment!=header_.alignment)return -EMSGSIZE;
+        if(topic_ && At<std::uint32_t>(offsetof(Channel,depth))!=depth_)return -EPROTO;
         return 0;
     }
     template<class T> T& At(std::size_t offset) const {return *reinterpret_cast<T*>(base_+offset);}
@@ -118,19 +117,20 @@ public:
         int result=Validate();if(result)return result;
         DynamicPayload value;value.type_id=header_.type_id;value.bytes.resize(header_.size);
         if(topic_) {
-            auto& index=At<std::atomic<std::uint32_t>>(offsetof(Channel,published_index));
-            auto& seq=At<std::atomic<std::uint32_t>>(offsetof(Channel,publish_sequence));
+            auto& seq=At<std::atomic<std::uint64_t>>(offsetof(Channel,publish_sequence));
             result=-EAGAIN;
-            // Bounded observer retries; no notification mutex and no wait API.
-            for(int attempt=0;attempt<32;++attempt) {
-                const auto i=index.load();if(i>=3)return i==3?-EAGAIN:-EPROTO;
-                const auto slot=slots_+i*stride_;std::uint32_t copied=0;
-                result=CopyChannelSnapshot(index,seq,
-                    {At<std::atomic<std::uint32_t>>(slot+offsetof(Slot,users)),
-                     At<std::atomic<std::uint32_t>>(slot+offsetof(Slot,version)),
-                     At<std::uint32_t>(slot+offsetof(Slot,sequence)),base_+slot+data_},
-                    i,value.bytes.data(),header_.size,copied);
-                if(!result){value.sequence=copied;break;}
+            for(int attempt=0;attempt<32 && result;++attempt) {
+                const auto wanted=seq.load(); if(!wanted)return -EAGAIN;
+                const auto entry=static_cast<std::size_t>((wanted-1)%depth_)*3;
+                for(unsigned i=0;i<3;++i) {
+                    const auto slot=slots_+(entry+i)*stride_;
+                    result=CopyChannelSequence(seq,depth_,
+                        {At<std::atomic<std::uint32_t>>(slot+offsetof(Slot,users)),
+                         At<std::atomic<std::uint32_t>>(slot+offsetof(Slot,version)),
+                         At<std::uint64_t>(slot+offsetof(Slot,sequence)),base_+slot+data_},
+                        wanted,value.bytes.data(),header_.size);
+                    if(!result){value.sequence=wanted;break;}
+                }
             }
         } else result=GetParameter(Parameter(),value.bytes.data(),&value.sequence);
         if(result)return result;
@@ -146,6 +146,7 @@ public:
 private:
     SharedObjectIdentity identity_;
     int fd_{-1};unsigned char* base_{nullptr};OwnerHeader header_{};
+    std::uint32_t depth_{0};
     std::size_t length_{0},slots_{0},data_{0},stride_{0};bool topic_{false};
 };
 }

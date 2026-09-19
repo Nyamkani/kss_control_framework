@@ -5,6 +5,7 @@ KSS Control Framework(KCF)의 주요 개발 및 검증 이력입니다.
 Phase 2 통신 기능은 v2.0, Phase 3 supervision/recovery는 v3.0에 기록합니다.
 버전은 최신순으로, 각 버전 내부는 Phase 진행 순서대로 정리합니다.
 이 문서의 버전 표기는 개발 이력 구분이며 Git tag 또는 배포 생성 여부를 의미하지 않습니다.
+v1.0~v4.3은 historical record입니다. 당시 Mecanum 경로·실행 범위를 현재 Framework 소스 구성으로 해석하지 않습니다.
 
 ## v5.1 — Topic Queue
 
@@ -16,7 +17,8 @@ Phase 2 통신 기능은 v2.0, Phase 3 supervision/recovery는 v3.0에 기록합
 - pin/CAS·복구 보호, 단일 Publisher, dead-reader pin 및 명시적 재연결 제한 유지.
 - 기존 v5.0 구현·검증 기록은 [별도 이력](docs/V5_0_STATUS.md)으로 보존.
 - 최종 실제 실행: C++17 전체 빌드, Queue 10개 영역, Framework 회귀 22/22 (19+3), Tool Backend/Echo 1/1 PASS.
-- [v5.1 상태 및 최종 검증](docs/V5_1_STATUS.md). 버전 확정과 Git commit/push/tag 생성은 별개.
+- GitHub dev의 [82fa3b2](https://github.com/Nyamkani/kss_control_framework/commit/82fa3b274f51d847602b2a5e4936778ebd631257)로 v5.1 코드·문서 반영 확인. tag/공개 Release 상태는 [v5.1 상태](docs/V5_1_STATUS.md) 참조.
+- README 통합: 현재 진입 문서는 README.md 하나로 정리. 유효한 사용법·과거 검증 요약은 docs에 보존하고 구 Readme.md 삭제. 통합 작업에서는 기능 테스트를 재실행하지 않음.
 
 ## v4.3 — Pre-Application Execution / Concurrency Base
 

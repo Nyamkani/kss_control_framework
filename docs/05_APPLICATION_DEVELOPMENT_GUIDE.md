@@ -116,3 +116,30 @@ Parameter Format 3은 유지합니다. [전체 계약](03_IPC_AND_FEATURES.md#to
 
 [FUTURE OPTION] 외부 Application에 대한 설치/export/package workflow는 이 예제의 CMake 사용법에서
 자동으로 보장되지 않습니다. 현재 build는 저장소 내 명시적 add_subdirectory 구조입니다.
+
+<a id="low-level-examples"></a>
+
+## 기존 low-level 예제 실행
+
+통합 전 README에서 현재도 유효한 실행법을 보존합니다. 명령은 저장소 루트와 Debug 기본 build 경로 기준입니다.
+서버/Owner/Publisher를 먼저 실행하고 Client/Subscriber는 별도 터미널에서 실행합니다.
+상시 실행 process는 Ctrl+C로 종료합니다. 이 문서 정리 중 예제를 재실행하지 않았습니다.
+
+| 기능 | 실행 명령 | 인자·동작 |
+| --- | --- | --- |
+| Dummy | `./build/examples/dummy/kcf_dummy` | Standalone lifecycle, 약 2 Hz Loop |
+| Topic Publisher | `./build/examples/topic/kcf_topic_pub 1000` | 발행 Hz; 기본 depth=1 |
+| Topic Subscriber | `./build/examples/topic/kcf_topic_sub 0 1000` | Callback 지연(ms), 출력 간격; `350 1`은 느린 Callback 관찰 |
+| Timer | `./build/examples/timer/kcf_timer_test` | 2/100 Hz, Stop, overrun, Topic 발행 후 자동 종료 |
+| Service Server | `./build/examples/service/kcf_service_server 22000` | UDP port, Add/SetValue |
+| Service Client | `./build/examples/service/kcf_service_client 22000 1000` | port, 연속 호출 수 |
+| Parameter Owner | `./build/examples/parameter/kcf_parameter_owner` | 현재 설정 제공 |
+| Parameter Client | `./build/examples/parameter/kcf_parameter_client` | 설정 읽기·변경; `watch` 인자로 변경 감시 |
+| Action Server | `./build/examples/action/kcf_action_server 22010` | UDP port |
+| Action Client | `./build/examples/action/kcf_action_client 22010 20` | port, target_count; 뒤에 callback_delay_ms, cancel_after_ms 선택 지정 |
+
+Action의 느린 Feedback은 Client 인자 `22010 20 350`, 취소는 `22010 100 0 350`으로 관찰합니다.
+Goal/Cancel/GetResult ID는 100/101/102, status Topic은 `/kcf_test_count_action/status`입니다.
+최종 결과는 GetResult로 확인하며 모든 중간 Feedback 수신을 보장하지 않습니다.
+통신 통합은 [integration](../examples/integration/), 오류·Reset은 [supervisor](../examples/supervisor/),
+SHM 복구는 [recovery](../examples/recovery/)를 참고합니다. 검증 명령과 과거 결과는 [06](06_VERIFICATION_AND_LIMITATIONS.md)에 있습니다.

@@ -1,7 +1,13 @@
 # KCF Framework v5.1 Status
 
-작업 브랜치: `dev`. Topic Queue 확장을 Framework **v5.1**로 확정합니다.
-CMake project version: **5.1.0**. Git commit/push/tag 생성은 이번 작업에 포함하지 않습니다.
+기준 브랜치: `dev`. Framework **v5.1**, CMake project version: **5.1.0**.
+
+2026-09-19 읽기 전용 확인 결과, GitHub dev와 로컬 HEAD는 모두
+[82fa3b274f51d847602b2a5e4936778ebd631257](https://github.com/Nyamkani/kss_control_framework/commit/82fa3b274f51d847602b2a5e4936778ebd631257)
+(`v5.1: extend Topic with bounded queue support`)입니다. v5.1 코드·문서는 이미 commit/push되어 있습니다.
+`git ls-remote origin refs/heads/dev 'refs/tags/*'`에서 원격 tag는 없었으며,
+[GitHub Releases API](https://api.github.com/repos/Nyamkani/kss_control_framework/releases)는 빈 목록을 반환했습니다.
+확인 시점에 원격 tag와 공개 Release는 없으며 버전 반영 commit과 구분합니다.
 [v5.0 checkpoint](V5_0_STATUS.md)는 당시 구현·검증 이력으로 보존합니다.
 
 ## Topic Queue 계약
@@ -34,12 +40,12 @@ Sequence 최대값에서는 Publish가 `-EOVERFLOW`를 반환합니다.
 ## 검증 이력 구분
 
 기존 v5.0의 22개 회귀 기록, Queue 구현 단계의 보고된 10개 영역/19개 회귀/Tool Echo 결과와
-이번 v5.1 최종 실행을 구분합니다. [최종 검증 기록](06_VERIFICATION_AND_LIMITATIONS.md#v51-final-verification)에
+v5.1 구현 완료 단계의 최종 실행을 구분합니다. [최종 검증 기록](06_VERIFICATION_AND_LIMITATIONS.md#v51-final-verification)에
 실행 명령·결과·범위를 기록합니다. 하드웨어·hard real-time·GUI 수동 재검증을 의미하지 않습니다.
 
 ## v5.1 최종 결과
 
-2026-09-19 현재 dev 작업 트리에서 실제 재실행:
+2026-09-19 v5.1 구현 완료 당시 dev 작업 트리에서 실제 실행한 기록:
 
 - 새 build/v5.1 디렉터리의 C++17 Debug 전체 configure/build: PASS.
 - 신규 Queue 필수 10개 영역: PASS.
@@ -47,4 +53,6 @@ Sequence 최대값에서는 Publish가 `-EOVERFLOW`를 반환합니다.
 - 기존 kcf_tools Backend/Topic Echo: **1/1 PASS** (Tool 소스 변경 없이 새 Core로 재빌드).
 
 기능 구현 변경을 추가하지 않고 기존 Queue 코드를 최종 검증했습니다.
-코드·문서는 로컬 변경 상태이며 commit/push/tag는 생성하지 않았습니다.
+위 결과는 v5.1 구현 검증 시점의 기록입니다. 이후 GitHub 반영은 상단 commit으로 확인했습니다.
+이번 README 통합에서는 문서와 링크만 검사했으며 기능 테스트를 재실행하지 않았습니다.
+Mecanum Application은 현재 Framework repository에 포함되지 않습니다.

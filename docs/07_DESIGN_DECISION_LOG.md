@@ -249,5 +249,5 @@ Decision Log는 기능 설계/구현 출처를 추적하며 모든 git operation
 | Retained limits | 단일 Publisher, dead-reader pin 잔존, 명시적 재연결, KEEP_LAST 유실 가능성 |
 | Implementation | SharedChannel/Publisher/Subscriber 및 DynamicTopicReader |
 | Verification | 구현 완료 보고: 전체 빌드, Queue 10개 영역, 기존 회귀 19개, Tool Backend/Topic Echo PASS; 당시 문서 반영 시 재실행 없음. [이전 보고](06_VERIFICATION_AND_LIMITATIONS.md#topic-queue-verification) |
-| Current Status | KCF Framework v5.1로 확정; Git commit/push/tag 생성 없음. [최종 검증](06_VERIFICATION_AND_LIMITATIONS.md#v51-final-verification) |
+| Current Status | KCF Framework v5.1로 확정; GitHub dev [82fa3b2](https://github.com/Nyamkani/kss_control_framework/commit/82fa3b274f51d847602b2a5e4936778ebd631257) 반영 확인; tag/Release는 [상태 문서](V5_1_STATUS.md) 참조. [최종 검증](06_VERIFICATION_AND_LIMITATIONS.md#v51-final-verification) |
 | Future Revisit Trigger | reader-liveness 회수 또는 전달 보장 요구 변경 시 별도 설계 |

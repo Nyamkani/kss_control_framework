@@ -2,6 +2,8 @@
 
 ## 증거 구분
 
+이번 README 통합 작업은 문서·링크·GitHub 상태만 확인했습니다. 아래 기능 검증 결과는 각 기록 시점의 결과이며 이번 작업의 재실행 결과가 아닙니다.
+
 ### Historical temporary verification artifacts
 
 아래 `/tmp/...` script/log 경로는 당시 개발 검증 근거이며 repository의 영구 artifact가 아닙니다.
@@ -170,7 +172,8 @@ ctest --test-dir /tmp/kcf-v51-tool-validation -R '^kcf_tool_real_backend$' --out
 `build/v5.1/r41-validation/` (추가 3개 로그 포함), `/tmp/kcf-v51-tool-build.log`, `/tmp/kcf-v51-tool-test.log`.
 이 경로는 개발 환경의 임시 산출물이며 repository에 포함하거나 영구 보존을 보장하지 않습니다.
 이 테스트는 GUI 수동 재검증, 실제 장치 검증, hard real-time 또는 dead-reader pin 자동 회수를 보장하지 않습니다.
-버전 확정에 따른 Git commit/push/tag 생성은 수행하지 않았습니다.
+당시 검증 이후 v5.1은 GitHub dev의 [82fa3b2](https://github.com/Nyamkani/kss_control_framework/commit/82fa3b274f51d847602b2a5e4936778ebd631257)에 반영되었습니다.
+현재 GitHub 반영·tag/Release 확인 상태는 [v5.1 상태](V5_1_STATUS.md)에 기록합니다.
 
 ## Manual GUI Verification
 
@@ -220,6 +223,28 @@ Result: **Manual console PASS**. 정밀한 hard real-time 보장을 의미하지
 Result: **Manual console PASS**. 취소 final count는 타이밍에 따라 달라진다.
 Hardware safety / hard real-time / 실제 Device I/O는 이번 v5.0 Framework 검증 범위가 아니다.
 
+## Historical v1.0–v4.3 — 통합 전 README의 검증 요약
+
+[HISTORICAL RECORD] 아래는 [통합 전 README 원문](https://github.com/Nyamkani/kss_control_framework/blob/82fa3b274f51d847602b2a5e4936778ebd631257/Readme.md)의 개발 당시 보고를 요약한 것입니다.
+**이번 문서 정리에서 재실행하지 않았으며**, v5.1 최종 실행 결과와 구분합니다.
+상세 단계·변경은 [Changelog](../Changelog.md)에 보존합니다.
+
+| 과거 범위 | 보존한 검증 기록 |
+| --- | --- |
+| v1.0 | clean build, Dummy 2 Hz, signal 종료, Bringup child 생성·회수 및 zombie 부재 |
+| v2.0 통신 | Topic snapshot 무결성·느린 수신·초기화 경합; Timer 2/100 Hz·Stop·overrun·Topic 300회; Service 1,000회·timeout/retry·중복·port 충돌 |
+| v2.0 Parameter / Action | Parameter Set 4,000회·lifecycle 100회; Action FSM·중복 Goal·Feedback 2,000회·lifecycle 25회·FD/SHM 정리 |
+| v3.0 Phase 3-7 | 네 fault·최초 오류·SAFE, Reset 10회·운전 gate·강제 정리, 20 Element 관찰, 통신 및 Integration 10 lifecycle |
+| Phase 3-8 | Supervisor SIGKILL/SIGSTOP, supervised 종료·reap, Standalone 영향 없음 |
+| Phase 3-9A | 당시 SystemStatus의 동일 객체에서 reader crash 20회 복구, Reset 중 inode·최초 오류 보존 |
+| Phase 3-9B | Topic/Parameter 각각 404회 Open/Create 경합, live owner/unknown header 보호, initializer crash 후 Reset |
+| v4.2 | Setup/Loop 성공·오류·예외, 정확히 1회 Shutdown, 오류 우선순위·실패 cycle heartbeat·partial cleanup, Runtime/Reset/Loss/통신 회귀 |
+| v4.3 | ExecutionMode 및 기존 회귀; Application monotonic utility의 실제 clock·변환·오류·freshness 경계값 임시 테스트 |
+
+과거 global SystemStatus와 Topic latest-only 설명은 당시 구조입니다. 현재 SystemStatus는 Application-scoped이고
+Topic v5.1은 Depth Queue입니다. v4.1 Mecanum M-0 및 v4.3 Application time utility는 과거 Application 개발 이력이며
+현재 Framework repository에 Mecanum 소스가 포함된다는 의미가 아닙니다. 1 kHz Loop 관찰 역시 hard real-time 보장이 아닙니다.
+
 ## Known Limitations
 
 | ID | Area | Limitation | Impact | Current Mitigation | Future Option | Status |
@@ -249,7 +274,9 @@ Supervisor metadata elements **64**, descriptor fields **128**. 이는 introspec
 [SupervisorInfo](../kcf/include/kcf/introspection/supervisor_info.hpp), [TypeDescriptor](../kcf/include/kcf/introspection/type_descriptor.hpp).
 기능별 구현 근거는 [03](03_IPC_AND_FEATURES.md), identity race는 [04](04_INTROSPECTION_AND_TOOL.md) 참조.
 
-추가 한계: blocked Setup/Loop의 강제 cleanup 불가, registry 조회의 synchronous 접근,
+추가 한계: Linux kernel uninterruptible sleep(D state)은 SIGKILL 이후에도 userspace에서 bounded 종료를 보장하지 못합니다.
+Runtime Parameter의 디스크 영속 저장은 제공하지 않습니다.
+그 외 blocked Setup/Loop의 강제 cleanup 불가, registry 조회의 synchronous 접근,
 죽은 process의 stale metadata가 남을 수 있음, 인증/remote security boundary 미제공.
 /tmp artifact는 영구 보존을 보장하지 않으므로 장기 release 증거로 필요하면 별도 보존 절차가 필요합니다.
 

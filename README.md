@@ -122,7 +122,8 @@ Topic Echo, Parameter 편집, Service Call을 지원합니다. Dynamic access에
 Topology/state는 수동 Refresh, Topic Echo는 polling입니다. Action UI, Timer endpoint, 일반 Topic Publish,
 사용자용 Reset/Launch manager는 제공 기능이 아닙니다. [Local 지원 범위](docs/04_INTROSPECTION_AND_TOOL.md)를 참조하세요.
 
-별도 Tool working tree의 Network 관측 확장에서는 공개 PeerDiscovery API로 Remote Host와
+별도 저장소의 **kcf_tools v0.12**는 GitHub main의
+[`f4fb447`](https://github.com/Nyamkani/kcf_tools/commit/f4fb4471fc0b03b24663eb20eede8d8491fd87f6)에 반영되어 있습니다. Network 관측에서는 공개 PeerDiscovery API로 Remote Host와
 Application·Element·T/P/S/A metadata, ONLINE/LOST, version·compatibility·capability를 표시합니다.
 Host 계층 Graph와 필터·읽기 전용 Remote Detail을 제공하며, 수동 Refresh는 background worker의 snapshot을 사용합니다.
 Remote Action metadata 표시는 Goal/Cancel 조작 UI와 다릅니다. Tool은 Gateway나 payload broker가 아닙니다.
@@ -161,14 +162,19 @@ Tool KCF+Qt 18/18, no-KCF 6/6 PASS는 별도 저장소의 기존 검증 결과�
 
 ## Version / Changelog
 
-현재 문서 기준 개발 버전은 **Framework v5.2 — Network IPC 확장**입니다.
+현재 버전은 **Framework v5.2 (5.2.0) — Network IPC 확장**입니다.
+GitHub dev의 [`0a3f2a6`](https://github.com/Nyamkani/kss_control_framework/commit/0a3f2a630cec209793f9ac6e99107752e9e01283)에 반영되었으며,
+이전 v5.1 기준 commit은 [`8360b6e`](https://github.com/Nyamkani/kss_control_framework/commit/8360b6e053472ba20acdfc62b7489e33122997ec)입니다.
 v5.1 Topic Queue 위에 Discovery/compatibility, Remote Parameter·Service·Action·Topic,
-Virtual LAN 검증과 Network proxy recovery를 추가한 working tree를 정리했습니다.
+Virtual LAN 검증과 Network proxy recovery를 포함합니다.
 별도 `kcf_tools`의 read-only 관측 연동과 미완료 범위도 [Changelog](Changelog.md#v52--network-ipc--remote-discoverycontroltopic)에 구분하여 기록합니다.
 
-이번 작업은 문서 정리입니다. **CMake project version과 Network `FrameworkVersion` 기본값은 아직 `5.1.0`**이며,
-문서의 v5.2 표기가 빌드/Discovery 광고 버전을 변경하지는 않습니다. 기능 검증 결과는 이전 실행 기록을 인용하며
-이번에 재실행하지 않았습니다. commit/push, v5.2 tag 또는 Release 생성은 수행하지 않았습니다.
+현재 checkout에서는 후속 정합성 보정으로 **CMake project version과 Network `FrameworkVersion` 기본값을 `5.2.0`으로 일치**시켰습니다.
+`NETWORK_PROTOCOL`은 Framework 버전 차이를 허용하고 Network major 및 capability 조건을 따릅니다.
+`EXACT_FRAMEWORK_VERSION`은 비교 대상 Framework 버전까지 정확히 일치해야 하므로 기본 profile은 `5.2.0`을 요구합니다.
+NetworkProtocolVersion 1.0, Discovery v2, Control TCP v1, Topic wire v1 및 기존 storage format은 변경하지 않았습니다.
+과거 구현 검증과 이번 보정의 실행 결과는 [검증 기록](docs/06_VERIFICATION_AND_LIMITATIONS.md)에서 구분합니다.
+Git tag/GitHub Release 생성 여부는 이번에 확인하지 않았으므로 공개 commit과 동일시하지 않습니다.
 
 [v5.1 상태](docs/V5_1_STATUS.md)와 [v5.0 이력](docs/V5_0_STATUS.md)은 당시 구현·검증 기록으로 보존합니다.
 v5.1의 GitHub 반영 및 2026-09-19 당시 tag/Release 확인 결과는 해당 이력 문서에 남깁니다.

@@ -8,7 +8,7 @@ namespace kcf::network
 // and the existing endpoint/control-model schema (PROTOCOL_VERSION).
 struct FrameworkVersion
 {
-    std::uint16_t major{5}, minor{1}, patch{0};
+    std::uint16_t major{5}, minor{2}, patch{0};
 };
 inline bool operator==(const FrameworkVersion& a, const FrameworkVersion& b)
 {
@@ -38,8 +38,10 @@ struct PeerProfile
 {
     FrameworkVersion framework;
     NetworkProtocolVersion network;
-    // Advertise only implemented features. Remote IPC and target execution
-    // remain unavailable in this build; synthetic profiles can test negotiation.
+    // Standalone PeerDiscovery defaults to DISCOVERY only. ControlNode sets
+    // REMOTE_PARAMETER/SERVICE/ACTION and TARGET_* capabilities on startup;
+    // REMOTE_TOPIC is advertised only when the enabled Topic Data Plane starts
+    // successfully before discovery. Capability bits are not protocol versions.
     CapabilitySet capabilities{CapabilityBit(Capability::DISCOVERY)};
 };
 inline bool operator==(const PeerProfile& a, const PeerProfile& b)

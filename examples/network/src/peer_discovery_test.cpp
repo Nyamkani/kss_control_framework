@@ -68,7 +68,7 @@ void Codec() {
     for(std::size_t i=0;i<bytes.size();++i) {
         decoded.host=Id(99);assert(n::DecodeDiscoveryPacket(bytes.data(),i,decoded)!=0 && decoded.host==Id(99));
     }
-    assert(bytes[5]==2 && bytes[11]==100 && bytes[81]==5 && bytes[83]==1 && bytes[87]==1 && bytes[99]==1);
+    assert(bytes[5]==2 && bytes[11]==100 && bytes[81]==5 && bytes[83]==2 && bytes[87]==1 && bytes[99]==1);
     assert(decoded.profile==original.profile);
     auto custom=original;custom.profile.framework={9,8,7};custom.profile.network={2,3};
     custom.profile.capabilities=n::KNOWN_CAPABILITIES | (1ull<<63);

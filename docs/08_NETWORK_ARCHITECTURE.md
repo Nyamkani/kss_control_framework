@@ -1,9 +1,14 @@
 # 08. Network IPC Common Contracts
 
-Framework v5.1 Local IPC를 유지한 Network 확장 기반입니다. **현재 Remote Parameter Get/Set, Remote Service Call, Remote Action Goal/Feedback/Result/Cancel 및 UDP Remote Topic을 지원합니다.**
+Framework v5.2는 v5.1 Local IPC 계약을 유지한 Network 확장입니다. **현재 Remote Parameter Get/Set, Remote Service Call, Remote Action Goal/Feedback/Result/Cancel 및 UDP Remote Topic을 지원합니다.**
 현재 구현은 공통 모델, UDP Discovery v2, compatibility, Local metadata 자동 수집, 공통 TCP Control transport, Remote Parameter/Service/Action과 별도의 Topic Data Plane입니다.
 Discovery는 metadata만 교환합니다. 실제 Parameter/Service 요청·응답은 peer당 같은 TCP Control connection으로 처리합니다.
-Framework 버전, 기존 Local API, SHM 및 Service protocol 버전을 변경하지 않습니다.
+공개 구현은 dev commit `0a3f2a630cec209793f9ac6e99107752e9e01283`에 반영되었습니다.
+후속 버전 정합성 보정은 CMake와 `FrameworkVersion` 기본값만 `5.2.0`으로 맞추며,
+NetworkProtocolVersion 1.0, Discovery v2, Control TCP v1, Topic wire v1,
+Topic Format 4, Parameter Format 3, Local Service protocol 2 및 Local API는 변경하지 않습니다.
+아래 단계별 working tree 검증·commit/push 미수행·재실행 및 timing 실패 기록은 당시 이력입니다.
+현재 보정의 실행 결과와 혼합하지 않으며 [별도 검증 기록](06_VERIFICATION_AND_LIMITATIONS.md)을 따릅니다.
 
 ## Local-first / peer-to-peer
 
@@ -359,7 +364,7 @@ Local 회귀 로그는 `build/discovery-local-validation/`, 추가 Queue/Timer �
 
 ### Version과 capability
 
-- `FrameworkVersion`: major/minor/patch, 기본 5.1.0. 진단 및 제품 운용의 exact-version 정책용입니다.
+- `FrameworkVersion`: major/minor/patch, 현재 기본 5.2.0 (최초 구현 당시 5.1.0). 진단 및 제품 운용의 exact-version 정책용입니다.
 - `NetworkProtocolVersion`: major/minor, 기본 1.0. 미래 Remote IPC wire 호환 계약의 버전입니다.
 - Discovery envelope version은 별도 2이며, 기존 endpoint/Control 모델의 `PROTOCOL_VERSION=1`은 그 모델 schema입니다.
   Framework/Network 버전을 이 단일 schema 필드에 넣지 않습니다. 기존 모델 validation 계약도 유지합니다.

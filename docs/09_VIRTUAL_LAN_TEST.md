@@ -2,6 +2,11 @@
 
 이 fixture는 물리적 두 장치 시험을 대신하는 **격리된 Linux Virtual LAN 시험**입니다. 배포용 container나 새로운 Framework 기능이 아닙니다. 기존 localhost Network regression과 별도 명령으로 실행하며 Framework protocol/API, Application, kcf_tools를 수정하지 않습니다.
 
+공개 상태 보충: 이 fixture와 proxy recovery 구현은 이후 v5.2 dev commit
+`0a3f2a630cec209793f9ac6e99107752e9e01283`에 반영되었습니다.
+아래 최초/후속 검증 결과와 당시 commit/push 미수행 기록은 historical fact로 유지합니다.
+이번 5.2.0 버전 정합성 작업에서는 Virtual LAN 전체 시험을 재실행하지 않았으며 새 PASS를 추가하지 않습니다.
+
 ## 구조와 격리
 
 ```text

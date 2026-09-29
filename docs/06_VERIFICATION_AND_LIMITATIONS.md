@@ -2,7 +2,7 @@
 
 ## 증거 구분
 
-이번 README 통합 작업은 문서·링크·GitHub 상태만 확인했습니다. 아래 기능 검증 결과는 각 기록 시점의 결과이며 이번 작업의 재실행 결과가 아닙니다.
+과거 README 통합 작업은 문서·링크·GitHub 상태만 확인했습니다. 각 기능 검증 기록은 해당 시점의 결과이며, 후속 버전 정합성 검증은 별도 절에서 구분합니다.
 
 ### Historical temporary verification artifacts
 
@@ -15,6 +15,47 @@ These paths were used during development verification and are not part of the re
 기존 v5.0 문서 정리 당시에는 코드/테스트/문서/로그 대조와 `ctest --test-dir build -N` 등록 수 확인을 수행했습니다.
 이전 Topic Queue 문서 반영에서는 아래 구현 완료 보고를 기록했으며 빌드·테스트·CTest 조회를 재실행하지 않았습니다.
 수치와 PASS는 아래 실행 출처의 범위에 한정됩니다. 하드웨어·hard real-time·무한 부하 보증이 아닙니다.
+
+## v5.2 공개 후 버전 정합성 검증
+
+기준: GitHub dev 및 로컬 HEAD `0a3f2a630cec209793f9ac6e99107752e9e01283`에
+이번 미커밋 버전/주석/문서 보정을 적용한 checkout입니다. **공개 commit 자체의 clean 검증과는 다릅니다.**
+`git ls-remote`로 Framework dev의 위 SHA와 kcf_tools main의
+`f4fb4471fc0b03b24663eb20eede8d8491fd87f6`을 확인했습니다. Tag/Release 여부는 확인하지 않았습니다.
+
+이번에 실제 실행한 결과:
+
+- 새 `/tmp/kcf-v52-version-check`에서 C++17 Debug 전체 configure/build: PASS.
+- 기존 `kcf_network_compatibility_test`, `kcf_network_contract_test`: PASS. 테스트 내용 변경 없음.
+- 기본 FrameworkVersion=5.2.0, NetworkProtocolVersion=1.0, standalone DISCOVERY-only 확인: PASS.
+  별도 임시 C++ 확인에서 5.2.0 ↔ 5.1.0은 NETWORK_PROTOCOL 정책에서 compatible,
+  EXACT_FRAMEWORK_VERSION에서는 mismatch, 5.2.0 ↔ 5.2.0 exact는 compatible임을 확인했습니다.
+- 기존 Network 회귀 8개 실행 항목 중 최초 7개 PASS, Discovery codec assertion 1개 FAIL.
+  원인은 기본 Framework minor의 wire byte 기대값 `bytes[83]==1`이었습니다.
+  **이 기대값만 `2`로 수정**하고 Discovery 전체 테스트를 재빌드·재실행하여 PASS했습니다.
+  Discovery envelope/offset/길이 및 malformed/이전 version 거부 의미는 변경하지 않았습니다.
+- 최종 각 항목 PASS: contract, compatibility, Discovery, Remote Parameter, Remote Service,
+  Remote Action, Remote Topic, proxy recovery. 사용자 IPC와 분리된 PID/SHM namespace에서 실행했습니다.
+- `git diff --check`와 수정 문서 로컬 파일 링크 검사: PASS.
+
+실행 명령:
+
+```sh
+cmake -S . -B /tmp/kcf-v52-version-check -DCMAKE_BUILD_TYPE=Debug
+cmake --build /tmp/kcf-v52-version-check -j4
+```
+
+회귀는 해당 build의 `examples/network/kcf_*_test` executable을 순차 실행했습니다.
+로그: `/tmp/kcf-v52-configure.log`, `/tmp/kcf-v52-build.log`, `/tmp/kcf-v52-regression/`.
+`results.json`은 최초 실행(Discovery 실패 포함), `discovery-recheck.log`는 수정 후 PASS 기록입니다.
+이 경로는 개발 검증용 임시 artifact이며 영구 배포물은 아닙니다.
+
+Runtime/Network 동작 변경은 Framework 광고 기본 버전 변경뿐입니다. NetworkProtocolVersion 1.0,
+Discovery v2, Control TCP v1, Topic wire v1, Topic Format 4, Parameter Format 3,
+Local Service protocol 2는 유지했습니다. Compatibility 정책 구현과 나머지 테스트 코드는 그대로입니다.
+Virtual LAN 전체 시험, 물리 LAN, sanitizer, 전체 Local 회귀 및 kcf_tools 테스트는 이번에 재실행하지 않았습니다.
+아래 기존 기록과 Network/Virtual LAN 문서의 과거 timing 실패·재실행 결과를 새 PASS로 대체하지 않습니다.
+이번 보정의 commit/push는 수행하지 않았습니다.
 
 ## 기존 v5.0 Automated / Regression Verification
 

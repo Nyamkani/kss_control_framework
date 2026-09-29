@@ -9,10 +9,16 @@ v1.0~v4.3은 historical record입니다. 당시 Mecanum 경로·실행 범위를
 
 ## v5.2 — Network IPC / Remote Discovery·Control·Topic
 
-현재 Network 확장을 포함한 working tree의 개발 이력입니다. v5.1 Topic Queue 및 Local IPC 계약을 유지합니다.
-이번 정리는 문서 버전을 v5.2로 지정하며, Git tag/Release 생성이나 commit/push 완료를 뜻하지 않습니다.
-CMake project version과 Network `FrameworkVersion` 기본값은 아직 `5.1.0`입니다. 이번 문서 작업에서
-이를 변경하거나 Discovery 광고 버전이 `5.2.0`으로 바뀌었다고 간주하지 않습니다.
+Framework v5.2 구현은 GitHub dev commit
+[`0a3f2a6`](https://github.com/Nyamkani/kss_control_framework/commit/0a3f2a630cec209793f9ac6e99107752e9e01283)에 반영되었습니다.
+이전 v5.1 기준은 `8360b6e053472ba20acdfc62b7489e33122997ec`이며 Topic Queue 및 Local IPC 계약은 유지합니다.
+
+Historical: 최초 v5.2 문서 정리 당시에는 working tree를 기준으로 기록했고 commit/push·기능 테스트 재실행을 하지 않았습니다.
+당시 CMake/Network 광고 기본값은 `5.1.0`이었습니다. 이후 위 공개 commit 반영을 확인하고,
+현재 checkout의 후속 보정에서 두 기본값을 `5.2.0`으로 일치시켰습니다. Protocol/storage version과 compatibility 정책은 그대로입니다.
+Discovery codec 테스트의 Framework minor 기대 byte만 1→2로 정정했습니다. 전체 빌드와 compatibility/contract 및 Network 회귀 결과는 아래 링크의 후속 기록을 따릅니다.
+과거 단계별 검증 기록은 아래에 보존하며 후속 실행 결과는 [검증 문서](docs/06_VERIFICATION_AND_LIMITATIONS.md)에 별도로 기록합니다.
+Git tag/GitHub Release 여부는 이번에 확인하지 않았습니다.
 
 ### 1. Network 공통 모델
 
@@ -72,6 +78,9 @@ CMake project version과 Network `FrameworkVersion` 기본값은 아직 `5.1.0`�
 
 ### 9. kcf_tools read-only 관측 연동 — 별도 저장소
 
+후속 공개 상태: kcf_tools **v0.12**, GitHub main commit
+[`f4fb447`](https://github.com/Nyamkani/kcf_tools/commit/f4fb4471fc0b03b24663eb20eede8d8491fd87f6)에 반영되었습니다.
+
 - 공개 PeerDiscovery API를 이용한 background 관측과 수동 Refresh snapshot, Local/Remote identity 분리.
 - Host → Application → Element → T/P/S/A metadata Graph, ONLINE/LOST, version·compatibility·capability 상세.
 - Host/Application 필터, Local/Remote·T/P/S/A toggle, Zoom/Pan 및 읽기 전용 Remote Detail.
@@ -82,7 +91,7 @@ CMake project version과 Network `FrameworkVersion` 기본값은 아직 `5.1.0`�
 
 ### 검증 기록과 남은 제한
 
-아래는 구현 단계에서 실제 수행하고 기록한 결과의 요약입니다. **이번 문서 정리에서는 build/test를 재실행하지 않았습니다.**
+아래는 구현 단계에서 실제 수행하고 기록한 결과의 요약입니다. **당시 v5.2 문서 정리에서는 build/test를 재실행하지 않았습니다.** 후속 버전 보정의 검증은 별도 기록입니다.
 
 - C++17 전체 Debug build 및 새 Network 코드 warning 검사 PASS.
 - Network contract/compatibility/Discovery/Parameter/Service/Action/Topic 7개 회귀와 proxy recovery 검증 PASS 기록.

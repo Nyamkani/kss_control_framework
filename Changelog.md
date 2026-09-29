@@ -7,6 +7,96 @@ Phase 2 통신 기능은 v2.0, Phase 3 supervision/recovery는 v3.0에 기록합
 이 문서의 버전 표기는 개발 이력 구분이며 Git tag 또는 배포 생성 여부를 의미하지 않습니다.
 v1.0~v4.3은 historical record입니다. 당시 Mecanum 경로·실행 범위를 현재 Framework 소스 구성으로 해석하지 않습니다.
 
+## v5.2 — Network IPC / Remote Discovery·Control·Topic
+
+현재 Network 확장을 포함한 working tree의 개발 이력입니다. v5.1 Topic Queue 및 Local IPC 계약을 유지합니다.
+이번 정리는 문서 버전을 v5.2로 지정하며, Git tag/Release 생성이나 commit/push 완료를 뜻하지 않습니다.
+CMake project version과 Network `FrameworkVersion` 기본값은 아직 `5.1.0`입니다. 이번 문서 작업에서
+이를 변경하거나 Discovery 광고 버전이 `5.2.0`으로 바뀌었다고 간주하지 않습니다.
+
+### 1. Network 공통 모델
+
+- Local-first / 중앙 Master 없는 peer-to-peer 구조, Host·boot·Runtime·Endpoint identity 정의.
+- LOCAL 기본 / REMOTE opt-in, CONTROL(HIGH)과 TOPIC(NORMAL) 분리 및 bounded resource 계약.
+- ENDPOINT / HOST / APPLICATION / GROUP / ALL target, endpoint별 결과·timeout·부분 실패 모델 추가.
+- type/schema/encoding/size 검증과 operation tag codec 추가. Payload 측정 Sequence·Timestamp·Validity는 Application 책임 유지.
+
+### 2. Peer Discovery 및 Compatibility
+
+- IPv4 UDP multicast announce와 필요 시 unicast metadata 교환, process-local Peer Table 구현.
+- ONLINE/LOST, announce timeout, metadata revision, boot/session 변경, 자기 자신 제외와 Start/Stop 정리.
+- Discovery v2에 Framework/Network version 및 capability 포함. peer 호환성과 endpoint type·scope·target 호환성을 구분.
+- malformed/이전 wire version 거부, metadata 상한 및 재조립 검증. 이름이나 IP 대신 전체 identity 사용.
+
+### 3. Local metadata 자동 연동 / Control Transport / Remote Parameter
+
+- 기존 introspection에서 Application·Element·T/P/S/A metadata를 수집하고 변경·삭제를 revision에 반영.
+- Control TCP v1, bounded frame/queue, request correlation, timeout/disconnect 및 중복 실행 방지 처리.
+- 명시적 exposure와 호환성 검사 후 기존 Local Parameter Get/Set 호출. 5종 Target과 endpoint별 fan-out 결과 제공.
+- Network worker와 Local Runtime/IPC를 분리하고 자동 request retry 없이 실행 불확실성을 전달.
+
+### 4. Remote Service
+
+- 공통 Control Transport를 통해 기존 Local Service handler를 호출하고 request/response type 검증.
+- Target/fan-out, endpoint별 성공·실패·timeout 및 `execution_unknown` 처리.
+- Network 실패를 Local handler 미실행이나 rollback으로 해석하지 않으며 자동 재호출하지 않음.
+
+### 5. Remote Action
+
+- Local Action introspection과 DynamicActionClient를 연결하고 Goal/Feedback/Result/Cancel 구현.
+- Feedback은 bounded latest, terminal Result는 별도 전달. Cancel 수락과 실제 CANCELED를 구분.
+- 연결 소실 시 Local Goal을 자동 취소하지 않음. 자동 Goal/Cancel retry 및 기존 Goal re-attach는 미지원.
+
+### 6. Remote Topic Data Plane
+
+- Control과 분리한 UDP unicast Data Plane 및 Topic wire v1 구현.
+- `remote_topics` allowlist, 호환 type과 실제 Subscriber를 확인한 route만 생성.
+- Best-effort latest-data, 기본 최대 50 Hz, 재전송 없음. Datagram/payload 상한과 큰 payload 거부.
+- 수신 Gateway의 native TypeDescriptor catalog로 Local proxy를 bootstrap하고 기존 Subscriber API 사용.
+- route 및 sent/received/drop/duplicate/out-of-order/missed/error 진단을 Gateway 객체에서 제공.
+
+### 7. 격리된 Virtual 2-Host LAN
+
+- 독립 network/IPC/mount namespace, 각 Host의 private `/dev/shm`, 실제 veth/bridge fixture 추가.
+- Discovery·Parameter·Service·Action·Topic 및 동시 부하, peer SIGKILL/restart, NIC down/up 검증.
+- Netem loss/delay/jitter/duplicate/reorder와 timeout 불확실성 검증. 일반 회귀와 분리된 opt-in runner 제공.
+- 최초 stale proxy의 수동 정리 제한은 historical record로 보존하고 다음 복구 단계의 결과와 구분.
+
+### 8. Network proxy stale SHM 안전 복구
+
+- Network 전용 ownership sidecar v1로 owner Host/boot/PID/start_ticks, source 및 Topic/type/inode 관계 기록.
+- 죽은 Network Gateway 소유임이 증명된 proxy만 자동 복구. Local Publisher, live owner, unknown/corrupt object는 보호.
+- 정상 소멸 cleanup, SIGKILL 후 복구, orphan sidecar 및 동시 복구 검증.
+- 기존 Local Subscriber mapping은 자동 교체하지 않으므로 명시적 Close/Create 또는 process 재시작 필요.
+- Local Topic Format 4 / Parameter Format 3 / Service protocol 2 유지. Discovery v2 / Control TCP v1 / Topic wire v1 유지.
+
+### 9. kcf_tools read-only 관측 연동 — 별도 저장소
+
+- 공개 PeerDiscovery API를 이용한 background 관측과 수동 Refresh snapshot, Local/Remote identity 분리.
+- Host → Application → Element → T/P/S/A metadata Graph, ONLINE/LOST, version·compatibility·capability 상세.
+- Host/Application 필터, Local/Remote·T/P/S/A toggle, Zoom/Pan 및 읽기 전용 Remote Detail.
+- Parameter/Service/Action은 발견된 소유 관계만 표시. Remote endpoint를 Local 조작 화면으로 연결하지 않음.
+- **외부 Gateway active route/statistics·proxy 판별은 미완료**: `GetTopicDiagnostics()`가 process-local 객체 API이고,
+  Discovery에는 타 Gateway의 진단 조회 경로가 없음. 같은 이름/type만으로 cross-host edge를 생성하지 않음.
+- Tool은 forwarding/Gateway가 아니며 Remote Set/Call/Goal/Cancel UI는 추가하지 않음. Tool 버전은 Framework v5.2와 별도.
+
+### 검증 기록과 남은 제한
+
+아래는 구현 단계에서 실제 수행하고 기록한 결과의 요약입니다. **이번 문서 정리에서는 build/test를 재실행하지 않았습니다.**
+
+- C++17 전체 Debug build 및 새 Network 코드 warning 검사 PASS.
+- Network contract/compatibility/Discovery/Parameter/Service/Action/Topic 7개 회귀와 proxy recovery 검증 PASS 기록.
+  Action·Topic에서 최초 대기 assertion 실패 후 단독/후속 재실행 PASS한 이력이 있으며 원인은 확정하지 않음.
+- 기존 Local IPC 11개 회귀 PASS. Proxy recovery 및 Remote Topic ASan/UBSan PASS.
+- Virtual LAN 전체 재검증 PASS: 수동 shm unlink 없이 SIGKILL → proxy recovery → 새 Subscriber 연결 → 수신 재개.
+- 별도 Tool 저장소: KCF+Qt 18/18, Framework 없는 Mock/stub+Qt 6/6 PASS. 후속 상세 선택 해제 보완 후 전체 회귀도 PASS.
+- Framework Virtual LAN PASS와 Tool의 loopback/GUI 검증은 별개. Tool+Virtual LAN 통합 및 실제 물리 LAN은 미검증.
+- Reliable Topic QoS, 범용 schema/codec 교환, 자동 request retry, Action re-attach, 인증·권한·암호화는 미지원.
+  기존 단일 Publisher, dead-reader pin, SHM 재생성 후 명시적 재연결 제한은 유지.
+
+세부 API·단계별 검증은 [Network architecture](docs/08_NETWORK_ARCHITECTURE.md),
+[Virtual LAN 검증](docs/09_VIRTUAL_LAN_TEST.md)에 기록합니다.
+
 ## v5.1 — Topic Queue
 
 - Depth 기반 Bounded Ring Buffer 추가: 기본 Depth=1 Snapshot, Depth=N KEEP_LAST.

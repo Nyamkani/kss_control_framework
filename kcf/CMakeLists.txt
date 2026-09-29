@@ -1,4 +1,15 @@
 add_library(kcf_core
+    src/network/topic_protocol.cpp
+    src/network/topic_proxy.cpp
+    src/network/topic_data_plane.cpp
+    src/action_registry.cpp
+    src/dynamic_action_client.cpp
+    src/network/parameter_codec.cpp
+    src/network/local_metadata.cpp
+    src/network/control_frame.cpp
+    src/network/control_node.cpp
+    src/network/discovery_protocol.cpp
+    src/network/peer_discovery.cpp
     src/service_registry.cpp
     src/dynamic_service_client.cpp
     src/dynamic_access.cpp

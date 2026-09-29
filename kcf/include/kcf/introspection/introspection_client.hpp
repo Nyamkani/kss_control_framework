@@ -5,6 +5,7 @@
 #include "kcf/introspection/type_descriptor.hpp"
 #include "kcf/introspection/service_info.hpp"
 #include <vector>
+#include "kcf/introspection/action_info.hpp"
 
 namespace kcf
 {
@@ -15,6 +16,7 @@ public:
     // 0 replaces output (possibly empty); negative errno leaves output unchanged.
     // Candidates may disappear during enumeration. No atomic system-wide snapshot.
     // Uses blocking low-rate storage access: do not call on a GUI event thread.
+    int ListActions(const RuntimeInfo&, std::vector<ActionInfo>&);
     int ListServices(const RuntimeInfo& runtime, std::vector<ServiceInfo>& services);
     int ListSupervisors(std::vector<SupervisorInfo>& supervisors);
     int ListRuntimes(std::vector<RuntimeInfo>& runtimes);

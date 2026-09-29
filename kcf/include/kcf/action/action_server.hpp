@@ -2,6 +2,7 @@
 #include "kcf/action/action_types.hpp"
 #include "kcf/ipc/publisher.hpp"
 #include "kcf/service/service_server.hpp"
+#include "kcf/introspection/detail/action_registry.hpp"
 #include <memory>
 #include <mutex>
 #include <limits>
@@ -19,6 +20,8 @@ class ActionServer
     static_assert(!std::is_pointer_v<Goal> && !std::is_pointer_v<Feedback> && !std::is_pointer_v<Result>);
     struct Core
     {
+        std::uint64_t registration{0};
+        ~Core(){detail::UnregisterAction(registration);}
         std::mutex mutex;
         Publisher<ActionStatus<Feedback>> publisher;
         ActionHeader header{};
@@ -159,6 +162,20 @@ public:
             { if (auto c = weak.lock()) c->GetResult(req, res); else { res.goal_id=req.goal_id; res.result_code=-ESHUTDOWN; } });
         if (!error) error = core->Flush();
         if (error) { core->publisher.Unlink(); return error; }
+        // Observational only: unavailable descriptors never affect Local Action.
+        if constexpr(std::is_standard_layout_v<Goal> && std::is_standard_layout_v<Feedback> && std::is_standard_layout_v<Result>) {
+            ActionInfo info;info.port=server.Port();info.ids=ids;
+            if(topic.size()<sizeof(info.name))std::memcpy(info.name,topic.c_str(),topic.size()+1);
+            info.goal_type_id=detail::RegisterEndpointType<Goal>();info.feedback_type_id=detail::RegisterEndpointType<Feedback>();info.result_type_id=detail::RegisterEndpointType<Result>();
+            info.goal_request_size=sizeof(ActionGoalRequest<Goal>);info.goal_offset=offsetof(ActionGoalRequest<Goal>,goal);
+            info.status_size=sizeof(ActionStatus<Feedback>);info.status_alignment=alignof(ActionStatus<Feedback>);info.feedback_offset=offsetof(ActionStatus<Feedback>,feedback);
+            info.result_response_size=sizeof(ActionResultResponse<Result>);info.result_offset=offsetof(ActionResultResponse<Result>,result);
+            info.goal_request_identity=detail::DeclaredStorageIdentity<ActionGoalRequest<Goal>>();info.goal_response_identity=detail::DeclaredStorageIdentity<ActionGoalResponse>();
+            info.cancel_request_identity=detail::DeclaredStorageIdentity<ActionCancelRequest>();info.cancel_response_identity=detail::DeclaredStorageIdentity<ActionCancelResponse>();
+            info.result_request_identity=detail::DeclaredStorageIdentity<ActionResultRequest>();info.result_response_identity=detail::DeclaredStorageIdentity<ActionResultResponse<Result>>();
+            info.status_identity=detail::DeclaredStorageIdentity<ActionStatus<Feedback>>();
+            core->registration=detail::RegisterAction(info);
+        }
         core_ = std::move(core);
         return 0;
     }

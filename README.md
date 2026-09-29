@@ -1,4 +1,4 @@
-# KSS Control Framework (KCF) v5.1
+# KSS Control Framework (KCF) v5.2
 
 KCF는 Linux 제어 시스템의 Process lifecycle, 실행·통신 구조를 공통화하는 C++17 Framework입니다.
 로봇·산업 장비·센서·액추에이터·SBC 기반 시스템에서 기능별 process를 독립적으로 개발·실행·검증하고,
@@ -36,7 +36,26 @@ SystemStatus는 **Application instance(PID + start_ticks)별 scope**를 사용�
 | Service | localhost UDP request/response, 명시적 port/service_id |
 | Timer | process-local periodic callback worker |
 | Action | Service + status Topic 기반 Goal/Feedback/Result/Cancel |
-| Introspection | Runtime/Endpoint/Supervisor/type/Service metadata와 dynamic access |
+| Network | Discovery v2, compatibility, Control TCP v1, Remote Parameter/Service/Action, UDP Remote Topic; 명시적 allowlist와 5종 Target |
+| Introspection | Runtime/Endpoint/Supervisor/type/Service/Action metadata와 dynamic access |
+
+Network Action은 기존 Local Action을 호출하며, Application에 별도 Network 등록을 요구하지 않습니다.
+`metadata.remote_actions`로 노출을 허용하고 `ControlNode::StartAction` / `CancelAction`을 사용합니다.
+Feedback은 bounded latest 방식이며 Cancel 수락과 terminal 취소를 구분합니다.
+**연결 소실은 Local Action을 취소하지 않습니다.** Goal/Cancel timeout에는 적용 여부가 불확실할 수 있고,
+자동 retry 및 기존 Goal 재연결은 없습니다. [Network 계약과 사용법](docs/08_NETWORK_ARCHITECTURE.md#remote-action--공통-control과-local-action-연결)을 확인하세요.
+
+Remote Topic은 `remote_topics` allowlist와 실제 compatible Subscriber를 확인한 뒤 UDP unicast로 전달합니다.
+Control과 분리된 NORMAL Data Plane이며 best-effort latest-data, 기본 최대 50 Hz, 재전송 없음입니다.
+수신 Gateway의 native TypeDescriptor catalog로 빈 Local proxy를 먼저 준비한 뒤 기존 Subscriber를 생성합니다.
+Local Topic Format 4와 API는 유지하며 큰 payload는 명시적으로 거부합니다.
+Gateway 재시작 시 ownership sidecar로 증명된 죽은 Network proxy만 자동 복구합니다.
+일반 Local Publisher·unknown SHM은 삭제하지 않으며, 이전 mapping을 가진 Subscriber는 명시적으로 재연결합니다.
+[설정·bootstrap·크기 상한·proxy 수명](docs/08_NETWORK_ARCHITECTURE.md#remote-topic-data-plane)을 확인하세요.
+
+격리된 두 가상 Host의 실제 veth/bridge 통합 시험은
+`./tests/network_virtual/run_virtual_network_test.sh`로 실행합니다.
+[Virtual LAN 구성·권한·장애 주입·결과](docs/09_VIRTUAL_LAN_TEST.md)를 참고하세요. 일반 빌드와 별도의 opt-in 시험입니다.
 
 ## Quick Start
 
@@ -52,7 +71,7 @@ cmake --build build -j4
 Publisher/Subscriber 출력 확인 후 Ctrl+C로 종료합니다. 가장 작은 Standalone 실행은
 `./build/examples/dummy/kcf_dummy`입니다. 상세 실행법은 [Pub/Sub 예제](examples/pubsub/README.md)를 참조하세요.
 
-## Topic v5.1 간단 사용법
+## Topic Queue 간단 사용법 (v5.1부터, v5.2 유지)
 
 아래는 Publisher/Subscriber 각각의 설정과 읽기 API 요약입니다. `Message`는 Application Payload 타입이며,
 실제 코드에서는 각 호출의 반환값과 자원 정리를 처리합니다.
@@ -101,12 +120,23 @@ Application의 Driver와 안전 정책은 이 예제들이 대신 제공하지 �
 [kcf_tools](https://github.com/Nyamkani/kcf_tools)는 별도 repository입니다. Application/Element 탐색,
 Topic Echo, Parameter 편집, Service Call을 지원합니다. Dynamic access에는 명시적인 TypeDescriptor가 필요합니다.
 Topology/state는 수동 Refresh, Topic Echo는 polling입니다. Action UI, Timer endpoint, 일반 Topic Publish,
-사용자용 Reset/Launch manager는 제공 기능이 아닙니다. [지원 범위](docs/04_INTROSPECTION_AND_TOOL.md)를 참조하세요.
+사용자용 Reset/Launch manager는 제공 기능이 아닙니다. [Local 지원 범위](docs/04_INTROSPECTION_AND_TOOL.md)를 참조하세요.
+
+별도 Tool working tree의 Network 관측 확장에서는 공개 PeerDiscovery API로 Remote Host와
+Application·Element·T/P/S/A metadata, ONLINE/LOST, version·compatibility·capability를 표시합니다.
+Host 계층 Graph와 필터·읽기 전용 Remote Detail을 제공하며, 수동 Refresh는 background worker의 snapshot을 사용합니다.
+Remote Action metadata 표시는 Goal/Cancel 조작 UI와 다릅니다. Tool은 Gateway나 payload broker가 아닙니다.
+
+**외부 Gateway의 active route/statistics 및 proxy 판별은 아직 미지원**입니다.
+`ControlNode::GetTopicDiagnostics()`는 해당 객체 내부 조회이며 타 process의 공개 관측 API가 없습니다.
+따라서 이름/type이 같다는 이유로 cross-host edge를 그리지 않습니다. Remote Set/Call/Goal/Cancel UI도 없습니다.
+Tool KCF+Qt 18/18, no-KCF 6/6 PASS는 별도 저장소의 기존 검증 결과이며, Tool+Virtual LAN과 실제 물리 LAN은 미검증입니다.
 
 ## 호환성과 주요 제한 사항
 
 - **Topic SHM Format 4 / Parameter Format 3**. 이전 Topic Format 3과 바이너리 비호환이므로 Publisher/Subscriber 및 Tool을 호환 Core로 재빌드해야 합니다. 이전 SHM은 자동 삭제·변환하지 않습니다.
-- 같은 Linux 호스트와 호환 Payload ABI가 필요합니다. Payload는 fixed-size trivially-copyable이며 pointer/heap ownership을 포함하지 않습니다.
+- Local IPC는 같은 Linux 호스트와 호환 Payload ABI가 필요합니다. Payload는 fixed-size trivially-copyable이며 pointer/heap ownership을 포함하지 않습니다. Network는 별도 type/schema/encoding 검증과 명시적 노출 설정을 사용합니다.
+- Remote Topic은 유실 없는 Queue 복제가 아닌 best-effort 최신값 전달입니다. 자동 retry·Action re-attach·범용 schema 교환·인증/암호화는 미지원이며 실제 물리 LAN/이기종 장치 검증은 남아 있습니다.
 - Topic은 단일 Publisher/쓰기 thread입니다. Dead-reader pin을 자동 회수하지 않으며 Slot 부족은 `-EAGAIN`입니다. KEEP_LAST는 유실 없는 전달 보장이 아닙니다.
 - SHM 재생성 후 명시적 재연결이 필요합니다. DynamicTopicReader는 교체를 `-ESTALE`로 알립니다.
 - 무한 block된 Setup/Loop의 cleanup, hard real-time, Device watchdog/hardware safety는 보장하지 않습니다. Software SAFE는 장치 안전 기능을 대체하지 않습니다.
@@ -124,13 +154,22 @@ Topology/state는 수동 Refresh, Topic Echo는 polling입니다. Action UI, Tim
 - [Application 개발 가이드](docs/05_APPLICATION_DEVELOPMENT_GUIDE.md)
 - [검증·한계](docs/06_VERIFICATION_AND_LIMITATIONS.md)
 - [설계 결정 기록](docs/07_DESIGN_DECISION_LOG.md)
+- [Network IPC 공통 계약](docs/08_NETWORK_ARCHITECTURE.md) — Discovery·compatibility·Control·Remote IPC·proxy recovery
+- [Virtual 2-Host LAN 검증](docs/09_VIRTUAL_LAN_TEST.md) — 격리된 통합 시험과 장애·재시작 검증
 
 공개 문서는 `docs/`에 포함됩니다. `docs/instructions/`만 Git ignore된 로컬 개발 지침 디렉터리입니다.
 
 ## Version / Changelog
 
-Framework **v5.1** (CMake `5.1.0`)은 GitHub `dev`의
-[82fa3b2 — Topic bounded queue](https://github.com/Nyamkani/kss_control_framework/commit/82fa3b274f51d847602b2a5e4936778ebd631257)에 반영되어 있습니다.
-확인 시점(2026-09-19)에 원격 Git tag와 공개 GitHub Release는 없습니다.
-[v5.1 상태](docs/V5_1_STATUS.md), [v5.0 이력](docs/V5_0_STATUS.md), [Changelog](Changelog.md)를 구분해 참고하세요.
-Framework 버전과 Tool v0.1은 별개입니다. 통합 전 README 원문은 Git history에서 확인할 수 있습니다.
+현재 문서 기준 개발 버전은 **Framework v5.2 — Network IPC 확장**입니다.
+v5.1 Topic Queue 위에 Discovery/compatibility, Remote Parameter·Service·Action·Topic,
+Virtual LAN 검증과 Network proxy recovery를 추가한 working tree를 정리했습니다.
+별도 `kcf_tools`의 read-only 관측 연동과 미완료 범위도 [Changelog](Changelog.md#v52--network-ipc--remote-discoverycontroltopic)에 구분하여 기록합니다.
+
+이번 작업은 문서 정리입니다. **CMake project version과 Network `FrameworkVersion` 기본값은 아직 `5.1.0`**이며,
+문서의 v5.2 표기가 빌드/Discovery 광고 버전을 변경하지는 않습니다. 기능 검증 결과는 이전 실행 기록을 인용하며
+이번에 재실행하지 않았습니다. commit/push, v5.2 tag 또는 Release 생성은 수행하지 않았습니다.
+
+[v5.1 상태](docs/V5_1_STATUS.md)와 [v5.0 이력](docs/V5_0_STATUS.md)은 당시 구현·검증 기록으로 보존합니다.
+v5.1의 GitHub 반영 및 2026-09-19 당시 tag/Release 확인 결과는 해당 이력 문서에 남깁니다.
+Framework 버전과 별도 Tool 버전은 독립적입니다. 통합 전 README 원문은 Git history에서 확인할 수 있습니다.

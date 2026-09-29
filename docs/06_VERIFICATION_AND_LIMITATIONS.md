@@ -18,6 +18,13 @@ These paths were used during development verification and are not part of the re
 
 ## v5.2 공개 후 버전 정합성 검증
 
+이 절은 당시 `0a3f2a6` 기반 checkout에 미커밋 보정을 적용해 수행한 historical 검증 기록입니다.
+해당 version/document alignment 변경은 이후 KCF v5.2의 5.2.0 version-alignment commit
+`d41fc2fc71d3b60b0475035ec56ac32b92ffb849`로 반영되었습니다(Framework v5.2 / 5.2.0).
+아래의 “이번”, “미커밋”, “commit/push 미수행”은 당시 작업을 가리킵니다.
+이번 공개 상태 문서 마감에서는 build/test를 재실행하지 않았으며,
+아래 PASS를 `d41fc2f` clean commit에서 실행한 결과로 소급하지 않습니다.
+
 기준: GitHub dev 및 로컬 HEAD `0a3f2a630cec209793f9ac6e99107752e9e01283`에
 이번 미커밋 버전/주석/문서 보정을 적용한 checkout입니다. **공개 commit 자체의 clean 검증과는 다릅니다.**
 `git ls-remote`로 Framework dev의 위 SHA와 kcf_tools main의

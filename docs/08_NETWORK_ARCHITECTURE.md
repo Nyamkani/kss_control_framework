@@ -3,12 +3,13 @@
 Framework v5.2는 v5.1 Local IPC 계약을 유지한 Network 확장입니다. **현재 Remote Parameter Get/Set, Remote Service Call, Remote Action Goal/Feedback/Result/Cancel 및 UDP Remote Topic을 지원합니다.**
 현재 구현은 공통 모델, UDP Discovery v2, compatibility, Local metadata 자동 수집, 공통 TCP Control transport, Remote Parameter/Service/Action과 별도의 Topic Data Plane입니다.
 Discovery는 metadata만 교환합니다. 실제 Parameter/Service 요청·응답은 peer당 같은 TCP Control connection으로 처리합니다.
-공개 구현은 dev commit `0a3f2a630cec209793f9ac6e99107752e9e01283`에 반영되었습니다.
-후속 버전 정합성 보정은 CMake와 `FrameworkVersion` 기본값만 `5.2.0`으로 맞추며,
+Network 기능은 dev commit `0a3f2a630cec209793f9ac6e99107752e9e01283`에 최초 반영되었습니다.
+KCF v5.2의 5.2.0 version-alignment commit은 `d41fc2fc71d3b60b0475035ec56ac32b92ffb849`입니다.
+해당 보정에서 CMake와 `FrameworkVersion` 기본값을 `5.2.0`으로 맞췄으며,
 NetworkProtocolVersion 1.0, Discovery v2, Control TCP v1, Topic wire v1,
 Topic Format 4, Parameter Format 3, Local Service protocol 2 및 Local API는 변경하지 않습니다.
 아래 단계별 working tree 검증·commit/push 미수행·재실행 및 timing 실패 기록은 당시 이력입니다.
-현재 보정의 실행 결과와 혼합하지 않으며 [별도 검증 기록](06_VERIFICATION_AND_LIMITATIONS.md)을 따릅니다.
+당시 버전 보정의 실행 결과와 혼합하지 않으며 [별도 검증 기록](06_VERIFICATION_AND_LIMITATIONS.md)을 따릅니다.
 
 ## Local-first / peer-to-peer
 

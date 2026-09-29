@@ -9,13 +9,15 @@ v1.0~v4.3은 historical record입니다. 당시 Mecanum 경로·실행 범위를
 
 ## v5.2 — Network IPC / Remote Discovery·Control·Topic
 
-Framework v5.2 구현은 GitHub dev commit
-[`0a3f2a6`](https://github.com/Nyamkani/kss_control_framework/commit/0a3f2a630cec209793f9ac6e99107752e9e01283)에 반영되었습니다.
+KCF v5.2의 5.2.0 version-alignment commit은
+[`d41fc2fc71d3b60b0475035ec56ac32b92ffb849`](https://github.com/Nyamkani/kss_control_framework/commit/d41fc2fc71d3b60b0475035ec56ac32b92ffb849)입니다.
+Network 기능 최초 공개는 dev commit
+[`0a3f2a6`](https://github.com/Nyamkani/kss_control_framework/commit/0a3f2a630cec209793f9ac6e99107752e9e01283)입니다.
 이전 v5.1 기준은 `8360b6e053472ba20acdfc62b7489e33122997ec`이며 Topic Queue 및 Local IPC 계약은 유지합니다.
 
 Historical: 최초 v5.2 문서 정리 당시에는 working tree를 기준으로 기록했고 commit/push·기능 테스트 재실행을 하지 않았습니다.
 당시 CMake/Network 광고 기본값은 `5.1.0`이었습니다. 이후 위 공개 commit 반영을 확인하고,
-현재 checkout의 후속 보정에서 두 기본값을 `5.2.0`으로 일치시켰습니다. Protocol/storage version과 compatibility 정책은 그대로입니다.
+후속 보정에서 두 기본값을 `5.2.0`으로 일치시켰으며, 이 version/document alignment 변경은 이후 `d41fc2f`로 dev에 반영되었습니다. Protocol/storage version과 compatibility 정책은 그대로입니다.
 Discovery codec 테스트의 Framework minor 기대 byte만 1→2로 정정했습니다. 전체 빌드와 compatibility/contract 및 Network 회귀 결과는 아래 링크의 후속 기록을 따릅니다.
 과거 단계별 검증 기록은 아래에 보존하며 후속 실행 결과는 [검증 문서](docs/06_VERIFICATION_AND_LIMITATIONS.md)에 별도로 기록합니다.
 Git tag/GitHub Release 여부는 이번에 확인하지 않았습니다.
@@ -78,8 +80,8 @@ Git tag/GitHub Release 여부는 이번에 확인하지 않았습니다.
 
 ### 9. kcf_tools read-only 관측 연동 — 별도 저장소
 
-후속 공개 상태: kcf_tools **v0.12**, GitHub main commit
-[`f4fb447`](https://github.com/Nyamkani/kcf_tools/commit/f4fb4471fc0b03b24663eb20eede8d8491fd87f6)에 반영되었습니다.
+Historical 구현 참조: kcf_tools **v0.12** 최초 기능 반영은 GitHub main commit
+[`f4fb447`](https://github.com/Nyamkani/kcf_tools/commit/f4fb4471fc0b03b24663eb20eede8d8491fd87f6)입니다. 현재 Tool HEAD를 나타내는 기록은 아닙니다.
 
 - 공개 PeerDiscovery API를 이용한 background 관측과 수동 Refresh snapshot, Local/Remote identity 분리.
 - Host → Application → Element → T/P/S/A metadata Graph, ONLINE/LOST, version·compatibility·capability 상세.

@@ -1,14 +1,28 @@
 #include "kcf/process/process_runtime.hpp"
+#include "kcf/introspection/detail/runtime_registry.hpp"
 
 #include <chrono>
 #include <cmath>
 #include <thread>
+#include <charconv>
+#include <cstring>
+#include <cstdlib>
+#include <cerrno>
+#include <limits>
+#include <stdexcept>
+#include <system_error>
+#include <fcntl.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
 
 namespace
 {
 
 // One active ProcessRuntime per process.
-volatile sig_atomic_t stop_requested = 0;
+static_assert(std::atomic<sig_atomic_t>::is_always_lock_free);
+std::atomic<sig_atomic_t> stop_requested{0};
 
 void HandleStopSignal(int)
 {
@@ -22,14 +36,25 @@ namespace kcf
 
 int ProcessRuntime::Run(ProcessElement& element)
 {
+    stop_reason_ = 0;
     state_ = ProcessState::STARTING;
 
-    if (Initialize() != 0)
+    loop_heartbeat_ = 0;
+    runtime_error_ = 0;
+    const auto launch_mode = DetectLaunchExecutionMode();
+    detail::BeginRuntimeIntrospection(launch_mode);
+    int initialized = Initialize();
+    const int supervised = StartSupervision();
+    if (!initialized) initialized = supervised;
+    if (initialized != 0)
     {
         running_ = false;
+        runtime_error_ = initialized;
         state_ = ProcessState::ERROR;
+        detail::UpdateRuntimeIntrospection(state_.load(), runtime_error_.load());
         Finalize();
-        return -1;
+        detail::EndRuntimeIntrospection(state_.load(), runtime_error_.load());
+        return initialized;
     }
 
     int setup_result;
@@ -39,19 +64,30 @@ int ProcessRuntime::Run(ProcessElement& element)
     }
     catch (...)
     {
-        setup_result = -1;
+        setup_result = -EFAULT;
     }
 
     if (setup_result != 0)
     {
-        running_ = false;
+        RequestStop();
+        if (stop_reason_.load() < 0) setup_result = stop_reason_.load();
+        runtime_error_ = setup_result;
         state_ = ProcessState::ERROR;
+        detail::UpdateRuntimeIntrospection(state_.load(), runtime_error_.load());
+        try { element.Shutdown(); }
+        catch (...) {} // preserve the original Setup/previously latched loss error
         Finalize();
+        detail::EndRuntimeIntrospection(state_.load(), runtime_error_.load());
         return setup_result;
     }
 
     running_ = true;
-    state_ = ProcessState::RUNNING;
+    if (stop_requested || stop_reason_.load() != 0) RequestStop();
+    if (running_)
+    {
+        state_ = ProcessState::RUNNING;
+        detail::UpdateRuntimeIntrospection(GetState(), runtime_error_.load());
+    }
 
     int result = 0;
     try
@@ -72,7 +108,18 @@ int ProcessRuntime::Run(ProcessElement& element)
                 break;
             }
 
-            element.Loop();
+            const int loop_result = element.Loop();
+            if (loop_result != 0)
+            {
+                result = loop_result;
+                break; // failed cycles do not advance the heartbeat or scheduler
+            }
+            if (loop_heartbeat_.load() == std::numeric_limits<std::uint64_t>::max())
+            {
+                result = -EOVERFLOW;
+                break;
+            }
+            loop_heartbeat_.fetch_add(1);
 
             if (stop_requested != 0)
             {
@@ -98,28 +145,37 @@ int ProcessRuntime::Run(ProcessElement& element)
     }
     catch (...)
     {
-        result = -1;
+        result = -EFAULT;
         running_ = false;
     }
 
-    state_ = ProcessState::STOPPING;
+    RequestStop(); // claim expected stop before Shutdown; preserve earlier loss
+    if (stop_reason_.load() < 0) result = stop_reason_.load();
+    runtime_error_ = result;
+    state_ = result ? ProcessState::ERROR : ProcessState::STOPPING;
+    detail::UpdateRuntimeIntrospection(state_.load(), runtime_error_.load());
     try
     {
         element.Shutdown();
     }
     catch (...)
     {
-        result = -1;
+        if (result == 0) result = -EFAULT; // preserve the reason that initiated shutdown
     }
 
-    Finalize();
     running_ = false;
+    runtime_error_ = result;
     state_ = result == 0 ? ProcessState::STOPPED : ProcessState::ERROR;
+    detail::UpdateRuntimeIntrospection(state_.load(), runtime_error_.load());
+    Finalize();
+    detail::EndRuntimeIntrospection(state_.load(), runtime_error_.load());
     return result;
 }
 
 void ProcessRuntime::RequestStop()
 {
+    int none = 0;
+    stop_reason_.compare_exchange_strong(none, 1);
     running_ = false;
 }
 
@@ -130,7 +186,7 @@ bool ProcessRuntime::IsRunning() const
 
 ProcessState ProcessRuntime::GetState() const
 {
-    return state_.load();
+    return stop_reason_.load() < 0 ? ProcessState::ERROR : state_.load();
 }
 
 void ProcessRuntime::SetLoopFrequency(double hz)
@@ -159,25 +215,101 @@ int ProcessRuntime::Initialize()
     action.sa_handler = HandleStopSignal;
     if (sigemptyset(&action.sa_mask) != 0)
     {
-        return -1;
+        return -errno;
     }
 
     if (sigaction(SIGINT, &action, &previous_sigint_) != 0)
     {
-        return -1;
+        return -errno;
     }
     sigint_installed_ = true;
 
     if (sigaction(SIGTERM, &action, &previous_sigterm_) != 0)
     {
-        return -1;
+        return -errno;
     }
     sigterm_installed_ = true;
     return 0;
 }
 
+int ProcessRuntime::StartSupervision()
+{
+    const char* text = std::getenv(SUPERVISION_FD_ENV);
+    if (!text) return 0; // standalone: no socket and no worker
+    int fd = -1;
+    const auto length = std::strlen(text);
+    const auto parsed = std::from_chars(text, text + length, fd);
+    if (parsed.ec != std::errc{} || parsed.ptr != text + length || fd < 0)
+    { unsetenv(SUPERVISION_FD_ENV); return -EINVAL; }
+    unsetenv(SUPERVISION_FD_ENV);
+    supervision_fd_ = fd;
+    int type=0; socklen_t size=sizeof(type);
+    sockaddr_un address{}; socklen_t address_size=sizeof(address);
+    if (getsockopt(fd,SOL_SOCKET,SO_TYPE,&type,&size) || type!=SOCK_SEQPACKET ||
+        getsockname(fd,reinterpret_cast<sockaddr*>(&address),&address_size) || address.sun_family!=AF_UNIX)
+        return -EPROTO;
+    const int flags=fcntl(fd,F_GETFD);
+    if (flags<0 || fcntl(fd,F_SETFD,flags|FD_CLOEXEC)<0) return -errno;
+    supervision_running_ = true;
+    try { supervision_worker_=std::thread(&ProcessRuntime::Supervise,this); }
+    catch (const std::system_error& error) { supervision_running_=false; return -error.code().value(); }
+    catch (...) { supervision_running_=false; return -ENOMEM; }
+    return 0;
+}
+void ProcessRuntime::SupervisorLost(int error)
+{
+    // Signals and an already claimed normal stop take precedence over a later
+    // disconnect. The worker never executes Element cleanup or callbacks.
+    if (stop_requested || !supervision_running_.load()) return;
+    int none = 0;
+    if (stop_reason_.compare_exchange_strong(none, error))
+    {
+        runtime_error_ = error;
+        running_ = false;
+    }
+}
+void ProcessRuntime::Supervise()
+{
+    using Clock = std::chrono::steady_clock;
+    auto last_request = Clock::now();
+    while (supervision_running_.load())
+    {
+        if (Clock::now() - last_request >= std::chrono::milliseconds(SUPERVISOR_REQUEST_TIMEOUT_MS))
+        { SupervisorLost(-ETIMEDOUT); break; }
+        pollfd event{supervision_fd_,POLLIN,0};
+        const int ready=poll(&event,1,100);
+        if (ready<0 && errno==EINTR) continue;
+        if (ready<0 || (event.revents&(POLLHUP|POLLERR|POLLNVAL)))
+        { SupervisorLost(-ECONNRESET); break; }
+        if (!ready || !(event.revents&POLLIN)) continue;
+        RuntimeStatusRequest request{};
+        const auto size=recv(supervision_fd_,&request,sizeof(request),MSG_DONTWAIT|MSG_TRUNC);
+        if (size<0 && (errno==EAGAIN || errno==EINTR)) continue;
+        if (size<=0) { SupervisorLost(-ECONNRESET); break; }
+        if (size!=sizeof(request) || request.magic!=RUNTIME_STATUS_MAGIC ||
+            request.protocol_version!=RUNTIME_STATUS_VERSION || request.packet_type!=1 || !request.request_id) continue;
+        last_request=Clock::now();
+        RuntimeStatusResponse response{};
+        response.request_id=request.request_id;
+        response.pid=getpid();
+        response.state=GetState();
+        response.loop_heartbeat=loop_heartbeat_.load();
+        response.runtime_error=runtime_error_.load();
+        const auto sent=send(supervision_fd_,&response,sizeof(response),MSG_DONTWAIT|MSG_NOSIGNAL);
+        if (sent<0 && errno!=EAGAIN && errno!=EINTR)
+        { SupervisorLost(-ECONNRESET); break; }
+    }
+    supervision_running_=false;
+}
+
 void ProcessRuntime::Finalize()
 {
+    RequestStop();
+    supervision_running_ = false;
+    if (supervision_fd_ >= 0) shutdown(supervision_fd_, SHUT_RDWR);
+    if (supervision_worker_.joinable()) supervision_worker_.join();
+    if (supervision_fd_ >= 0) close(supervision_fd_);
+    supervision_fd_ = -1;
     if (sigterm_installed_)
     {
         sigaction(SIGTERM, &previous_sigterm_, nullptr);

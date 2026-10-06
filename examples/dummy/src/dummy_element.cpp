@@ -8,9 +8,10 @@ int DummyElement::Setup()
     return 0;
 }
 
-void DummyElement::Loop()
+int DummyElement::Loop()
 {
     std::cout << "[Dummy] Loop" << std::endl;
+    return 0;
 }
 
 void DummyElement::Shutdown()

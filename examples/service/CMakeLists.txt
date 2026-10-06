@@ -1,0 +1,7 @@
+add_executable(kcf_service_server src/server_main.cpp)
+target_include_directories(kcf_service_server PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(kcf_service_server PRIVATE kcf_core)
+
+add_executable(kcf_service_client src/client_main.cpp)
+target_include_directories(kcf_service_client PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(kcf_service_client PRIVATE kcf_core)

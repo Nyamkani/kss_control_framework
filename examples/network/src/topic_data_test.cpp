@@ -1,4 +1,5 @@
 #include "kcf/network/control_node.hpp"
+#include "kcf/network/network_diagnostics_client.hpp"
 #include "kcf/network/topic_protocol.hpp"
 #include "kcf/network/detail/topic_proxy.hpp"
 #include "kcf/ipc/publisher.hpp"
@@ -11,6 +12,7 @@
 #include <cassert>
 #include <csignal>
 #include <cstring>
+#include <cmath>
 #include <iostream>
 #include <thread>
 #include <dlfcn.h>
@@ -39,7 +41,7 @@ std::string IP(unsigned host){return "127.0.0."+std::to_string(host);}
 n::ControlConfig Config(unsigned char host,std::uint16_t discovery,std::uint16_t data){n::ControlConfig c;c.discovery.host=Id(host);c.discovery.boot_id=Id(42);c.discovery.interface_address=IP(host);c.discovery.port=discovery;c.discovery.announce_interval=50ms;c.discovery.peer_timeout=350ms;c.discovery.metadata_retry=30ms;c.metadata_interval=30ms;c.reconnect_interval=50ms;c.connect_timeout=200ms;c.metadata.runtime_pids={static_cast<int>(getpid())};c.topics.enabled=true;c.topics.port=data;return c;}
 struct Report {
     int code{0},count{0},local_count{0},error{0};bool enabled{false};
-    std::uint64_t callbacks{0},sent{0},received{0},dropped{0},duplicate{0},out_of_order{0},missed{0},malformed{0},stale{0},skipped{0};
+    std::uint64_t publish_successes{0},callbacks{0},sent{0},received{0},dropped{0},duplicate{0},out_of_order{0},missed{0},malformed{0},stale{0},skipped{0};
     unsigned send_routes{0},receive_routes{0},proxies{0};bool conflict{false},ambiguous{false},oversized{false},missing_capability{false},incompatible{false};
 };
 volatile std::sig_atomic_t stopped=0;
@@ -47,20 +49,23 @@ void Signal(int){stopped=1;}
 int Child(unsigned host,std::uint16_t discovery,std::uint16_t data,const std::string& topic,int mode,int pipe){
     alarm(180);std::signal(SIGTERM,Signal);std::snprintf(topic_namespace,sizeof(topic_namespace),"/kcf_test_h%u_p%d_",host,getpid());
     kcf::detail::BeginRuntimeIntrospection(kcf::ExecutionMode::STANDALONE);
+    // Existing modes 0/1 are unchanged; 2/-1 opt into Diagnostics publisher/subscriber.
+    const bool publishing=mode>0;
     kcf::Publisher<Value> publisher,local; kcf::Publisher<Big> big;
-    if(mode){assert(!publisher.Create(topic,8));assert(!local.Create(topic+"_local"));assert(!big.Create(topic+"_big"));}
+    if(publishing){assert(!publisher.Create(topic,8));assert(!local.Create(topic+"_local"));assert(!big.Create(topic+"_big"));}
     const auto param_name="/kcf_topic_parameter_"+std::to_string(getpid());
     kcf::Parameter<Value> parameter;assert(!parameter.Create(param_name,{7,false,1.5}));
     kcf::ServiceServer service;assert(!service.Create(Port()));
     assert((!service.Register<Value,Value>(9,"/kcf_topic_service",[](const Value& input,Value& output){output=input;output.count*=2;})));assert(!service.Start());
     kcf::detail::UpdateRuntimeIntrospection(kcf::ProcessState::RUNNING,0);
-    n::ControlNode node;auto config=Config(host,discovery,data);config.metadata.remote_topics={topic,topic+"_big"};if(!mode)config.metadata.remote_topics.push_back(topic+"_local");config.metadata.remote_parameters={param_name};config.metadata.remote_services={"/kcf_topic_service"};
+    n::ControlNode node;auto config=Config(host,discovery,data);config.metadata.remote_topics={topic,topic+"_big"};if(!publishing)config.metadata.remote_topics.push_back(topic+"_local");config.metadata.remote_parameters={param_name};config.metadata.remote_services={"/kcf_topic_service"};
     config.topics.local_types={{topic,Descriptor()},{topic+"_local",Descriptor()},{topic+"_big",kcf::TypeDescriptorTraits<Big>::Get()}};
-    assert(!node.Start(config));kcf::Subscriber<Value> subscriber;std::atomic<int> latest{0};std::atomic<bool> enabled{true};std::atomic<std::uint64_t> callbacks{0};bool subscribed=false;int local_count=0;
+    config.diagnostics_enabled=mode==2||mode==-1;
+    assert(!node.Start(config));kcf::Subscriber<Value> subscriber;std::atomic<int> latest{0};std::atomic<bool> enabled{true};std::atomic<std::uint64_t> callbacks{0};bool subscribed=false;int local_count=0;std::uint64_t publish_successes=0;
     int lock_fd=-1;kcf::detail::ChannelHeader* locked=nullptr;std::size_t lock_size=0;
     auto next=std::chrono::steady_clock::now();
     while(!stopped){
-        if(mode&&std::chrono::steady_clock::now()>=next){int code=publisher.Publish({++local_count,false,1.5});assert(!code||code==-EAGAIN);next=std::chrono::steady_clock::now()+1ms;}
+        if(publishing&&std::chrono::steady_clock::now()>=next){int code=publisher.Publish({++local_count,false,1.5});assert(!code||code==-EAGAIN);if(!code)++publish_successes;next=mode==2?next+5ms:std::chrono::steady_clock::now()+1ms;}
         pollfd p{pipe,POLLIN,0};int result=poll(&p,1,1);if(result<0){if(errno==EINTR)continue;break;}if(p.revents&(POLLHUP|POLLERR))break;
         if(!(p.revents&POLLIN))continue;
         char op=0;if(recv(pipe,&op,1,0)!=1)break;Report out;
@@ -77,11 +82,11 @@ int Child(unsigned host,std::uint16_t discovery,std::uint16_t data,const std::st
         for(const auto& r:stats.routes){out.sent+=r.packets_sent;out.received+=r.packets_received;out.dropped+=r.dropped;out.duplicate+=r.duplicate;out.out_of_order+=r.out_of_order;out.missed+=r.missed_sequence;out.skipped+=r.local_samples_skipped;
             out.conflict|=r.error==-EEXIST;out.ambiguous|=r.error==-EADDRINUSE;out.oversized|=r.error==-EMSGSIZE;out.missing_capability|=r.reason==n::CompatibilityReason::CAPABILITY_MISSING;out.incompatible|=r.reason==n::CompatibilityReason::NETWORK_MAJOR_MISMATCH;
         }
-        out.error=node.GetLastError();out.callbacks=callbacks;out.enabled=enabled;out.local_count=local_count;if(op!='A')out.count=latest;
+        out.publish_successes=publish_successes;out.error=node.GetLastError();out.callbacks=callbacks;out.enabled=enabled;out.local_count=local_count;if(op!='A')out.count=latest;
         assert(send(pipe,&out,sizeof(out),MSG_NOSIGNAL)==sizeof(out));if(op=='Q')break;
     }
     if(locked){pthread_mutex_unlock(&locked->notify_mutex);munmap(locked,lock_size);close(lock_fd);}
-    subscriber.Close();node.Stop();service.Stop();parameter.Close();parameter.Unlink();if(mode){publisher.Close();publisher.Unlink();local.Close();local.Unlink();big.Close();big.Unlink();}
+    subscriber.Close();node.Stop();service.Stop();parameter.Close();parameter.Unlink();if(publishing){publisher.Close();publisher.Unlink();local.Close();local.Unlink();big.Close();big.Unlink();}
     kcf::detail::EndRuntimeIntrospection(kcf::ProcessState::STOPPED,0);return 0;
 }
 struct HostChild {
@@ -115,6 +120,71 @@ void Integration(){const auto discovery=Port(),data=Port();auto topic="/kcf_remo
     auto prior=c.Ask();a.Ask('N');Until([&]{return c.Ask().receive_routes==0;});assert(!c.Ask('A').code);assert(!a.Ask('R').code);Until([&]{return c.Ask().callbacks>prior.callbacks&&c.Ask().receive_routes==1;});
     control.Stop();a.End();b.End();c.End();std::cout<<"metadata/allowlist, 2/3 peers, no-subscriber no-send, rate-limit, proxy no-loop, Control-under-load, LOST/restart PASS\n";
 }
+void DiagnosticsIntegration(){
+    using Clock=std::chrono::steady_clock;
+    const auto discovery=Port(),data=Port();const auto topic="/kcf_remote_topic_diagnostics_"+std::to_string(getpid());
+    HostChild sender(21,discovery,data,topic,2),receiver(22,discovery,data,topic,-1);
+    n::PeerDiscovery observer;auto oc=Config(23,discovery,data).discovery;assert(!observer.Start(oc));
+    n::NetworkDiagnosticsClient client(observer,oc);
+    const auto peer=[&](unsigned host){for(const auto& p:observer.GetPeers())if(p.host==Id(host))return p;return n::PeerInfo{};};
+    Until([&]{return peer(21).session_id && peer(22).session_id && receiver.Ask().proxies==1;});
+    Until([&]{return !receiver.Ask('U').code;});Until([&]{return receiver.Ask().callbacks>5;});
+    const auto query=[&](unsigned host){n::NetworkDiagnosticsSnapshot snapshot;assert(!client.Query(Id(host),snapshot));
+        assert(snapshot.gateway_host==Id(host) && snapshot.gateway_boot_id==Id(42) && snapshot.gateway_session==peer(host).session_id && !snapshot.truncated);return snapshot;};
+    const auto active=[&](const n::NetworkDiagnosticsSnapshot& snapshot){
+        std::vector<n::TopicRouteInfo> routes;
+        for(const auto& route:snapshot.routes) {
+            if(route.name==topic && route.state==n::TopicRouteState::ACTIVE)routes.push_back(route);
+        }
+        return routes;};
+    const auto pair=[&](const n::NetworkDiagnosticsSnapshot& a,const n::NetworkDiagnosticsSnapshot& b){
+        auto sa=active(a),sb=active(b);assert(sa.size()==1 && sb.size()==1);const auto& x=sa[0];const auto& y=sb[0];
+        assert(x.sending && !y.sending && x.source==y.source && x.destination==y.destination && x.route_id==y.route_id);
+        assert(x.source_session==y.source_session && x.destination_session==y.destination_session);
+        assert(x.source.runtime.host==Id(21) && x.destination.runtime.host==Id(22));
+        assert(x.source_session==a.gateway_session && x.destination_session==b.gateway_session);
+    };
+    n::ControlNode control;auto cc=Config(24,discovery,data);cc.topics.enabled=false;cc.metadata.runtime_pids={-1};assert(!control.Start(cc));
+    Until([&]{return peer(24).session_id && Peer(control,21).metadata_ready;});
+    n::NetworkDiagnosticsSnapshot unused;assert(client.Query(Id(24),unused)==-ENOTSUP);
+    auto a0=query(21);const auto t0=Clock::now();auto b0=query(22);const auto r0=Clock::now();pair(a0,b0);
+    const auto p0=sender.Ask();const auto pt0=Clock::now();const auto callbacks0=receiver.Ask().callbacks;
+    std::atomic<bool> done{false};std::atomic<unsigned> controls{0};
+    std::thread traffic([&]{while(!done){ControlTraffic(control,sender);controls+=24;std::this_thread::sleep_for(50ms);}});
+    unsigned queries=2;auto a1=a0,b1=b0;auto t1=t0,r1=r0;
+    do {std::this_thread::sleep_for(150ms);a1=query(21);t1=Clock::now();b1=query(22);r1=Clock::now();pair(a1,b1);queries+=2;}
+    while(t1-t0<3s);
+    const auto p1=sender.Ask();const auto pt1=Clock::now();done=true;traffic.join();
+    const auto x0=active(a0)[0],x1=active(a1)[0],y0=active(b0)[0],y1=active(b1)[0];
+    const auto sent=x1.packets_sent-x0.packets_sent,skipped=x1.local_samples_skipped-x0.local_samples_skipped;
+    const auto received=y1.packets_received-y0.packets_received,published=y1.samples_published-y0.samples_published;
+    const double seconds=std::chrono::duration<double>(t1-t0).count(),receive_seconds=std::chrono::duration<double>(r1-r0).count();
+    const double pub_seconds=std::chrono::duration<double>(pt1-pt0).count();const auto local=p1.publish_successes-p0.publish_successes;
+    const double hz=sent/seconds,pub_hz=local/pub_seconds;
+    // Scheduling/export and sequential Query boundaries are not simultaneous:
+    // allow 150..230 successful publishes/s, 30..55 packets/s and 8 packet skew.
+    assert(pub_hz>=150 && pub_hz<=230 && hz>=30 && hz<=55 && skipped>sent);
+    assert(received>0 && published>=received*9/10 && published<=received && std::abs(double(sent)-double(received))<=8);
+    assert(std::abs(double(local)-double(sent+skipped))<=40 && controls>0 && receiver.Ask().callbacks-callbacks0>=published*8/10);
+    assert(!sender.Ask().error && !receiver.Ask().error);
+    std::cout<<"Diagnostics E2E measured: seconds="<<seconds<<" publisher_samples="<<local<<" publisher_hz="<<pub_hz
+        <<" packets_sent="<<x0.packets_sent<<"->"<<x1.packets_sent<<" send_hz="<<hz
+        <<" skipped="<<x0.local_samples_skipped<<"->"<<x1.local_samples_skipped
+        <<" packets_received="<<y0.packets_received<<"->"<<y1.packets_received<<" receive_hz="<<received/receive_seconds
+        <<" samples_published="<<y0.samples_published<<"->"<<y1.samples_published
+        <<" diagnostic_queries="<<queries<<" concurrent_control_requests="<<controls.load()<<"\n";
+    const auto old_session=a1.gateway_session;sender.Ask('N');Until([&]{return peer(21).state==n::PeerState::LOST && receiver.Ask().receive_routes==0;});
+    assert(client.Query(Id(21),unused)==-ENOTCONN);auto lost=query(22);assert(active(lost).empty());
+    assert(!sender.Ask('R').code);Until([&]{return peer(21).session_id!=old_session && peer(21).state==n::PeerState::ONLINE && receiver.Ask().receive_routes==1;});
+    std::this_thread::sleep_for(150ms);auto restarted=query(21),rebound=query(22);pair(restarted,rebound);
+    assert(restarted.gateway_session!=old_session && active(restarted)[0].source_session!=x1.source_session);
+    for(const auto& route:rebound.routes)if(route.source_session==old_session)assert(route.state!=n::TopicRouteState::ACTIVE);
+    assert(!receiver.Ask('O').code);Until([&]{return sender.Ask().send_routes==0 && receiver.Ask().receive_routes==0;});
+    std::this_thread::sleep_for(150ms);assert(active(query(21)).empty() && active(query(22)).empty());
+    control.Stop();observer.Stop();sender.End();receiver.End();
+    std::cout<<"Diagnostics E2E: two real DataPlanes/proxy subscriber, endpoint/session/route correlation, measured 200->50 Hz, Control isolation, restart and route removal PASS\n";
+}
+
 void Conflict(){auto discovery=Port(),data=Port();auto topic="/kcf_remote_topic_conflict_"+std::to_string(getpid());HostChild a(5,discovery,data,topic,1),b(6,discovery,data,topic,1),c(7,discovery,data,topic,0);
     Until([&]{return a.Ask().conflict&&b.Ask().conflict&&c.Ask().ambiguous;});assert(!b.Ask('U').code);std::this_thread::sleep_for(300ms);assert(!a.Ask().send_routes&&!b.Ask().send_routes&&!c.Ask().receive_routes);a.End();b.End();c.End();std::cout<<"existing Local publisher and ambiguous multi-source conflict PASS\n";
 }
@@ -168,4 +238,4 @@ void DatagramBehavior(){auto discovery_port=Port(),data_port=Port();auto name="/
     control.Stop();source.Stop();close(fd);receiver.End();std::cout<<"capability/version/type gates, duplicate/reorder/loss, malformed/oversize, bounded latest under blocked proxy, Control isolation, stale session PASS\n";
 }
 void Startup(){auto d=Port(),p=Port();int occupied=DataSocket(15,p);n::ControlNode node;auto c=Config(15,d,p);assert(node.Start(c)==-EADDRINUSE);assert(node.GetPeers().empty());close(occupied);c.topics.max_hz=0;assert(node.Start(c)==-EINVAL);c.topics.max_hz=50;assert(!node.Start(c));node.Stop();assert(!node.Start(c));node.Stop();std::cout<<"Data Plane bind failure/validation/Start-Stop cleanup PASS\n";}
-int main(int argc,char** argv){if(argc==8&&std::string(argv[1])=="--host")return Child(std::stoi(argv[2]),std::stoi(argv[3]),std::stoi(argv[4]),argv[5],std::stoi(argv[6]),std::stoi(argv[7]));std::cout.setf(std::ios::unitbuf);alarm(180);Codec();ProxyStorage();Startup();Integration();Conflict();DatagramBehavior();std::cout<<"Remote Topic PASS\n";}
+int main(int argc,char** argv){if(argc==8&&std::string(argv[1])=="--host")return Child(std::stoi(argv[2]),std::stoi(argv[3]),std::stoi(argv[4]),argv[5],std::stoi(argv[6]),std::stoi(argv[7]));std::cout.setf(std::ios::unitbuf);alarm(180);Codec();ProxyStorage();Startup();Integration();DiagnosticsIntegration();Conflict();DatagramBehavior();std::cout<<"Remote Topic PASS\n";}

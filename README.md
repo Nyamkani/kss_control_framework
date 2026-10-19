@@ -1,4 +1,4 @@
-# KSS Control Framework (KCF) v5.2
+# KSS Control Framework (KCF) v5.3.0
 
 KCF는 Linux 제어 시스템의 Process lifecycle, 실행·통신 구조를 공통화하는 C++17 Framework입니다.
 로봇·산업 장비·센서·액추에이터·SBC 기반 시스템에서 기능별 process를 독립적으로 개발·실행·검증하고,
@@ -37,6 +37,7 @@ SystemStatus는 **Application instance(PID + start_ticks)별 scope**를 사용�
 | Timer | process-local periodic callback worker |
 | Action | Service + status Topic 기반 Goal/Feedback/Result/Cancel |
 | Network | Discovery v2, compatibility, Control TCP v1, Remote Parameter/Service/Action, UDP Remote Topic; 명시적 allowlist와 5종 Target |
+| Network Diagnostics | 명시적 opt-in, read-only Gateway route snapshot·counter 조회, 기존 Discovery/Control 재사용 |
 | Introspection | Runtime/Endpoint/Supervisor/type/Service/Action metadata와 dynamic access |
 
 Network Action은 기존 Local Action을 호출하며, Application에 별도 Network 등록을 요구하지 않습니다.
@@ -56,6 +57,12 @@ Gateway 재시작 시 ownership sidecar로 증명된 죽은 Network proxy만 자
 격리된 두 가상 Host의 실제 veth/bridge 통합 시험은
 `./tests/network_virtual/run_virtual_network_test.sh`로 실행합니다.
 [Virtual LAN 구성·권한·장애 주입·결과](docs/09_VIRTUAL_LAN_TEST.md)를 참고하세요. 일반 빌드와 별도의 opt-in 시험입니다.
+
+v5.3은 `ControlConfig::diagnostics_enabled`(기본 OFF)로 허용한 Gateway의 route 상태와 9개 누적 counter를
+외부 Observer가 조회할 수 있습니다. `NetworkDiagnosticsClient`는 기존 PeerDiscovery를 빌려 사용하는
+동기식 read-only API이며 worker에서 호출합니다. Snapshot은 최대 16 KiB이고 잘림을 명시합니다.
+Framework는 counter를 제공하며 Hz 계산·Graph freshness는 Tool 책임입니다.
+[Diagnostics API·통신 계약](docs/08_NETWORK_ARCHITECTURE.md#network-diagnostics-v53)을 참고하세요.
 
 ## Quick Start
 
@@ -128,10 +135,18 @@ Application·Element·T/P/S/A metadata, ONLINE/LOST, version·compatibility·cap
 Host 계층 Graph와 필터·읽기 전용 Remote Detail을 제공하며, 수동 Refresh는 background worker의 snapshot을 사용합니다.
 Remote Action metadata 표시는 Goal/Cancel 조작 UI와 다릅니다. Tool은 Gateway나 payload broker가 아닙니다.
 
-**외부 Gateway의 active route/statistics 및 proxy 판별은 아직 미지원**입니다.
-`ControlNode::GetTopicDiagnostics()`는 해당 객체 내부 조회이며 타 process의 공개 관측 API가 없습니다.
-따라서 이름/type이 같다는 이유로 cross-host edge를 그리지 않습니다. Remote Set/Call/Goal/Cancel UI도 없습니다.
-Tool KCF+Qt 18/18, no-KCF 6/6 PASS는 별도 저장소의 기존 검증 결과이며, Tool+Virtual LAN과 실제 물리 LAN은 미검증입니다.
+**Historical — Tool v0.12 당시에는 외부 Gateway의 active route/statistics 및 proxy 판별이 미지원**이었습니다.
+당시 `ControlNode::GetTopicDiagnostics()`는 객체 내부 조회뿐이었고 외부 공개 관측 API가 없었습니다.
+Tool KCF+Qt 18/18, no-KCF 6/6 PASS 및 당시 Tool+Virtual LAN 미검증은 v0.12 이력입니다.
+
+현재 Framework v5.3은 `NetworkDiagnosticsClient`로 외부 Gateway route/counter 관측 경로를 제공합니다.
+별도 Tool 개발 작업에서는 이 API를 이용한 독립 Virtual LAN Observer·Qt offscreen E2E가 PASS했습니다.
+이는 Tool v0.13이 공개·배포됐다는 뜻이 아닙니다. 이름/type만으로 연결선을 추정하지 않으며
+Remote Set/Call/Goal/Cancel UI는 추가하지 않았습니다. Snapshot은 route와 `proxy_recovery`만 전달하며
+전체 proxy inventory를 제공하지 않습니다. 수동 Refresh와 Graph freshness 10초는 Tool 정책입니다.
+Source Local Publish Hz, Network Send Hz, Proxy Publish Hz, Application Subscriber 처리율은 서로 다릅니다.
+[검증 출처·측정값·제한](docs/06_VERIFICATION_AND_LIMITATIONS.md#v53-network-diagnostics-검증)에서 구분합니다.
+실제 물리 LAN과 데스크톱 GUI 수동 검증은 미실행입니다.
 
 ## 호환성과 주요 제한 사항
 
@@ -162,18 +177,21 @@ Tool KCF+Qt 18/18, no-KCF 6/6 PASS는 별도 저장소의 기존 검증 결과�
 
 ## Version / Changelog
 
-현재 버전은 **Framework v5.2 (5.2.0) — Network IPC 확장**입니다.
+현재 dev working tree 기준은 **Framework v5.3.0 — Read-only Network Diagnostics**입니다.
+CMake project version과 Network `FrameworkVersion` 기본값은 모두 `5.3.0`입니다.
+공개·배포 상태나 새로운 tag/Release를 선언하지 않습니다. 아래 v5.2 SHA는 과거 이력입니다.
 KCF v5.2의 5.2.0 version-alignment commit은 [`d41fc2fc71d3b60b0475035ec56ac32b92ffb849`](https://github.com/Nyamkani/kss_control_framework/commit/d41fc2fc71d3b60b0475035ec56ac32b92ffb849)입니다.
 Network 기능은 [`0a3f2a6`](https://github.com/Nyamkani/kss_control_framework/commit/0a3f2a630cec209793f9ac6e99107752e9e01283)에 최초 반영되었으며,
 이전 v5.1 기준 commit은 [`8360b6e`](https://github.com/Nyamkani/kss_control_framework/commit/8360b6e053472ba20acdfc62b7489e33122997ec)입니다.
 v5.1 Topic Queue 위에 Discovery/compatibility, Remote Parameter·Service·Action·Topic,
 Virtual LAN 검증과 Network proxy recovery를 포함합니다.
-별도 `kcf_tools`의 read-only 관측 연동과 미완료 범위도 [Changelog](Changelog.md#v52--network-ipc--remote-discoverycontroltopic)에 구분하여 기록합니다.
+별도 `kcf_tools`의 v0.12 당시 관측 연동·미지원 범위는 [v5.2 이력](Changelog.md#v52--network-ipc--remote-discoverycontroltopic)에,
+v5.3의 외부 Diagnostics API 추가는 [v5.3 이력](Changelog.md#v53--read-only-network-diagnostics)에 구분하여 기록합니다.
 
 후속 version/document alignment는 `d41fc2f`로 dev에 반영되었습니다.
-**CMake project version과 Network `FrameworkVersion` 기본값은 모두 `5.2.0`**입니다.
+당시 **CMake project version과 Network `FrameworkVersion` 기본값을 `5.2.0`으로 일치**시켰으며, F-ND5A에서 `5.3.0`으로 갱신했습니다.
 `NETWORK_PROTOCOL`은 Framework 버전 차이를 허용하고 Network major 및 capability 조건을 따릅니다.
-`EXACT_FRAMEWORK_VERSION`은 비교 대상 Framework 버전까지 정확히 일치해야 하므로 기본 profile은 `5.2.0`을 요구합니다.
+`EXACT_FRAMEWORK_VERSION`은 비교 대상 Framework 버전까지 정확히 일치해야 하므로 기본 profile은 `5.3.0`을 요구합니다. v5.2↔v5.3은 EXACT 정책에서 불일치하며, 기본 NETWORK_PROTOCOL 정책은 Network major와 capability 조건을 따릅니다.
 NetworkProtocolVersion 1.0, Discovery v2, Control TCP v1, Topic wire v1 및 기존 storage format은 변경하지 않았습니다.
 과거 구현 검증과 당시 버전 보정의 실행 결과는 [검증 기록](docs/06_VERIFICATION_AND_LIMITATIONS.md)에서 구분합니다.
 Git tag/GitHub Release 생성 여부는 이번에 확인하지 않았으므로 공개 commit과 동일시하지 않습니다.

@@ -16,6 +16,70 @@ These paths were used during development verification and are not part of the re
 이전 Topic Queue 문서 반영에서는 아래 구현 완료 보고를 기록했으며 빌드·테스트·CTest 조회를 재실행하지 않았습니다.
 수치와 PASS는 아래 실행 출처의 범위에 한정됩니다. 하드웨어·hard real-time·무한 부하 보증이 아닙니다.
 
+## v5.3 Network Diagnostics 검증
+
+F-ND1~F-ND5A 적용 dev working tree와 별도 Tool 저장소의 기존 실행 로그를 대조한 기록입니다.
+**F-ND5B에서는 build/test를 재실행하지 않았습니다.** 아래 PASS는 각 실행 출처에 한정되며,
+새 공개 commit/Release 또는 물리 LAN/데스크톱 수동 검증으로 해석하지 않습니다.
+
+| 실행 / 출처 | 결과 | 범위 |
+| --- | --- | --- |
+| F-ND5A `/tmp/kcf-fnd5a/configure.log`, `build.log` | PASS | 전체 Debug C++17 build, Framework/CMake 5.3.0 |
+| F-ND5A `/tmp/kcf-fnd5a/results.json` | 8/8 PASS | contract, compatibility, Discovery, Parameter, Service, Action, Topic, proxy recovery |
+| F-ND5A `control_parameter.log` | PASS | opt-in/disabled, public client, replay 회수/상한, timeout/partial IO/identity gates |
+| F-ND5A `topic_data.log` | Diagnostics Loopback E2E PASS | 두 실제 DataPlane, proxy Subscriber, public client, route/counter 상관관계, Control 동시 부하 |
+| F-ND5A `/tmp/kcf-fnd5a/virtual/results.json` | Framework Virtual LAN PASS | peer/NIC 장애, netem, proxy recovery, cleanup |
+| KT-ND2 `/tmp/kt-nd2-virtual-final/results.json` | Tool 독립 Virtual LAN Diagnostics E2E PASS | 별도 kcf_tools 저장소의 독립 Observer + Qt offscreen; Framework 자체 시험과 구분 |
+| KT-ND3 `/tmp/kt-nd3/virtual/results.json` | 후속 Tool Virtual LAN PASS | 별도 실행이며 KT-ND2의 측정값과 혼합하지 않음 |
+
+F-ND5A 최초 sandbox 실행은 netlink `Operation not permitted`로 테스트 시작 전에 막혔습니다.
+`/tmp/kcf-fnd5a/sandbox-preflight.log`와 `sandbox-preflight-results.json`을 보존했고,
+격리 namespace 실행이 허용된 환경에서 위 8/8을 확인했습니다. 문서 작업에서 이 검사를 재실행하지 않았습니다.
+F-ND5A의 임시 version-check는 CMake와 FrameworkVersion 일치, 기본 Diagnostics OFF,
+5.2↔5.3 NETWORK_PROTOCOL 호환 및 EXACT mismatch를 확인했습니다. 기존 wire/storage 상수는 유지됐습니다.
+
+### 측정값의 출처와 의미
+
+아래는 **KT-ND2 별도 Tool Virtual LAN**의 `real_backend_rates_graph` 관측값을 반올림한 것입니다.
+출처는 `/tmp/kt-nd2-virtual-final/results.json`이며 F-ND5A Loopback 수치가 아닙니다.
+
+| 관측 | 값 |
+| --- | --- |
+| Source Local Publisher | 200.22 Hz |
+| Network Send | 46.67 Hz |
+| Network Receive | 47.07 Hz |
+| Gateway Proxy Publish | 47.07 Hz |
+| Local samples skipped | 152.58/s |
+
+Source Publisher rate는 fixture의 실제 발행 횟수/관측 시간으로 측정했습니다.
+다른 rate는 Gateway counter의 차이와 Tool 관측 시간을 이용합니다. 관측 창이 다르므로 Send/Receive 수치가
+정확히 같을 필요는 없습니다. Framework는 Hz 자체가 아닌 counter를 제공합니다.
+약 200 Hz Local 발행과 약 50 Hz Network sampling은 서로 다른 경로이며 skipped는 Network packet loss와 다릅니다.
+Proxy Publish는 Local SHM 쓰기율이지 Application Subscriber의 처리율이 아닙니다.
+이 값들은 해당 실행의 관측치이며 성능 보장·고정 테스트 기대값이 아닙니다.
+
+### 간헐적 timeout 이력 보존
+
+- F-ND4B 최초 `/tmp/kcf-fnd4b-regression.log`: Topic `Conflict()`의 `Until` assertion 실패.
+  후속 Topic 단독 실행은 PASS (`/tmp/kcf-fnd4b-final-topic.log`). 최초 전체 실행을 PASS로 바꾸지 않습니다.
+- F-ND4B `/tmp/kcf-fnd4b-regression-recheck.log`: Action `Integration()`의 `Until` assertion 실패.
+  `/tmp/kcf-fnd4b-action-recheck.log` 단독 재실행 PASS. 원인은 확정하지 않았습니다.
+- KT-ND3 `/tmp/kt-nd3/review.md`: Framework Network 최초 7/8 PASS, Topic `Integration()` timeout.
+  `framework-topic_data.log`는 어떤 Integration lambda인지 확정할 정보를 제공하지 않습니다.
+  `framework-topic_data-retry.log` 단독 재실행 PASS. CPU 부하·Discovery·namespace 충돌 등을 원인으로 단정하지 않습니다.
+- F-ND5A의 별도 8/8 PASS는 위 실패 이력을 지우거나 간헐적 문제 해결을 입증하지 않습니다.
+  v5.2 proxy recovery 당시 최초 대기 실패·재실행 이력도 기존 Network 문서에 그대로 남깁니다.
+
+### 범위 및 남은 제한
+
+- 실제 물리 LAN, 이기종 NIC/CPU, 데스크톱 GUI 수동 검증은 미실행입니다. Virtual LAN과 Qt offscreen으로 대체 판정하지 않습니다.
+- Tool 수동 Refresh / Graph freshness 10초는 Tool 정책입니다. Framework Query deadline이나 route TTL이 아닙니다.
+- Snapshot 16 KiB 잘림은 성공 응답일 수 있으며 전체 route inventory/모든 counter 이력을 보장하지 않습니다.
+- read-only route 관측 API를 추가했지만 인증·암호화·권한 기능, 자동 retry, Reliable Topic, Action re-attach는 추가하지 않았습니다.
+- Tool v0.12의 외부 Diagnostics 미지원 기록은 당시 사실입니다. v5.3 공개 API와 별도 Tool 개발 연동으로 관측 경로가 마련됐으며,
+  이 문서가 Tool v0.13의 공개·배포를 선언하지는 않습니다. Remote Set/Call/Goal/Cancel UI도 추가하지 않았습니다.
+- `/tmp/` 로그는 임시 개발 artifact입니다. 이전 SHA 기반 검증 및 v5.2·Tool v0.12 기록을 새 실행 결과로 소급하지 않습니다.
+
 ## v5.2 공개 후 버전 정합성 검증
 
 이 절은 당시 `0a3f2a6` 기반 checkout에 미커밋 보정을 적용해 수행한 historical 검증 기록입니다.

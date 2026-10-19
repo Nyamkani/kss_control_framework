@@ -1,4 +1,7 @@
 #include "kcf/network/control_node.hpp"
+#include "kcf/network/network_diagnostics.hpp"
+#include "kcf/network/network_diagnostics_client.hpp"
+#include "kcf/ipc/publisher.hpp"
 #include "kcf/parameter/parameter.hpp"
 #include "kcf/introspection/detail/runtime_registry.hpp"
 #include "kcf/introspection/detail/supervisor_registry.hpp"
@@ -138,10 +141,18 @@ void IncomingFrames(){
     const auto rejected=node.GetStats().rejected_frames;SendBytes(fd,malformed);Until([&]{return node.GetStats().rejected_frames>rejected;});close(fd);
     fd=Connect(server.port);Send(fd,hello);assert(Receive(fd).operation==n::ControlMessage::HELLO);
     request.type=Type();request.request_id=2;request.operation=n::ControlMessage::PARAM_SET_REQUEST;request.payload=Encode({77,true,7});Send(fd,request);
+    // The general Control replay window is shared by mutating operations and
+    // survives reconnect. Stale Service/Action requests must not dispatch or
+    // generate an extra response ahead of the fresh Get below.
+    for(auto operation:{n::ControlMessage::SERVICE_REQUEST,n::ControlMessage::ACTION_GOAL_REQUEST}) {
+        auto duplicate=request;duplicate.operation=operation;duplicate.response_type=Type();
+        if(operation==n::ControlMessage::ACTION_GOAL_REQUEST){duplicate.feedback_type=Type();duplicate.goal={duplicate.source,1,duplicate.session_id};}
+        Send(fd,duplicate);
+    }
     request.request_id=5;request.operation=n::ControlMessage::PARAM_GET_REQUEST;request.payload.clear();Send(fd,request);response=Receive(fd);assert(response.request_id==5&&Decode(response.payload).count==12);
     assert(owner.Get(local,&version)==0&&version==1);close(fd);raw.Stop();node.Stop();
     assert(owner.Get(local)==0&&local.count==12);owner.Close();owner.Unlink();kcf::detail::EndRuntimeIntrospection(kcf::ProcessState::STOPPED,0);
-    std::cout<<"partial TCP frames, inbound type gate, malformed close, duplicate Set/reconnect replay protection PASS\n";
+    std::cout<<"partial TCP frames, inbound type gate, malformed close, duplicate Set/Service/Action reconnect replay protection PASS\n";
 }
 void Correlation(){
     const auto port=Port();const std::string name="/mock";int listener=-1;auto tcp=Port(SOCK_STREAM,&listener);assert(listen(listener,4)==0);
@@ -170,4 +181,300 @@ void Correlation(){
     server.join();node.Stop();fake.Stop();close(listener);
     std::cout<<"APPLICATION target, out-of-order correlation, duplicate/late response, timeout and TCP reconnect PASS\n";
 }
-int main(int argc,char** argv){if(argc==3&&std::string(argv[1])=="--owner")return Owner(argv[2]);alarm(60);Codec();Basic(argv[0]);Failures();OwnerBinding(argv[0]);IncomingFrames();Correlation();}
+
+n::PeerInfo Observed(n::PeerDiscovery& observer,unsigned char host) {
+    for(const auto& peer:observer.GetPeers())if(peer.host==Id(host))return peer;
+    return {};
+}
+n::ControlFrame ObserverHello(n::PeerDiscovery& observer,unsigned char host) {
+    n::ControlFrame hello;hello.source={Id(host),Id(42),getpid(),1};hello.session_id=observer.GetSessionId();return hello;
+}
+void Closed(int fd) {
+    Until([&]{std::uint8_t bytes[4096];auto count=recv(fd,bytes,sizeof(bytes),MSG_DONTWAIT);
+        return count==0 || (count<0 && errno!=EAGAIN && errno!=EWOULDBLOCK && errno!=EINTR);});
+    close(fd);
+}
+void Diagnostics() {
+    const auto port=Port();auto config=Config(100,port);
+    n::ControlNode gateway;n::PeerDiscovery low,high;
+    auto low_config=Config(1,port).discovery,high_config=Config(200,port).discovery;
+    assert(!low.Start(low_config) && !high.Start(high_config));
+    // User-supplied bits do not advertise an opt-out handler.
+    config.discovery.profile.capabilities=n::KNOWN_CAPABILITIES;
+    assert(!config.diagnostics_enabled && !gateway.Start(config));
+    Until([&]{return Peer(gateway,1).state==n::PeerState::ONLINE && Observed(low,100).session_id;});
+    assert(!(Observed(low,100).profile.capabilities&n::CapabilityBit(n::Capability::NETWORK_DIAGNOSTICS)));
+    int fd=Connect(Observed(low,100).port);Send(fd,ObserverHello(low,1));Closed(fd);
+    gateway.Stop();config.diagnostics_enabled=true;assert(!gateway.Start(config));
+    const auto open=[&](n::PeerDiscovery& observer,unsigned char host) {
+        Until([&]{auto p=Observed(observer,100);return p.state==n::PeerState::ONLINE &&
+            (p.profile.capabilities&n::CapabilityBit(n::Capability::NETWORK_DIAGNOSTICS)) && Peer(gateway,host).session_id==observer.GetSessionId();});
+        int socket=Connect(Observed(observer,100).port);Send(socket,ObserverHello(observer,host));
+        auto hello=Receive(socket);assert(hello.operation==n::ControlMessage::HELLO && hello.source.host==Id(100));return socket;
+    };
+    const auto request=[&](n::PeerDiscovery& observer,unsigned char host,std::uint64_t id,unsigned timeout=1000) {
+        auto f=ObserverHello(observer,host);f.operation=n::ControlMessage::DIAGNOSTICS_REQUEST;
+        f.target=n::TargetScope::HOST;f.request_id=id;f.timeout_ms=timeout;return f;
+    };
+    const auto call=[&](int socket,const n::ControlFrame& f) {
+        Send(socket,f);auto response=Receive(socket);
+        assert(response.operation==n::ControlMessage::DIAGNOSTICS_RESPONSE && response.request_id==f.request_id);
+        assert(response.source.host==Id(100) && response.source.boot_id==Id(42) && !response.timeout_ms);
+        if(response.status)assert(response.status<0 && response.payload.empty());
+        else {n::NetworkDiagnosticsSnapshot snapshot;
+            assert(!n::DecodeNetworkDiagnosticsSnapshot(response.payload.data(),response.payload.size(),snapshot));
+            assert(snapshot.gateway_host==response.source.host && snapshot.gateway_boot_id==response.source.boot_id && snapshot.gateway_session==response.session_id);
+            assert(response.payload.size()<=n::MAX_NETWORK_DIAGNOSTICS_PAYLOAD);
+        }
+        return response;
+    };
+    fd=open(low,1);int upper=open(high,200); // both Host ID directions, no outbound gateway connection
+    auto response=call(fd,request(low,1,1));assert(!response.status);
+    n::NetworkDiagnosticsSnapshot snapshot;assert(!n::DecodeNetworkDiagnosticsSnapshot(response.payload.data(),response.payload.size(),snapshot));
+    assert(snapshot.routes.empty() && snapshot.total_routes==0 && !snapshot.truncated);
+    assert(call(fd,request(low,1,1)).status==-EALREADY);
+    assert(call(fd,request(low,1,2)).status==-EAGAIN);
+    assert(!call(upper,request(high,200,1)).status);close(upper);
+    std::uint64_t id=2;bool expired=false;
+    Until([&]{const auto next=std::chrono::steady_clock::now()+110ms;Until([&]{return std::chrono::steady_clock::now()>=next;});
+        const auto r=call(fd,request(low,1,++id,1));expired=r.status==-ETIMEDOUT;return expired;});
+    close(fd);Until([&]{return gateway.GetStats().connections>=2;});
+    // Reconnect does not reset the high-water mark for this Host/boot/session.
+    // Retry HELLO only after the old fd has been consumed by the IO loop.
+    const auto settle=std::chrono::steady_clock::now()+50ms;Until([&]{return std::chrono::steady_clock::now()>=settle;});
+    fd=open(low,1);assert(call(fd,request(low,1,id)).status==-EALREADY);
+    auto wrong=request(low,1,++id);++wrong.session_id;Send(fd,wrong);Closed(fd);
+    // The observer is never allowed to use Parameter, Service, or Action handlers.
+    for(auto operation:{n::ControlMessage::PARAM_GET_REQUEST,n::ControlMessage::SERVICE_REQUEST,n::ControlMessage::ACTION_GOAL_REQUEST}) {
+        fd=open(low,1);auto f=request(low,1,++id);f.operation=operation;f.target=n::TargetScope::ENDPOINT;
+        f.endpoint={{Id(100),Id(42),getpid(),1},1};f.name="/forbidden";f.type=Type();
+        if(operation!=n::ControlMessage::PARAM_GET_REQUEST){f.response_type=Type();f.payload=Encode({1,true,1});}
+        if(operation==n::ControlMessage::ACTION_GOAL_REQUEST){f.feedback_type=Type();f.goal={f.source,1,f.session_id};}
+        Send(fd,f);Closed(fd);
+    }
+    fd=open(low,1);auto malformed=request(low,1,++id);std::vector<std::uint8_t> wire;
+    assert(!n::EncodeControlFrame(malformed,wire));std::fill(wire.begin()+156,wire.begin()+160,0);SendBytes(fd,wire);Closed(fd);
+    // A coalesced flood saturates the bounded response queue and is disconnected.
+    fd=open(low,1);std::vector<std::uint8_t> flood;
+    for(int i=0;i<64;++i){assert(!n::EncodeControlFrame(request(low,1,++id),wire));flood.insert(flood.end(),wire.begin(),wire.end());}
+    assert(send(fd,flood.data(),flood.size(),MSG_NOSIGNAL)>0);Closed(fd);
+    fd=open(low,1);low.Stop();Until([&]{return Peer(gateway,1).state==n::PeerState::LOST;});Closed(fd);
+    assert(!low.Start(low_config));fd=open(low,1);assert(!call(fd,request(low,1,1)).status);close(fd);
+    // Incompatible profile and stale boot/session cannot pass HELLO.
+    n::PeerDiscovery incompatible;auto incompatible_config=Config(250,port).discovery;
+    incompatible_config.profile.network.major=2;assert(!incompatible.Start(incompatible_config));
+    Until([&]{return Peer(gateway,250).session_id!=0;});fd=Connect(Observed(low,100).port);Send(fd,ObserverHello(incompatible,250));Closed(fd);incompatible.Stop();
+    fd=Connect(Observed(low,100).port);auto stale=ObserverHello(low,1);stale.source.boot_id=Id(88);Send(fd,stale);Closed(fd);
+    // Eight independent observers fit; the ninth is refused without taking down the gateway.
+    std::vector<std::unique_ptr<n::PeerDiscovery>> observers;std::vector<int> sockets;
+    const auto drained=std::chrono::steady_clock::now()+50ms;Until([&]{return std::chrono::steady_clock::now()>=drained;});
+    for(unsigned char host=10;host<19;++host){auto peer=std::make_unique<n::PeerDiscovery>();assert(!peer->Start(Config(host,port).discovery));
+        Until([&]{return Peer(gateway,host).session_id==peer->GetSessionId();});
+        if(host<18)sockets.push_back(open(*peer,host));
+        else {fd=Connect(Observed(low,100).port);Send(fd,ObserverHello(*peer,host));Closed(fd);}
+        observers.push_back(std::move(peer));
+    }
+    for(int socket:sockets)close(socket);
+    for(auto& peer:observers)peer->Stop();
+    assert(!gateway.GetLastError());gateway.Stop();
+    // Failed listener startup must not advertise diagnostics.
+    int occupied=-1;auto broken=config;broken.discovery.host=Id(251);broken.discovery.metadata_port=Port(SOCK_STREAM,&occupied);
+    assert(gateway.Start(broken)<0);assert(Observed(low,251).session_id==0);close(occupied);
+    // Real Topic sender route: one publish produces a stable, nonzero counter.
+    kcf::detail::BeginRuntimeIntrospection(kcf::ExecutionMode::STANDALONE);
+    const auto name="/diagnostics_topic_"+std::to_string(getpid());kcf::Publisher<Value> publisher;
+    assert(!publisher.Create(name));assert(!publisher.Publish({7,true,1}));
+    kcf::detail::UpdateRuntimeIntrospection(kcf::ProcessState::RUNNING,0);
+    config.topics.enabled=true;config.topics.port=Port();config.metadata.runtime_pids={getpid()};config.metadata.remote_topics={name};
+    n::PeerDiscovery consumer;auto consumer_config=Config(60,port).discovery;consumer_config.interface_address="127.0.0.60";
+    consumer_config.profile.capabilities=n::CapabilityBit(n::Capability::DISCOVERY)|n::CapabilityBit(n::Capability::REMOTE_TOPIC)|n::CapabilityBit(n::Capability::TARGET_ENDPOINT);
+    auto endpoint=Fake(60,name);endpoint.kind=n::EndpointKind::TOPIC;endpoint.role=n::EndpointRole::CONSUMER;
+    assert(!consumer.Start(consumer_config,{endpoint}));assert(!gateway.Start(config));
+    Until([&]{auto p=Observed(low,100);return p.metadata_ready && !p.endpoints.empty() && Peer(gateway,60).metadata_ready;});
+    auto peer=Observed(low,100);n::TopicPacket interest;interest.kind=n::TopicMessage::INTEREST;
+    interest.source=peer.endpoints[0].identity;interest.destination=endpoint.identity;
+    interest.source_session=peer.session_id;interest.destination_session=consumer.GetSessionId();interest.route_id=1;interest.name=name;interest.type=Type();
+    int udp=socket(AF_INET,SOCK_DGRAM|SOCK_CLOEXEC,0);assert(udp>=0);sockaddr_in destination{};destination.sin_family=AF_INET;destination.sin_addr.s_addr=htonl(INADDR_LOOPBACK);destination.sin_port=htons(config.topics.port);
+    sockaddr_in sender=destination;assert(inet_pton(AF_INET,"127.0.0.60",&sender.sin_addr)==1);
+    assert(!bind(udp,reinterpret_cast<sockaddr*>(&sender),sizeof(sender)));
+    assert(!n::EncodeTopicPacket(interest,wire));assert(sendto(udp,wire.data(),wire.size(),0,reinterpret_cast<sockaddr*>(&destination),sizeof(destination))==static_cast<ssize_t>(wire.size()));
+    Until([&]{auto d=gateway.GetTopicDiagnostics();return !d.routes.empty() && d.routes[0].packets_sent>0;});
+    const auto original=gateway.GetTopicDiagnostics();fd=open(low,1);response=call(fd,request(low,1,1));assert(!response.status);
+    assert(!n::DecodeNetworkDiagnosticsSnapshot(response.payload.data(),response.payload.size(),snapshot));
+    assert(snapshot.total_routes==original.routes.size() && snapshot.routes.size()==original.routes.size());
+    const auto& a=snapshot.routes[0];const auto& b=original.routes[0];
+    assert(a.source==b.source && a.destination==b.destination && a.route_id==b.route_id && a.name==b.name);
+    assert(a.source_session==b.source_session && a.destination_session==b.destination_session && a.sending==b.sending);
+    assert(a.packets_sent==b.packets_sent && a.packets_sent>0 && a.packets_received==b.packets_received && a.samples_published==b.samples_published);
+    assert(a.dropped==b.dropped && a.duplicate==b.duplicate && a.out_of_order==b.out_of_order && a.missed_sequence==b.missed_sequence && a.malformed==b.malformed && a.local_samples_skipped==b.local_samples_skipped);
+    Until([&]{return Observed(high,100).session_id==peer.session_id &&
+        Peer(gateway,200).session_id==high.GetSessionId();});
+    n::NetworkDiagnosticsClient route_client(high,high_config);n::NetworkDiagnosticsSnapshot public_snapshot;
+    assert(!route_client.Query(Id(100),public_snapshot));
+    assert(public_snapshot.routes.size()==snapshot.routes.size() && public_snapshot.routes[0].packets_sent==a.packets_sent);
+    std::vector<std::uint8_t> public_bytes,raw_bytes;
+    assert(!n::EncodeNetworkDiagnosticsSnapshot(public_snapshot,public_bytes));
+    assert(!n::EncodeNetworkDiagnosticsSnapshot(snapshot,raw_bytes));assert(public_bytes==raw_bytes);
+    close(fd);gateway.Stop();close(udp);consumer.Stop();config.topics.enabled=false;assert(!gateway.Start(config));
+    assert(gateway.GetTopicDiagnostics().routes.empty());
+    Until([&]{return Observed(low,100).session_id!=peer.session_id;});fd=open(low,1);response=call(fd,request(low,1,1));assert(!response.status);
+    assert(!n::DecodeNetworkDiagnosticsSnapshot(response.payload.data(),response.payload.size(),snapshot) && snapshot.routes.empty());close(fd);
+    gateway.Stop();low.Stop();high.Stop();publisher.Close();publisher.Unlink();kcf::detail::EndRuntimeIntrospection(kcf::ProcessState::STOPPED,0);
+    std::cout<<"Diagnostics opt-in, observer HELLO/directions, gates, replay, timeout, bounds, real route counters and disabled restart PASS\n";
+}
+
+void DiagnosticsReplayLifecycle() {
+    const auto port=Port();auto config=Config(240,port);config.diagnostics_enabled=true;
+    config.discovery.announce_interval=20ms;config.discovery.peer_timeout=80ms;
+    n::ControlNode gateway;assert(!gateway.Start(config));
+    const auto observer_config=[&](unsigned char host){auto c=config.discovery;c.host=Id(host);return c;};
+    n::PeerDiscovery active,online;assert(!active.Start(observer_config(1)) && !online.Start(observer_config(2)));
+    Until([&]{return Observed(active,240).session_id && Peer(gateway,1).session_id && Peer(gateway,2).session_id;});
+    const auto tcp=Observed(active,240).port;
+    const auto open=[&](const n::ControlFrame& hello){int fd=Connect(tcp);Send(fd,hello);assert(Receive(fd).operation==n::ControlMessage::HELLO);return fd;};
+    const auto query=[&](int fd,const n::ControlFrame& hello,std::uint64_t id){auto f=hello;
+        f.operation=n::ControlMessage::DIAGNOSTICS_REQUEST;f.target=n::TargetScope::HOST;f.request_id=id;f.timeout_ms=1000;
+        Send(fd,f);auto response=Receive(fd);assert(response.request_id==id && response.operation==n::ControlMessage::DIAGNOSTICS_RESPONSE);return response.status;};
+    auto active_hello=ObserverHello(active,1),online_hello=ObserverHello(online,2);
+    int held=open(active_hello);assert(!query(held,active_hello,9));
+    int fd=open(online_hello);assert(!query(fd,online_hello,9));close(fd);
+    n::ControlFrame last_hello;n::PeerInfo last_peer;
+    for(unsigned char host=10;host<80;++host) {
+        n::PeerDiscovery observer;assert(!observer.Start(observer_config(host)));
+        Until([&]{return Peer(gateway,host).session_id==observer.GetSessionId();});
+        auto hello=ObserverHello(observer,host);fd=open(hello);assert(!query(fd,hello,7));
+        if(host==79){last_hello=hello;last_peer=Peer(gateway,host);}
+        close(fd);observer.Stop();Until([&]{return Peer(gateway,host).state==n::PeerState::LOST;});
+    }
+    // Both a live connection and an ONLINE observer without TCP survive churn.
+    assert(query(held,active_hello,9)==-EALREADY);
+    fd=open(online_hello);assert(query(fd,online_hello,9)==-EALREADY);close(fd);
+    close(held);std::this_thread::sleep_for(30ms);
+    held=open(active_hello);assert(query(held,active_hello,9)==-EALREADY);close(held);
+    // Explicitly resurrect the last LOST incarnation, without changing session.
+    // After reclamation its read-only request IDs belong to a new replay window.
+    int udp=socket(AF_INET,SOCK_DGRAM|SOCK_CLOEXEC,0);assert(udp>=0);
+    in_addr loopback{};loopback.s_addr=htonl(INADDR_LOOPBACK);
+    assert(!setsockopt(udp,IPPROTO_IP,IP_MULTICAST_IF,&loopback,sizeof(loopback)));
+    sockaddr_in group{};group.sin_family=AF_INET;group.sin_port=htons(port);
+    assert(inet_pton(AF_INET,config.discovery.multicast_group.c_str(),&group.sin_addr)==1);
+    n::DiscoveryPacket announce;announce.host=last_hello.source.host;announce.boot_id=last_hello.source.boot_id;
+    announce.session_id=last_hello.session_id;announce.sequence=1000000;announce.revision=last_peer.metadata_revision;
+    std::vector<std::uint8_t> metadata,wire;assert(!n::EncodeDiscoveryMetadata({},metadata));announce.metadata_size=metadata.size();
+    assert(!n::EncodeDiscoveryPacket(announce,wire));
+    assert(sendto(udp,wire.data(),wire.size(),0,reinterpret_cast<sockaddr*>(&group),sizeof(group))==static_cast<ssize_t>(wire.size()));
+    Until([&]{return Peer(gateway,79).state==n::PeerState::ONLINE;});
+    fd=open(last_hello);assert(!query(fd,last_hello,7));assert(query(fd,last_hello,7)==-EALREADY);close(fd);close(udp);
+    active.Stop();online.Stop();gateway.Stop();
+    std::cout<<"Diagnostics replay lifecycle: 70 retired Hosts, ONLINE/connected protection, reconnect replay, LOST reclamation and same-session new window PASS\n";
+}
+
+void DiagnosticsClient() {
+    const auto port=Port();auto cfg=Config(100,port);cfg.diagnostics_enabled=true;
+    n::ControlNode gateway;n::PeerDiscovery low,high;
+    auto lc=Config(1,port).discovery,hc=Config(200,port).discovery;
+    assert(!low.Start(lc) && !high.Start(hc) && !gateway.Start(cfg));
+    n::NetworkDiagnosticsClient client(low,lc),upper(high,hc);n::NetworkDiagnosticsSnapshot result;
+    const auto ready=[&]{Until([&]{return Observed(low,100).session_id && Observed(high,100).session_id &&
+        Peer(gateway,1).session_id==low.GetSessionId() && Peer(gateway,200).session_id==high.GetSessionId();});};
+    ready();assert(client.Query(Id(100),result,0ms)==-EINVAL);
+    assert(client.Query(Id(99),result)==-ENOENT);
+    assert(!client.Query(Id(100),result) && result.gateway_host==Id(100));
+    assert(!upper.Query(Id(100),result));
+    // Each call reconnects; IDs also survive constructing a replacement client.
+    std::this_thread::sleep_for(120ms);assert(!client.Query(Id(100),result));
+    std::this_thread::sleep_for(120ms);n::NetworkDiagnosticsClient replacement(low,lc);
+    assert(!replacement.Query(Id(100),result));const auto old_session=result.gateway_session;
+    gateway.Stop();Until([&]{return Observed(low,100).state==n::PeerState::LOST;});
+    assert(client.Query(Id(100),result)==-ENOTCONN && result.gateway_session==old_session);
+    assert(!gateway.Start(cfg));Until([&]{auto p=Observed(low,100);return p.session_id && p.session_id!=old_session;});ready();
+    assert(!client.Query(Id(100),result) && result.gateway_session!=old_session);
+    gateway.Stop();cfg.diagnostics_enabled=false;const auto session=result.gateway_session;
+    assert(!gateway.Start(cfg));Until([&]{auto p=Observed(low,100);return p.session_id && p.session_id!=session;});
+    assert(client.Query(Id(100),result)==-ENOTSUP);
+    gateway.Stop();low.Stop();high.Stop();
+    std::cout<<"Public Diagnostics client: actual gateways, both Host directions, repeated/replacement clients, LOST/restart and capability gate PASS\n";
+}
+volatile std::sig_atomic_t diagnostics_signals=0;
+void DiagnosticsSignal(int){++diagnostics_signals;}
+void DiagnosticsClientWire() {
+    struct sigaction action{},previous{};action.sa_handler=DiagnosticsSignal;sigemptyset(&action.sa_mask);
+    assert(!sigaction(SIGUSR2,&action,&previous));const auto caller=pthread_self();
+    const auto fd_count=[] {return std::distance(std::filesystem::directory_iterator("/proc/self/fd"),std::filesystem::directory_iterator{});};
+    enum Mode {GOOD,WRONG_ID,WRONG_HELLO,WRONG_SESSION,WRONG_RUNTIME,BAD_SNAPSHOT,BAD_FRAME,UNEXPECTED,
+        OVERSIZE,REMOTE_ERROR,DISCONNECT,HELLO_TIMEOUT,RESPONSE_TIMEOUT,TRUNCATED,SESSION_CHANGE,INCOMPATIBLE};
+    const auto port=Port();auto oc=Config(2,port).discovery;n::PeerDiscovery observer;assert(!observer.Start(oc));
+    n::NetworkDiagnosticsClient client(observer,oc);std::uint64_t previous_id=0;
+    for(auto mode:{GOOD,WRONG_ID,WRONG_HELLO,WRONG_SESSION,WRONG_RUNTIME,BAD_SNAPSHOT,BAD_FRAME,UNEXPECTED,
+                  OVERSIZE,REMOTE_ERROR,DISCONNECT,HELLO_TIMEOUT,RESPONSE_TIMEOUT,TRUNCATED,SESSION_CHANGE,INCOMPATIBLE}) {
+        int listener=-1;auto tcp=Port(SOCK_STREAM,&listener);assert(!listen(listener,4));
+        n::PeerDiscovery fake;auto fc=Config(80,port).discovery;fc.metadata_port=tcp;
+        fc.profile.capabilities|=n::CapabilityBit(n::Capability::NETWORK_DIAGNOSTICS);
+        if(mode==INCOMPATIBLE)fc.profile.network.major=2;
+        assert(!fake.Start(fc));Until([&]{return Observed(observer,80).session_id==fake.GetSessionId();});
+        n::NetworkDiagnosticsSnapshot expected;expected.gateway_host=Id(80);expected.gateway_boot_id=Id(42);expected.gateway_session=fake.GetSessionId();
+        n::TopicRouteInfo route;route.source={{Id(80),Id(42),getpid(),1},1};route.destination={{Id(2),Id(42),getpid(),1},2};
+        route.source_session=3;route.destination_session=4;route.route_id=5;route.name="/"+std::string(239,'q');
+        route.state=n::TopicRouteState::ACTIVE;route.sending=true;route.error=-EIO;route.reason=n::CompatibilityReason::TYPE_MISMATCH;
+        route.packets_sent=11;route.packets_received=12;route.samples_published=13;route.dropped=14;route.duplicate=15;
+        route.out_of_order=16;route.missed_sequence=17;route.malformed=18;route.local_samples_skipped=19;
+        expected.routes.assign(100,route);expected.total_routes=100;
+        std::vector<std::uint8_t> payload;assert(!n::EncodeNetworkDiagnosticsSnapshot(expected,payload));
+        assert(!n::DecodeNetworkDiagnosticsSnapshot(payload.data(),payload.size(),expected) && expected.truncated);
+        const auto descriptors=fd_count();std::thread server;
+        if(mode!=INCOMPATIBLE)server=std::thread([&]{
+            pollfd poller{listener,POLLIN,0};assert(poll(&poller,1,3000)>0);int fd=accept4(listener,nullptr,nullptr,SOCK_CLOEXEC);assert(fd>=0);
+            auto hello=Receive(fd);assert(hello.source.host==oc.host && hello.source.boot_id==oc.boot_id && hello.session_id==observer.GetSessionId());
+            if(mode==HELLO_TIMEOUT){std::this_thread::sleep_for(160ms);close(fd);return;}
+            hello.source={Id(80),Id(42),getpid(),1};hello.session_id=fake.GetSessionId();
+            if(mode==WRONG_HELLO){++hello.session_id;Send(fd,hello);close(fd);return;}
+            if(mode==GOOD){std::this_thread::sleep_for(10ms);assert(!pthread_kill(caller,SIGUSR2));}
+            Send(fd,hello,mode==GOOD);auto request=Receive(fd);
+            assert(request.operation==n::ControlMessage::DIAGNOSTICS_REQUEST && request.target==n::TargetScope::HOST);
+            assert(request.request_id>previous_id);previous_id=request.request_id;
+            if(mode==DISCONNECT){close(fd);return;}
+            if(mode==RESPONSE_TIMEOUT){std::this_thread::sleep_for(160ms);close(fd);return;}
+            n::ControlFrame response=request;response.operation=n::ControlMessage::DIAGNOSTICS_RESPONSE;
+            response.source=hello.source;response.session_id=hello.session_id;response.timeout_ms=0;response.payload=payload;
+            if(mode==WRONG_ID)++response.request_id;
+            if(mode==WRONG_SESSION){++response.session_id;auto changed=expected;changed.gateway_session=response.session_id;
+                assert(!n::EncodeNetworkDiagnosticsSnapshot(changed,response.payload));}
+            if(mode==WRONG_RUNTIME)++response.source.process_start_ticks;
+            if(mode==REMOTE_ERROR){response.status=-EAGAIN;response.payload.clear();}
+            if(mode==UNEXPECTED){Send(fd,hello);close(fd);return;}
+            if(mode==SESSION_CHANGE){fake.Stop();assert(!fake.Start(fc));
+                Until([&]{return Observed(observer,80).session_id==fake.GetSessionId();});}
+            std::vector<std::uint8_t> bytes;assert(!n::EncodeControlFrame(response,bytes));
+            if(mode==BAD_SNAPSHOT)bytes[172+12]^=1;
+            if(mode==BAD_FRAME)bytes[0]^=1;
+            if(mode==OVERSIZE){bytes[8]=0;bytes[9]=0;bytes[10]=0x41;bytes[11]=0;bytes.resize(n::CONTROL_PREFIX_SIZE);}
+            if(mode==TRUNCATED)bytes.resize(177);
+            if(mode==GOOD){for(std::size_t offset=0;offset<bytes.size();offset+=31){
+                const auto count=std::min<std::size_t>(31,bytes.size()-offset);
+                assert(send(fd,bytes.data()+offset,count,MSG_NOSIGNAL)==static_cast<ssize_t>(count));std::this_thread::sleep_for(100us);}}
+            else {assert(send(fd,bytes.data(),bytes.size(),MSG_NOSIGNAL)==static_cast<ssize_t>(bytes.size()));}
+            close(fd);
+        });
+        n::NetworkDiagnosticsSnapshot result;result.gateway_session=999;result.total_routes=123;
+        const bool timeout=mode==HELLO_TIMEOUT||mode==RESPONSE_TIMEOUT;
+        const auto start=std::chrono::steady_clock::now();const int code=client.Query(Id(80),result,timeout?100ms:1500ms);
+        const auto elapsed=std::chrono::steady_clock::now()-start;
+        if(server.joinable())server.join();
+        assert(fd_count()==descriptors);
+        if(mode==GOOD){assert(!code);std::vector<std::uint8_t> actual;assert(!n::EncodeNetworkDiagnosticsSnapshot(result,actual));assert(actual==payload);}
+        else {assert(code<0 && result.gateway_session==999 && result.total_routes==123);
+            if(timeout)assert(code==-ETIMEDOUT && elapsed<300ms);
+            if(mode==WRONG_ID||mode==BAD_FRAME||mode==UNEXPECTED||mode==BAD_SNAPSHOT)assert(code==-EPROTO);
+            if(mode==WRONG_HELLO||mode==WRONG_SESSION||mode==WRONG_RUNTIME||mode==SESSION_CHANGE)assert(code==-ESTALE);
+            if(mode==OVERSIZE)assert(code==-EMSGSIZE);
+            if(mode==REMOTE_ERROR)assert(code==-EAGAIN);
+            if(mode==DISCONNECT||mode==TRUNCATED)assert(code==-ECONNRESET);
+            if(mode==INCOMPATIBLE)assert(code==-EPROTONOSUPPORT);
+        }
+        fake.Stop();close(listener);
+    }
+    assert(diagnostics_signals>0);assert(!sigaction(SIGUSR2,&previous,nullptr));
+    observer.Stop();std::cout<<"Public Diagnostics client: partial TCP, EINTR, socket cleanup, deadline/EOF, correlation/identity/stale/malformed gates, bounded truncated snapshot and all counters PASS\n";
+}
+
+int main(int argc,char** argv){if(argc==3&&std::string(argv[1])=="--owner")return Owner(argv[2]);alarm(60);Codec();Diagnostics();DiagnosticsReplayLifecycle();DiagnosticsClient();DiagnosticsClientWire();Basic(argv[0]);Failures();OwnerBinding(argv[0]);IncomingFrames();Correlation();}

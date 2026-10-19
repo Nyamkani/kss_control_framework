@@ -13,6 +13,11 @@ struct ControlConfig {
     std::chrono::milliseconds metadata_interval{250};
     std::chrono::milliseconds connect_timeout{1000};
     std::chrono::milliseconds reconnect_interval{250};
+    // Read-only diagnostics on the existing listener, queried via NetworkDiagnosticsClient.
+    // Opt-in: at most 8 observer connections / queued jobs, one job per connection,
+    // 10 admissions/s per Host session, 50 dispatches/s globally. Observer output
+    // is capped at 32 KiB / 16 frames. Overload yields -EAGAIN or closes a full queue.
+    bool diagnostics_enabled{false};
 };
 struct RemoteActionSnapshot {
     RemoteGoalIdentity goal;

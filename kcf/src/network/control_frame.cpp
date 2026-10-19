@@ -1,4 +1,5 @@
 #include "kcf/network/control_frame.hpp"
+#include "kcf/network/network_diagnostics.hpp"
 #include <cerrno>
 #include <limits>
 namespace kcf::network {
@@ -21,6 +22,22 @@ bool ValidFrame(const ControlFrame& f) {
     const bool service=f.operation==ControlMessage::SERVICE_REQUEST||f.operation==ControlMessage::SERVICE_RESPONSE;
     if((service||action)?(!Valid(f.response_type)||f.response_type.payload_size>MAX_PARAMETER_WIRE):!(f.response_type==TypeIdentity{}))return false;
     if(!action&&(!(f.feedback_type==TypeIdentity{})||f.goal!=RemoteGoalIdentity{}||f.action_state!=ActionState::IDLE||f.feedback_sequence||f.outcome_unknown))return false;
+    if(IsDiagnosticsMessage(f.operation)) {
+        if(!f.request_id || f.endpoint!=RemoteEndpointIdentity{} || !f.name.empty() ||
+           !(f.type==TypeIdentity{}) || f.target!=TargetScope::HOST ||
+           f.payload.size()>MAX_NETWORK_DIAGNOSTICS_PAYLOAD) return false;
+        if(f.operation==ControlMessage::DIAGNOSTICS_REQUEST)
+            return f.timeout_ms>0 && f.timeout_ms<=60000 && !f.status &&
+                f.reason==CompatibilityReason::COMPATIBLE && f.payload.empty();
+        if(f.timeout_ms || f.status>0 ||
+           static_cast<unsigned>(f.reason)>static_cast<unsigned>(CompatibilityReason::UNKNOWN_ENDPOINT)) return false;
+        if(f.status) return f.payload.empty();
+        if(f.reason!=CompatibilityReason::COMPATIBLE) return false;
+        NetworkDiagnosticsSnapshot snapshot;
+        return !DecodeNetworkDiagnosticsSnapshot(f.payload.data(),f.payload.size(),snapshot) &&
+            snapshot.gateway_host==f.source.host && snapshot.gateway_boot_id==f.source.boot_id &&
+            snapshot.gateway_session==f.session_id;
+    }
     if(f.operation==ControlMessage::HELLO)return !f.request_id && f.endpoint==RemoteEndpointIdentity{} && f.name.empty() &&
         f.type==TypeIdentity{} && !f.timeout_ms && !f.status && f.payload.empty() && f.target==TargetScope::ENDPOINT && f.reason==CompatibilityReason::COMPATIBLE;
     if((!f.request_id&&f.operation!=ControlMessage::ACTION_FEEDBACK&&f.operation!=ControlMessage::ACTION_RESULT)||!Valid(f.endpoint)||!Text(f.name,240)||f.name[0]!='/'||!Valid(f.type)||f.type.payload_size>MAX_PARAMETER_WIRE||!TargetCapability(f.target))return false;
@@ -53,8 +70,10 @@ int ControlFrameSize(const std::uint8_t* p,std::size_t size,std::size_t& output)
     if(!p)return -EINVAL;
     if(size<CONTROL_PREFIX_SIZE)return -EAGAIN;
     Reader r{p,size};if(r.U(4)!=CONTROL_MAGIC)return -EPROTO;if(r.U(2)!=CONTROL_WIRE_VERSION)return -EPROTONOSUPPORT;
-    const auto op=r.U(2);if(op<1||op>13)return -EPROTO;
+    const auto op=r.U(2);if(op<1||op>15)return -EPROTO;
     auto length=r.U(4);if(length<172||length>MAX_CONTROL_FRAME)return -EMSGSIZE;
+    if(op==static_cast<unsigned>(ControlMessage::DIAGNOSTICS_REQUEST) && length!=172)return -EMSGSIZE;
+    if(op==static_cast<unsigned>(ControlMessage::DIAGNOSTICS_RESPONSE) && length>172+MAX_NETWORK_DIAGNOSTICS_PAYLOAD)return -EMSGSIZE;
     if(r.U(4))return -EPROTO;
     output=length;return 0;
 }

@@ -1,4 +1,5 @@
 #include "kcf/network/control_node.hpp"
+#include "kcf/network/network_diagnostics.hpp"
 #include "kcf/dynamic/dynamic_parameter_client.hpp"
 #include "kcf/dynamic/dynamic_service_client.hpp"
 #include "kcf/dynamic/dynamic_action_client.hpp"
@@ -20,6 +21,8 @@ namespace kcf::network {
 namespace {
 using Clock=std::chrono::steady_clock;
 constexpr std::size_t MAX_PENDING=256,MAX_CONNECTIONS=64,MAX_QUEUE_BYTES=256*1024;
+constexpr std::size_t MAX_DIAGNOSTICS_CONNECTIONS=8,MAX_DIAGNOSTICS_JOBS=8;
+constexpr std::size_t MAX_DIAGNOSTICS_QUEUE_BYTES=32*1024,MAX_DIAGNOSTICS_FRAMES=16;
 CapabilitySet Supported() {return CapabilityBit(Capability::DISCOVERY)|CapabilityBit(Capability::REMOTE_PARAMETER)|CapabilityBit(Capability::REMOTE_SERVICE)|CapabilityBit(Capability::REMOTE_ACTION)|
     CapabilityBit(Capability::TARGET_ENDPOINT)|CapabilityBit(Capability::TARGET_HOST)|CapabilityBit(Capability::TARGET_APPLICATION)|
     CapabilityBit(Capability::TARGET_GROUP)|CapabilityBit(Capability::TARGET_ALL);}
@@ -53,11 +56,21 @@ struct ControlNode::Impl {
     struct Connection {
         int fd{-1};std::uint64_t id{0};bool connecting{false},ready{false},outbound{false},hello_sent{false};
         HostIdentity host;std::uint64_t session{0};std::string address;Clock::time_point deadline;
+        bool diagnostics_only{false},diagnostics_pending{false};
+        RemoteRuntimeIdentity observer_source;
         std::vector<std::uint8_t> input;std::deque<std::vector<std::uint8_t>> output;std::size_t offset{0},queued{0};
     };
     struct Job {std::uint64_t connection;ControlFrame frame;Clock::time_point deadline;};
     struct Reply {std::uint64_t connection;ControlFrame frame;};
     struct Seen {HostIdentity host;std::uint64_t session{0},last{0},last_goal{0};};
+    struct DiagnosticsSeen {
+        HostIdentity host,boot;std::uint64_t session{0},last{0};Clock::time_point next;
+    };
+    // IO-thread owned, independent of the regular Control job/replay queues.
+    std::deque<Job> diagnostics_jobs;
+    std::vector<DiagnosticsSeen> diagnostics_seen; // general gateways: retained until Start
+    std::vector<DiagnosticsSeen> observer_diagnostics_seen;
+    Clock::time_point next_diagnostics;
     struct ServiceTask {std::thread worker;std::atomic<bool> done{true};};
     std::array<ServiceTask,32> service_tasks; // fail admission, never wait behind another Service
     struct Outgoing {std::shared_ptr<RemoteActionSession> session;std::uint64_t connection;};
@@ -90,6 +103,16 @@ struct ControlNode::Impl {
         return p.state==PeerState::ONLINE && result.Compatible() &&
             (result.common_capabilities & (CapabilityBit(Capability::REMOTE_PARAMETER)|CapabilityBit(Capability::REMOTE_SERVICE)|CapabilityBit(Capability::REMOTE_ACTION)));
     }
+    bool ObserverAllowed(const PeerInfo& p) {
+        return config.diagnostics_enabled && p.state==PeerState::ONLINE &&
+            (p.profile.capabilities & KNOWN_CAPABILITIES)==CapabilityBit(Capability::DISCOVERY) &&
+            CheckPeerCompatibility(config.discovery.profile,p.profile,config.discovery.compatibility_policy).Compatible();
+    }
+    TopicDiagnostics TopicSnapshot() const {
+        // TopicDataPlane retains its last published stats after Stop. Never serve
+        // that previous run when this ControlNode starts with Topic disabled.
+        return config.topics.enabled?topics.GetDiagnostics():TopicDiagnostics{};
+    }
     void Finish(std::size_t index,int code,CompatibilityReason reason=CompatibilityReason::COMPATIBLE,std::vector<std::uint8_t> value={},bool confirmed=false,bool unknown=false) {
         auto p=std::move(pending[index]);pending.erase(pending.begin()+index);
         auto& out=p.batch->result.endpoints[p.index];out.error=code;out.reason=reason;out.execution_unknown=p.sent&&code&&(p.batch->service||(p.batch->action&&!p.batch->cancel&&(!confirmed||unknown)));
@@ -107,6 +130,8 @@ struct ControlNode::Impl {
     }
     void Drop(std::size_t index) {
         auto& c=connections[index];close(c.fd);
+        diagnostics_jobs.erase(std::remove_if(diagnostics_jobs.begin(),diagnostics_jobs.end(),
+            [&](const auto& job){return job.connection==c.id;}),diagnostics_jobs.end());
         {std::lock_guard<std::mutex> lock(mutex);live_connections.erase(c.id);abort_connections.erase(c.id);}
         for(auto i=outgoing.begin();i!=outgoing.end();)if(i->connection==c.id){
             std::lock_guard<std::mutex> lock(i->session->mutex_);auto& a=i->session->snapshot_;
@@ -116,7 +141,9 @@ struct ControlNode::Impl {
         connections.erase(connections.begin()+index);
     }
     bool Queue(Connection& c,const ControlFrame& f) {
-        std::vector<std::uint8_t> bytes;if(EncodeControlFrame(f,bytes)||c.queued+bytes.size()>MAX_QUEUE_BYTES)return false;
+        std::vector<std::uint8_t> bytes;if(EncodeControlFrame(f,bytes))return false;
+        const auto limit=c.diagnostics_only?MAX_DIAGNOSTICS_QUEUE_BYTES:MAX_QUEUE_BYTES;
+        if(c.queued+bytes.size()>limit || (c.diagnostics_only&&c.output.size()>=MAX_DIAGNOSTICS_FRAMES))return false;
         c.queued+=bytes.size();c.output.push_back(std::move(bytes));return true;
     }
     bool Hello(Connection& c) {
@@ -161,14 +188,79 @@ struct ControlNode::Impl {
             }
         }
     }
+    bool DiagnosticsError(Connection& c,const ControlFrame& request,int code) {
+        ControlFrame response=request;response.source=self;response.session_id=session;
+        response.operation=ControlMessage::DIAGNOSTICS_RESPONSE;response.timeout_ms=0;
+        response.status=code;response.payload.clear();return Queue(c,response);
+    }
+    void ReclaimObserverDiagnostics(const std::vector<PeerInfo>& peers) {
+        // Read-only observers have no mutation deduplication obligation. Keep the
+        // high-water mark while the incarnation is ONLINE or still connected.
+        // LOST/absent/replaced incarnations with no connection can be reclaimed.
+        // Reappearance after reclamation (even same session) starts a new replay
+        // window. Never reclaim general Gateway diagnostics or PSA replay state.
+        observer_diagnostics_seen.erase(std::remove_if(observer_diagnostics_seen.begin(),observer_diagnostics_seen.end(),
+            [&](const auto& entry) {
+                const auto* peer=Find(peers,entry.host);
+                if(peer && peer->state==PeerState::ONLINE && peer->boot_id==entry.boot && peer->session_id==entry.session)return false;
+                return std::none_of(connections.begin(),connections.end(),[&](const auto& c) {
+                    return c.host==entry.host && c.session==entry.session;
+                });
+            }),observer_diagnostics_seen.end());
+    }
+    bool AdmitDiagnostics(Connection& c,const ControlFrame& f) {
+        if(!config.diagnostics_enabled)return DiagnosticsError(c,f,-ENOTSUP);
+        auto& records=c.diagnostics_only?observer_diagnostics_seen:diagnostics_seen;
+        auto known=std::find_if(records.begin(),records.end(),[&](const auto& e){return e.host==c.host;});
+        if(known==records.end()) {
+            if(records.size()>=MAX_CONNECTIONS)return DiagnosticsError(c,f,-ENOSPC);
+            records.push_back({c.host,f.source.boot_id,c.session,0,{}});known=records.end()-1;
+        }
+        if(known->boot!=f.source.boot_id || known->session!=c.session)
+            *known={c.host,f.source.boot_id,c.session,0,{}};
+        if(f.request_id<=known->last){++ignored;return DiagnosticsError(c,f,-EALREADY);}
+        known->last=f.request_id; // includes rejected admissions, survives reconnect
+        const auto now=Clock::now();
+        if(c.diagnostics_pending || now<known->next || diagnostics_jobs.size()>=MAX_DIAGNOSTICS_JOBS)
+            return DiagnosticsError(c,f,-EAGAIN);
+        known->next=now+std::chrono::milliseconds(100);
+        c.diagnostics_pending=true;
+        diagnostics_jobs.push_back({c.id,f,now+std::chrono::milliseconds(f.timeout_ms)});return true;
+    }
+    void DispatchDiagnostics(const std::vector<PeerInfo>& peers) {
+        const auto now=Clock::now();if(now<next_diagnostics)return;
+        next_diagnostics=now+std::chrono::milliseconds(20);
+        if(diagnostics_jobs.empty())return;
+        auto job=std::move(diagnostics_jobs.front());diagnostics_jobs.pop_front();
+        for(std::size_t i=0;i<connections.size();++i)if(connections[i].id==job.connection) {
+            auto& c=connections[i];c.diagnostics_pending=false;
+            const auto* peer=Find(peers,c.host);
+            if(!peer || !(c.diagnostics_only?ObserverAllowed(*peer):Allowed(*peer)) ||
+               peer->boot_id!=job.frame.source.boot_id || peer->session_id!=job.frame.session_id) {Drop(i);return;}
+            auto response=job.frame;response.source=self;response.session_id=session;
+            response.operation=ControlMessage::DIAGNOSTICS_RESPONSE;response.timeout_ms=0;
+            int code=Clock::now()>=job.deadline?-ETIMEDOUT:0;
+            NetworkDiagnosticsSnapshot snapshot;
+            if(!code)code=MakeNetworkDiagnosticsSnapshot(self.host,self.boot_id,session,TopicSnapshot(),snapshot);
+            if(!code)code=EncodeNetworkDiagnosticsSnapshot(snapshot,response.payload);
+            if(Clock::now()>=job.deadline)code=-ETIMEDOUT;
+            response.status=code;if(code)response.payload.clear();
+            if(!Queue(c,response))Drop(i);
+            return;
+        }
+    }
     bool Receive(Connection& c,const ControlFrame& f,const std::vector<PeerInfo>& peers) {
         const auto* peer=Find(peers,f.source.host);
-        if(!peer||!Allowed(*peer)||peer->boot_id!=f.source.boot_id||peer->session_id!=f.session_id||peer->address!=c.address)return false;
+        if(!peer||peer->boot_id!=f.source.boot_id||peer->session_id!=f.session_id||peer->address!=c.address)return false;
+        const bool observer=c.ready?c.diagnostics_only:(!c.outbound&&ObserverAllowed(*peer));
+        if(observer?!ObserverAllowed(*peer):!Allowed(*peer))return false;
         if(f.operation==ControlMessage::HELLO) {
             if(c.ready)return false;
             if(c.outbound) {if(c.host!=f.source.host)return false;}
             else {
-                if(!Lower(f.source.host,self.host))return false;
+                if(!observer&&!Lower(f.source.host,self.host))return false;
+                if(observer && std::count_if(connections.begin(),connections.end(),[](const auto& other){return other.diagnostics_only;})>=MAX_DIAGNOSTICS_CONNECTIONS)return false;
+                c.diagnostics_only=observer;c.observer_source=f.source;
                 for(const auto& other:connections)if(other.id!=c.id&&other.host==f.source.host)return false;
                 c.host=f.source.host;c.session=f.session_id;if(!Hello(c))return false;
             }
@@ -176,6 +268,8 @@ struct ControlNode::Impl {
             ++connected;return true;
         }
         if(!c.ready||c.host!=f.source.host||c.session!=f.session_id)return false;
+        if(c.diagnostics_only && (f.source!=c.observer_source || f.operation!=ControlMessage::DIAGNOSTICS_REQUEST))return false;
+        if(f.operation==ControlMessage::DIAGNOSTICS_REQUEST)return AdmitDiagnostics(c,f);
         if(f.operation==ControlMessage::ACTION_FEEDBACK||f.operation==ControlMessage::ACTION_RESULT){
             auto found=std::find_if(outgoing.begin(),outgoing.end(),[&](const auto& o){return o.connection==c.id&&o.session->request_.goal==f.goal;});
             if(found==outgoing.end()){++ignored;return true;}
@@ -272,8 +366,11 @@ struct ControlNode::Impl {
                 for(std::size_t i=connections.size();i--;) {
                     auto& c=connections[i];const auto* peer=Find(peers,c.host);
                     bool abort=false;{std::lock_guard<std::mutex> lock(mutex);abort=abort_connections.count(c.id);}
-                    if(abort||(!c.ready&&now>=c.deadline)||(Valid(c.host)&&(!peer||!Allowed(*peer)||peer->session_id!=c.session)))Drop(i);
+                    if(abort||(!c.ready&&now>=c.deadline)||(Valid(c.host)&&(!peer||!(c.diagnostics_only?ObserverAllowed(*peer):Allowed(*peer))||peer->session_id!=c.session||
+                        (c.diagnostics_only&&peer->boot_id!=c.observer_source.boot_id))))Drop(i);
                 }
+                ReclaimObserverDiagnostics(peers);
+                DispatchDiagnostics(peers);
                 if(now>=next_connect){Connect(peers);next_connect=now+config.reconnect_interval;}
                 for(std::size_t i=pending.size();i--;) {
                     auto& p=pending[i];if(now>=p.batch->deadline){Finish(i,-ETIMEDOUT);continue;}
@@ -588,8 +685,10 @@ int ControlNode::Start(const ControlConfig& input) {
     s.wake=eventfd(0,EFD_NONBLOCK|EFD_CLOEXEC);if(s.wake<0)return fail(-errno);
     int code=0;
     if(input.topics.enabled){code=s.topics.Start(s.config.topics,s.config.discovery,s.config.metadata,s.self,s.discovery);if(code)return fail(code);}
+    // Listener and optional Topic plane are ready before discovery advertises opt-in.
+    if(input.diagnostics_enabled)s.config.discovery.profile.capabilities|=CapabilityBit(Capability::NETWORK_DIAGNOSTICS);
     code=s.discovery.Start(s.config.discovery);if(code)return fail(code);
-    s.session=s.discovery.GetSessionId();s.error=0;s.connected=0;s.sent=0;s.ignored=0;s.rejected=0;s.running=true;s.seen.clear();
+    s.session=s.discovery.GetSessionId();s.error=0;s.connected=0;s.sent=0;s.ignored=0;s.rejected=0;s.running=true;s.seen.clear();s.diagnostics_seen.clear();s.observer_diagnostics_seen.clear();s.diagnostics_jobs.clear();s.next_diagnostics=Clock::now();
     try{s.backend=std::thread([&s]{s.Backend();});s.io=std::thread([&s]{s.IO();});}
     catch(...){Stop();return -EAGAIN;}return 0;
 }
@@ -598,7 +697,7 @@ void ControlNode::Stop() {
     if(s.io.joinable())s.io.join();
     s.topics.Stop();
     if(s.backend.joinable())s.backend.join();
-    s.discovery.Stop();std::lock_guard<std::mutex> lock(s.mutex);s.jobs.clear();s.replies.clear();s.local.clear();s.live_connections.clear();s.abort_connections.clear();s.Close();
+    s.discovery.Stop();std::lock_guard<std::mutex> lock(s.mutex);s.jobs.clear();s.replies.clear();s.diagnostics_jobs.clear();s.local.clear();s.live_connections.clear();s.abort_connections.clear();s.Close();
 }
 std::future<ParameterBatchResult> ControlNode::Get(const RemoteTarget& t,const std::string& name,const TypeIdentity& type,std::chrono::milliseconds timeout){return impl_->Submit(t,name,type,{},false,timeout);}
 std::future<ParameterBatchResult> ControlNode::Set(const RemoteTarget& t,const std::string& name,const TypeIdentity& type,const std::vector<std::uint8_t>& value,std::chrono::milliseconds timeout){return impl_->Submit(t,name,type,value,true,timeout);}
@@ -625,6 +724,6 @@ std::future<ActionBatchResult> ControlNode::CancelAction(const std::shared_ptr<R
 }
 std::vector<PeerInfo> ControlNode::GetPeers() const{return impl_->discovery.GetPeers();}
 ControlStats ControlNode::GetStats() const{return {impl_->connected.load(),impl_->sent.load(),impl_->ignored.load(),impl_->rejected.load()};}
-TopicDiagnostics ControlNode::GetTopicDiagnostics() const{return impl_->topics.GetDiagnostics();}
+TopicDiagnostics ControlNode::GetTopicDiagnostics() const{return impl_->TopicSnapshot();}
 int ControlNode::GetLastError() const{return impl_->error.load();}
 }

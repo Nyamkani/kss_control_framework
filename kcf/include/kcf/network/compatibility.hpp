@@ -8,7 +8,7 @@ namespace kcf::network
 // and the existing endpoint/control-model schema (PROTOCOL_VERSION).
 struct FrameworkVersion
 {
-    std::uint16_t major{5}, minor{2}, patch{0};
+    std::uint16_t major{5}, minor{3}, patch{0};
 };
 inline bool operator==(const FrameworkVersion& a, const FrameworkVersion& b)
 {
@@ -29,11 +29,12 @@ enum class Capability : std::uint64_t
     TARGET_HOST = 1ull << 6,
     TARGET_APPLICATION = 1ull << 7,
     TARGET_GROUP = 1ull << 8,
-    TARGET_ALL = 1ull << 9
+    TARGET_ALL = 1ull << 9,
+    NETWORK_DIAGNOSTICS = 1ull << 10 // advertised only when ControlConfig::diagnostics_enabled is true
 };
 using CapabilitySet = std::uint64_t;
 inline constexpr CapabilitySet CapabilityBit(Capability c) { return static_cast<CapabilitySet>(c); }
-inline constexpr CapabilitySet KNOWN_CAPABILITIES = (1ull << 10) - 1;
+inline constexpr CapabilitySet KNOWN_CAPABILITIES = (1ull << 11) - 1;
 struct PeerProfile
 {
     FrameworkVersion framework;

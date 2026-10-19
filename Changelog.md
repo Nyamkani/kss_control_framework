@@ -7,6 +7,52 @@ Phase 2 통신 기능은 v2.0, Phase 3 supervision/recovery는 v3.0에 기록합
 이 문서의 버전 표기는 개발 이력 구분이며 Git tag 또는 배포 생성 여부를 의미하지 않습니다.
 v1.0~v4.3은 historical record입니다. 당시 Mecanum 경로·실행 범위를 현재 Framework 소스 구성으로 해석하지 않습니다.
 
+## v5.3 — Read-only Network Diagnostics
+
+F-ND1~F-ND5A가 적용된 dev working tree 기준입니다. FrameworkVersion/CMake는 5.3.0이며,
+공개 commit/tag/Release 또는 Tool v0.13 배포를 의미하지 않습니다. v5.2와 Tool v0.12의 아래 기록은 당시 이력으로 보존합니다.
+
+### F-ND1 — Snapshot codec
+
+- Gateway Host/boot/session과 route identity/state/reason/recovery 및 9개 uint64 counter의 read-only snapshot.
+- `MakeNetworkDiagnosticsSnapshot`, `EncodeNetworkDiagnosticsSnapshot`, `DecodeNetworkDiagnosticsSnapshot` 추가.
+- Diagnostics payload v1, 16 KiB 상한, `total_routes`/`truncated`, 잘린·잘못된 입력 거부. Topic payload/전체 proxy 목록은 포함하지 않음.
+
+### F-ND2A / F-ND2B — Control Protocol / Gateway Handler
+
+- 기존 Control TCP wire v1에 DIAGNOSTICS_REQUEST(14)/RESPONSE(15)와 HOST 조회 계약 추가.
+- `diagnostics_enabled=false` 기본값 유지. 명시적 opt-in 및 시작 준비 후에만 NETWORK_DIAGNOSTICS 광고.
+- Discovery-only Observer의 read-only HELLO/identity/session gate, bounded 연결·job·응답 및 rate limit.
+- 기존 Parameter/Service/Action 실행 경로와 분리된 Diagnostics dispatch/replay 처리.
+
+### F-ND3 — Client API
+
+- 실행 중인 PeerDiscovery를 재사용하는 `NetworkDiagnosticsClient::Query` 공개.
+- 동기식 worker API, 단일 deadline, Query마다 TCP 생성·정리, 자동 retry 없음, 실패 시 출력 불변.
+- Host/boot/session 및 request correlation 재검증, EOF/partial IO/timeout/stale 처리.
+
+### F-ND4A — Observer Replay Lifecycle
+
+- Observer replay 기록은 최대 64개. 동일 incarnation이 ONLINE이거나 연결이 남아 있으면 유지.
+- LOST/소멸/교체된 incarnation이며 연결도 없는 경우에만 회수. 회수 후 같은 session 재등장도 새 read-only replay window.
+- 일반 Gateway Diagnostics 및 Parameter/Service/Action replay 상태는 이 회수 정책의 대상이 아님.
+
+### F-ND4B — Diagnostics E2E
+
+- 실제 두 DataPlane/proxy Subscriber, public client 조회, route/session/counter 상관관계 및 Control 동시 부하 검증.
+- Local 약 200 Hz와 Network 약 50 Hz, skipped counter를 분리 관측. Proxy Publish는 Subscriber 처리율이 아님.
+- 별도 Tool Virtual LAN E2E와 Framework 자체 시험을 분리 기록. 최초 timeout·재실행 이력을 아래 검증 문서에 보존.
+
+### F-ND5A — Version Alignment / Header Cleanup
+
+- CMake 및 `FrameworkVersion` 기본값을 5.3.0으로 통일, 오래된 헤더 주석 3곳 수정.
+- Discovery 테스트의 Framework minor 기대값만 2→3 변경. API/동작/호환성 정책 및 protocol/storage version 유지.
+- 전체 Debug build, Network 8/8, Diagnostics Loopback E2E, Framework Virtual LAN PASS.
+
+F-ND5B는 위 결과를 문서화하며 새 build/test를 실행하지 않았습니다.
+[공개 API·계약](docs/08_NETWORK_ARCHITECTURE.md#network-diagnostics-v53),
+[출처별 검증·간헐적 실패·남은 제한](docs/06_VERIFICATION_AND_LIMITATIONS.md#v53-network-diagnostics-검증)을 참고하세요.
+
 ## v5.2 — Network IPC / Remote Discovery·Control·Topic
 
 KCF v5.2의 5.2.0 version-alignment commit은

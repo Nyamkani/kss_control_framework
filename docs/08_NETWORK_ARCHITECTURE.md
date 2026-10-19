@@ -1,6 +1,6 @@
 # 08. Network IPC Common Contracts
 
-Framework v5.2는 v5.1 Local IPC 계약을 유지한 Network 확장입니다. **현재 Remote Parameter Get/Set, Remote Service Call, Remote Action Goal/Feedback/Result/Cancel 및 UDP Remote Topic을 지원합니다.**
+Framework v5.3.0은 v5.2 Network/Local IPC 계약을 유지하고 read-only Network Diagnostics를 추가한 dev working tree 기준입니다. **현재 Remote Parameter Get/Set, Remote Service Call, Remote Action Goal/Feedback/Result/Cancel 및 UDP Remote Topic을 지원합니다.**
 현재 구현은 공통 모델, UDP Discovery v2, compatibility, Local metadata 자동 수집, 공통 TCP Control transport, Remote Parameter/Service/Action과 별도의 Topic Data Plane입니다.
 Discovery는 metadata만 교환합니다. 실제 Parameter/Service 요청·응답은 peer당 같은 TCP Control connection으로 처리합니다.
 Network 기능은 dev commit `0a3f2a630cec209793f9ac6e99107752e9e01283`에 최초 반영되었습니다.
@@ -10,6 +10,10 @@ NetworkProtocolVersion 1.0, Discovery v2, Control TCP v1, Topic wire v1,
 Topic Format 4, Parameter Format 3, Local Service protocol 2 및 Local API는 변경하지 않습니다.
 아래 단계별 working tree 검증·commit/push 미수행·재실행 및 timing 실패 기록은 당시 이력입니다.
 당시 버전 보정의 실행 결과와 혼합하지 않으며 [별도 검증 기록](06_VERIFICATION_AND_LIMITATIONS.md)을 따릅니다.
+
+v5.3의 CMake/FrameworkVersion 기본값은 5.3.0입니다. v5.2의 외부 Diagnostics 미지원 상태는
+당시 이력이며, 아래 [Network Diagnostics](#network-diagnostics-v53) API로 외부 route/counter 조회를 지원합니다.
+NetworkProtocolVersion 1.0 및 위 wire/storage 버전은 그대로입니다.
 
 ## Local-first / peer-to-peer
 
@@ -23,6 +27,7 @@ Topic Format 4, Parameter Format 3, Local Service protocol 2 및 Local API는 �
 
 | 구현됨 | 위치 / 역할 |
 | --- | --- |
+| Network Diagnostics | [Snapshot codec](../kcf/include/kcf/network/network_diagnostics.hpp), [Client API](../kcf/include/kcf/network/network_diagnostics_client.hpp): opt-in Gateway route/counter 조회 |
 | Network 공통 모델 | [types.hpp](../kcf/include/kcf/network/types.hpp): identity, target, priority, scope, metadata, request/result |
 | Validation / metadata predicates | [validation.hpp](../kcf/include/kcf/network/validation.hpp): 잘못된 ID·selector·type·operation·correlation 거부 |
 | Control operation tag codec | [control_codec.hpp](../kcf/include/kcf/network/control_codec.hpp): 2-byte big-endian encode/decode |
@@ -365,7 +370,7 @@ Local 회귀 로그는 `build/discovery-local-validation/`, 추가 Queue/Timer �
 
 ### Version과 capability
 
-- `FrameworkVersion`: major/minor/patch, 현재 기본 5.2.0 (최초 구현 당시 5.1.0). 진단 및 제품 운용의 exact-version 정책용입니다.
+- `FrameworkVersion`: major/minor/patch, 현재 기본 5.3.0 (최초 구현 당시 5.1.0, v5.2 정합성 보정 당시 5.2.0). 진단 및 제품 운용의 exact-version 정책용입니다.
 - `NetworkProtocolVersion`: major/minor, 기본 1.0. 미래 Remote IPC wire 호환 계약의 버전입니다.
 - Discovery envelope version은 별도 2이며, 기존 endpoint/Control 모델의 `PROTOCOL_VERSION=1`은 그 모델 schema입니다.
   Framework/Network 버전을 이 단일 schema 필드에 넣지 않습니다. 기존 모델 validation 계약도 유지합니다.
@@ -997,3 +1002,144 @@ Topic Format **4**, Parameter Format **3**, Local Service protocol **2**, Discov
 - Bash/Python 문법, 문서 링크 및 `git diff --check`: PASS.
 
 로그는 `build/proxy-recovery-validation/`, `build/proxy-local-validation/`, `build/network-virtual/proxy-recovery/`, `/tmp/kcf-proxy-action-diagnosis.log`에 있습니다. 실제 물리 LAN은 미검증입니다. Commit/push 및 Application/kcf_tools 변경은 하지 않았습니다.
+
+## Network Diagnostics v5.3
+
+### Opt-in 및 공개 API
+
+[ControlConfig](../kcf/include/kcf/network/control_node.hpp)의 `bool diagnostics_enabled{false}`는 기본 OFF입니다.
+`ControlNode::Start()`는 기존 listener와 선택적 Topic Data Plane이 준비된 뒤, 이 값이 true일 때만
+`Capability::NETWORK_DIAGNOSTICS`(bit 10)를 profile에 추가하고 Discovery를 시작합니다.
+Standalone PeerDiscovery는 DISCOVERY만 광고하며 Observer가 Diagnostics capability를 광고할 필요는 없습니다.
+Topic을 끄고 Diagnostics만 켠 Gateway는 이전 실행의 route 대신 빈 snapshot을 반환합니다.
+
+공개 선언은 [client](../kcf/include/kcf/network/network_diagnostics_client.hpp),
+[snapshot codec](../kcf/include/kcf/network/network_diagnostics.hpp)에 있습니다. 모두 `kcf::network` 소속입니다.
+
+```cpp
+NetworkDiagnosticsClient(PeerDiscovery& discovery, const DiscoveryConfig& config);
+int Query(const HostIdentity& gateway, NetworkDiagnosticsSnapshot& snapshot,
+          std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
+
+int MakeNetworkDiagnosticsSnapshot(const HostIdentity& host, const HostIdentity& boot,
+    std::uint64_t session, const TopicDiagnostics&, NetworkDiagnosticsSnapshot&);
+int EncodeNetworkDiagnosticsSnapshot(const NetworkDiagnosticsSnapshot&, std::vector<std::uint8_t>&);
+int DecodeNetworkDiagnosticsSnapshot(const std::uint8_t*, std::size_t, NetworkDiagnosticsSnapshot&);
+```
+
+위는 실제 API 선언 요약이며 별도 실행 예제가 아닙니다. Client는 **이미 실행 중인 DISCOVERY-only
+PeerDiscovery를 참조**하며 그 Start에 사용한 정확한 config를 받습니다. 새 Discovery/listener나
+ControlNode를 만들지 않습니다. Discovery가 client보다 오래 살아야 하고 Start/Stop/소멸은 Query와 직렬화합니다.
+Observer당 active client 하나를 사용하며 client의 Query는 내부 mutex로 직렬화됩니다.
+실행 중인 Discovery를 fork 후 공유하지 않습니다.
+
+Query는 동기식입니다. GUI/event loop가 아닌 worker에서 호출하고 결과 snapshot만 UI로 전달합니다.
+Timeout은 1~60000 ms, 기본 1000 ms이며 mutex 대기부터 connect/HELLO/송수신까지 하나의 deadline입니다.
+각 Query는 TCP connection 하나를 열고 닫습니다. request ID는 process-wide 단조 증가하며 client 객체를
+교체해도 이어집니다. 자동 재시도는 없습니다. 재연결 시 이전 연결 정리 중 일시적 거부도 가능합니다.
+
+반환은 0 또는 negative errno이며 실패 시 caller snapshot은 변경하지 않습니다.
+
+| 오류 | 의미 / 조건 |
+| --- | --- |
+| `-EINVAL` | 잘못된 timeout/identity, 자기 자신 조회, DISCOVERY-only가 아닌 observer config 등 |
+| `-ENOENT`, `-ENOTCONN` | 발견되지 않은 Gateway, LOST peer 또는 시작되지 않은 Discovery |
+| `-ENOTSUP`, `-EPROTONOSUPPORT` | Diagnostics 미광고/비활성, peer 버전 정책 또는 wire version 불일치 |
+| `-ESTALE` | Gateway/Observer session·boot·주소/port 변경 또는 HELLO/응답 source 세대 불일치 |
+| `-EPROTO`, `-EMSGSIZE` | correlation/malformed frame 또는 frame/snapshot 크기 오류 |
+| `-ETIMEDOUT`, `-ECONNRESET` | deadline 초과 또는 EOF/연결 종료; 다른 socket 오류도 negative errno로 반환 |
+| `-EAGAIN`, `-ENOSPC`, `-EALREADY` | Gateway admission 제한, replay table 상한, 중복/역행 request ID |
+| `-EOVERFLOW`, `-ENOMEM` | process request ID 고갈 또는 client allocation 실패 |
+
+이는 주요 오류의 요약이며 client는 Gateway status도 그대로 반환합니다. Codec의 invalid input은 `-EINVAL`,
+size/count는 `-EMSGSIZE`, 알 수 없는 snapshot version은 `-EPROTONOSUPPORT`, malformed wire는 `-EPROTO`입니다.
+Make/Encode/Decode의 출력도 오류 시 불변입니다.
+
+### Discovery-only Observer / Control 계약
+
+기존 Control listener의 `DIAGNOSTICS_REQUEST=14`, `DIAGNOSTICS_RESPONSE=15`를 사용합니다.
+Control TCP wire v1과 172-byte 공통 header를 유지하며 target=HOST, endpoint/name/type은 비어 있고
+Service/Action extension은 없습니다. 요청은 nonzero request_id, timeout 1~60000 ms, status/reason=0,
+빈 payload입니다. 응답은 같은 request_id, timeout=0이며 성공 payload는 snapshot,
+실패는 negative status와 빈 payload입니다. 실패의 알려진 CompatibilityReason 값은 허용합니다.
+
+Gateway는 ONLINE이며 버전 정책이 호환되는 Discovery-only Observer를 수락합니다.
+일반 Gateway 간 연결의 Host 정렬 방향 제한은 Observer 연결에 적용하지 않습니다.
+HELLO의 Host/boot/session 및 접속 source 주소를 Discovery와 대조하고, 이후 source Runtime identity와
+session을 고정합니다. Observer connection에는 Diagnostics 요청만 허용하며 Parameter/Service/Action 조작은 거부합니다.
+Client도 dispatch 직전 및 응답 수락 전에 Discovery를 다시 확인하고 HELLO/응답의 Gateway Runtime,
+Host/boot/session, request_id 및 snapshot Gateway identity/session을 검사합니다.
+이는 identity 일관성 검사이지 암호학적 인증이 아닙니다. 인증/권한/암호화는 여전히 미지원입니다.
+
+### Snapshot / Route / Counter
+
+`NetworkDiagnosticsSnapshot`은 `gateway_host`, `gateway_boot_id`, `gateway_session`,
+`total_routes`, `truncated`, `routes`를 포함합니다. `routes`는 `std::vector<TopicRouteInfo>`입니다.
+각 route에는 source/destination 전체 Endpoint identity(Host/boot/PID/start_ticks/registration),
+source/destination session, route_id, name, sending, state, error, reason, proxy_recovery가 있습니다.
+Gateway identity/session과 양 endpoint/session/route_id를 함께 비교하며 Topic 이름만으로 연결하거나 합치지 않습니다.
+
+State는 `WAITING_SUBSCRIBER`, `ACTIVE`, `REJECTED`, `CLOSED`입니다. ACTIVE/CLOSED는 유효한 양 endpoint와
+nonzero session/route_id를 요구합니다. WAITING/REJECTED는 destination/session/route_id가 모두 0이고
+sending=false인 source-only notice일 수 있습니다. 이런 notice를 active 연결로 해석하지 않습니다.
+
+| uint64 counter | 의미 |
+| --- | --- |
+| `packets_sent` | 해당 route의 Network 송신 packet 수 |
+| `packets_received` | 해당 route의 Network 수신 packet 수 |
+| `samples_published` | 수신 Gateway가 Local proxy에 Publish한 sample 수 |
+| `dropped` | 해당 route의 drop 수 |
+| `duplicate` | 중복 packet 수 |
+| `out_of_order` | 순서 역전 packet 수 |
+| `missed_sequence` | 관측한 Network sequence gap 누적 수 |
+| `malformed` | 해당 route의 malformed packet 수 |
+| `local_samples_skipped` | 송신 측 Local sampling에서 건너뛴 sample 수 |
+
+전달 대상은 route 및 notice뿐입니다. Topic payload, Application 데이터, `TopicDiagnostics::proxies` 전체 목록,
+전체 DataPlane aggregate 통계는 이 snapshot에 포함하지 않습니다. route의 `proxy_recovery`와 전체 proxy inventory는 다릅니다.
+
+Snapshot wire는 Diagnostics 자체 v1(`NETWORK_DIAGNOSTICS_VERSION=1`), big-endian이며 최대
+`MAX_NETWORK_DIAGNOSTICS_PAYLOAD=16384` bytes입니다. 60-byte header와 route별 고정 210 bytes + 이름을 사용합니다.
+상한 내 결정적인 prefix만 담고 전체 수를 `total_routes`에 유지하며 `truncated == (total_routes > routes.size())`입니다.
+생략되는 route까지 입력 validation을 수행합니다. 잘림은 성공할 수 있으며 pagination이나 생략 route의 삭제를 뜻하지 않습니다.
+수신자는 `truncated`를 확인하고 불완전한 관측을 전체 목록으로 취급하지 않아야 합니다.
+
+### Bounded 자원 및 Observer Replay
+
+- 기존 전체 연결 상한 64 안에서 Diagnostics Observer connection은 최대 8개입니다.
+- 별도 Diagnostics job queue 최대 8개, connection당 pending job 1개입니다.
+- Host session별 admission 간격 100 ms(최대 10/s), 전체 dispatch 간격 20 ms(최대 50/s)입니다.
+- Observer 응답 큐는 connection당 32 KiB / 16 frames입니다. 제한 시 `-EAGAIN`, 큐에 오류 응답도 넣지 못하면 연결을 닫습니다.
+- Snapshot은 16 KiB이며 일반 Control 송신 큐/작업 큐와 Diagnostics job 처리 경로를 구분합니다.
+  일반 Gateway connection의 응답에는 기존 일반 Control 큐 한도가 적용됩니다. 이는 hard real-time 보장이 아닙니다.
+
+Observer replay table은 최대 64개이며 Host별 boot/session과 request ID high-water mark를 보관합니다.
+중복/역행 ID는 `-EALREADY`이고 rate/queue 사유로 거부된 admission도 high-water mark에 반영됩니다.
+64개가 모두 보호 중이면 새 Host 기록은 `-ENOSPC`입니다. 같은 incarnation이 ONLINE이거나 해당 Host/session의
+연결이 남아 있으면 회수하지 않습니다. LOST/소멸/boot·session 교체 상태이고 연결도 없는 기록만 회수합니다.
+회수 후 재등장하면 같은 session이라도 새 read-only replay window가 시작됩니다. Client 객체 교체/단순 재연결만으로
+ONLINE 기록이 초기화되지는 않습니다. 일반 Gateway Diagnostics replay 기록과 Parameter/Service/Action replay는
+이 Observer 회수 정책의 대상이 아니며 기존 계약을 유지합니다.
+
+### Framework Counter와 Tool Rate / 버전 호환성
+
+Framework는 누적 counter와 route 세대를 제공하며 Hz를 계산하지 않습니다. 별도 Tool 작업의 rate tracker는
+완료된 Query 관측마다 동일 Gateway·route 세대의 counter 차이를 Tool 측 monotonic 경과 시간으로 나눕니다.
+첫 관측, Query 오류, route/session 변경, counter 감소 및 잘림으로 생긴 관측 공백은 측정 연속성을 끊습니다.
+
+**Source Local Publish Hz ≠ Network Send Hz**입니다. 약 200 Hz 발행을 기본 최대 50 Hz Network route가
+sampling하면 건너뛴 Local sample이 생깁니다. `local_samples_skipped`는 Network 유실과 같지 않습니다.
+`Proxy Publish Hz`는 Gateway의 Local proxy 쓰기율이고 Application Subscriber의 callback/처리율이 아닙니다.
+Subscriber 처리율이나 Source의 정확한 Publish Hz는 이 route snapshot만으로 제공하지 않습니다.
+
+Tool의 수동 Refresh와 Graph freshness 10초는 Tool 표시 정책이며 Framework timeout/TTL 계약이 아닙니다.
+오래된 Graph를 현재 active 통신의 증거로 취급하지 않습니다. Tool 개발 통합 결과는 공개 Tool v0.13 배포 선언이 아닙니다.
+
+FrameworkVersion 기본값만 5.3.0이며 NetworkProtocol 1.0, Discovery wire v2, Control TCP wire v1,
+Topic wire v1, Topic Format 4, Parameter Format 3, Local Service protocol 2는 유지합니다.
+`NETWORK_PROTOCOL` 정책은 Framework 버전 차이를 허용하지만 실제 Diagnostics 사용은 capability 확인이 필요합니다.
+`EXACT_FRAMEWORK_VERSION`에서는 기본 v5.2↔v5.3이 불일치합니다. 구 Gateway의 미광고는 지원 불가로 처리하고
+모든 구 peer가 새 operation을 지원한다고 가정하지 않습니다.
+
+[검증 기록](06_VERIFICATION_AND_LIMITATIONS.md#v53-network-diagnostics-검증)은 기존 로그를 인용합니다.
+이 문서화 단계에서 build/test 또는 실제 물리 LAN/데스크톱 GUI 수동 검증을 새로 수행하지 않았습니다.

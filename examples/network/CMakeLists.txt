@@ -43,3 +43,11 @@ target_compile_options(kcf_virtual_host_fixture PRIVATE -Wall -Wextra -Wpedantic
 add_executable(kcf_proxy_recovery_test src/proxy_recovery_test.cpp)
 target_link_libraries(kcf_proxy_recovery_test PRIVATE kcf_core)
 target_compile_options(kcf_proxy_recovery_test PRIVATE -UNDEBUG -Wall -Wextra -Wpedantic)
+
+add_executable(kcf_lan_action src/lan_action_main.cpp)
+target_link_libraries(kcf_lan_action PRIVATE kcf_core)
+target_compile_options(kcf_lan_action PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(kcf_lan_topic src/lan_topic_main.cpp)
+target_link_libraries(kcf_lan_topic PRIVATE kcf_core)
+target_compile_options(kcf_lan_topic PRIVATE -Wall -Wextra -Wpedantic)

@@ -22,6 +22,15 @@ bool ValidFrame(const ControlFrame& f) {
     const bool service=f.operation==ControlMessage::SERVICE_REQUEST||f.operation==ControlMessage::SERVICE_RESPONSE;
     if((service||action)?(!Valid(f.response_type)||f.response_type.payload_size>MAX_PARAMETER_WIRE):!(f.response_type==TypeIdentity{}))return false;
     if(!action&&(!(f.feedback_type==TypeIdentity{})||f.goal!=RemoteGoalIdentity{}||f.action_state!=ActionState::IDLE||f.feedback_sequence||f.outcome_unknown))return false;
+    if(IsDescriptorMessage(f.operation)) {
+        if(f.descriptor_role<DescriptorRole::VALUE||f.descriptor_role>DescriptorRole::FEEDBACK||!f.request_id||!Valid(f.endpoint)||
+           f.target!=TargetScope::ENDPOINT||!Text(f.name,240)||f.name[0]!='/'||!Valid(f.type)||f.type.payload_size>MAX_PARAMETER_WIRE)return false;
+        if(f.operation==ControlMessage::DESCRIPTOR_REQUEST)return f.timeout_ms>0&&f.timeout_ms<=60000&&!f.status&&f.reason==CompatibilityReason::COMPATIBLE&&f.payload.empty();
+        if(f.timeout_ms||f.status>0||f.reason!=CompatibilityReason::COMPATIBLE)return false;
+        if(f.status)return f.payload.empty();
+        TypeDescriptor descriptor;return !DecodeTypeDescriptor(f.payload,f.type,descriptor);
+    }
+    if(f.descriptor_role!=DescriptorRole::NONE)return false;
     if(IsDiagnosticsMessage(f.operation)) {
         if(!f.request_id || f.endpoint!=RemoteEndpointIdentity{} || !f.name.empty() ||
            !(f.type==TypeIdentity{}) || f.target!=TargetScope::HOST ||
@@ -70,7 +79,7 @@ int ControlFrameSize(const std::uint8_t* p,std::size_t size,std::size_t& output)
     if(!p)return -EINVAL;
     if(size<CONTROL_PREFIX_SIZE)return -EAGAIN;
     Reader r{p,size};if(r.U(4)!=CONTROL_MAGIC)return -EPROTO;if(r.U(2)!=CONTROL_WIRE_VERSION)return -EPROTONOSUPPORT;
-    const auto op=r.U(2);if(op<1||op>15)return -EPROTO;
+    const auto op=r.U(2);if(op<1||op>17)return -EPROTO;
     auto length=r.U(4);if(length<172||length>MAX_CONTROL_FRAME)return -EMSGSIZE;
     if(op==static_cast<unsigned>(ControlMessage::DIAGNOSTICS_REQUEST) && length!=172)return -EMSGSIZE;
     if(op==static_cast<unsigned>(ControlMessage::DIAGNOSTICS_RESPONSE) && length>172+MAX_NETWORK_DIAGNOSTICS_PAYLOAD)return -EMSGSIZE;
@@ -82,7 +91,7 @@ int EncodeControlFrame(const ControlFrame& f,std::vector<std::uint8_t>& output) 
     Writer w;w.U(CONTROL_MAGIC,4);w.U(CONTROL_WIRE_VERSION,2);w.U(static_cast<unsigned>(f.operation),2);
     const bool action=IsActionMessage(f.operation);
     const bool service=f.operation==ControlMessage::SERVICE_REQUEST||f.operation==ControlMessage::SERVICE_RESPONSE;
-    w.U(172+(service?24:0)+(action?120:0)+f.name.size()+f.payload.size(),4);w.U(0,4);
+    w.U(172+(service?24:0)+(action?120:0)+(IsDescriptorMessage(f.operation)?4:0)+f.name.size()+f.payload.size(),4);w.U(0,4);
     w.Runtime(f.source);w.U(f.session_id,8);w.U(f.request_id,8);w.Runtime(f.endpoint.runtime);w.U(f.endpoint.registration_id,8);
     w.U(static_cast<unsigned>(f.target),1);w.U(static_cast<unsigned>(f.reason),1);w.U(0,2);
     w.U(f.type.type_id,8);w.U(f.type.schema_id,8);w.U(f.type.encoding_id,4);w.U(f.type.payload_size,4);
@@ -90,6 +99,7 @@ int EncodeControlFrame(const ControlFrame& f,std::vector<std::uint8_t>& output) 
     if(service||action){w.U(f.response_type.type_id,8);w.U(f.response_type.schema_id,8);w.U(f.response_type.encoding_id,4);w.U(f.response_type.payload_size,4);}
     if(action){w.U(f.feedback_type.type_id,8);w.U(f.feedback_type.schema_id,8);w.U(f.feedback_type.encoding_id,4);w.U(f.feedback_type.payload_size,4);
         w.Runtime(f.goal.source);w.U(f.goal.goal_id,8);w.U(f.goal.session_id,8);w.U(static_cast<unsigned>(f.action_state),1);w.U(f.outcome_unknown?1:0,1);w.U(0,2);w.U(f.feedback_sequence,8);}
+    if(IsDescriptorMessage(f.operation)){w.U(static_cast<unsigned>(f.descriptor_role),1);w.U(0,3);}
     w.b.insert(w.b.end(),f.name.begin(),f.name.end());w.b.insert(w.b.end(),f.payload.begin(),f.payload.end());
     output=std::move(w.b);return 0;
 }
@@ -104,6 +114,7 @@ int DecodeControlFrame(const std::uint8_t* p,std::size_t size,ControlFrame& outp
     if(IsActionMessage(f.operation)||f.operation==ControlMessage::SERVICE_REQUEST||f.operation==ControlMessage::SERVICE_RESPONSE){f.response_type.type_id=r.U(8);f.response_type.schema_id=r.U(8);f.response_type.encoding_id=r.U(4);f.response_type.payload_size=r.U(4);}
     if(IsActionMessage(f.operation)){f.feedback_type.type_id=r.U(8);f.feedback_type.schema_id=r.U(8);f.feedback_type.encoding_id=r.U(4);f.feedback_type.payload_size=r.U(4);
         f.goal.source=r.Runtime();f.goal.goal_id=r.U(8);f.goal.session_id=r.U(8);f.action_state=static_cast<ActionState>(r.U(1));const auto unknown=r.U(1);if(unknown>1||r.U(2))return -EPROTO;f.outcome_unknown=unknown!=0;f.feedback_sequence=r.U(8);}
+    if(IsDescriptorMessage(f.operation)){f.descriptor_role=static_cast<DescriptorRole>(r.U(1));if(r.U(3))return -EPROTO;}
     if(!r.ok||name_size>240||payload_size>MAX_PARAMETER_WIRE||name_size+payload_size!=r.left)return -EPROTO;
     f.name.assign(reinterpret_cast<const char*>(r.p),name_size);r.p+=name_size;
     f.payload.assign(r.p,r.p+payload_size);

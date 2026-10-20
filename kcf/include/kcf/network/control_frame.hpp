@@ -7,7 +7,7 @@ inline constexpr std::uint32_t CONTROL_MAGIC=0x4b434643; // KCFC
 inline constexpr std::uint16_t CONTROL_WIRE_VERSION=1;
 inline constexpr std::size_t CONTROL_PREFIX_SIZE=16;
 inline constexpr std::size_t MAX_CONTROL_FRAME=MAX_PARAMETER_WIRE+1024;
-enum class ControlMessage : std::uint16_t { HELLO=1, PARAM_GET_REQUEST, PARAM_GET_RESPONSE, PARAM_SET_REQUEST, PARAM_SET_RESPONSE, SERVICE_REQUEST, SERVICE_RESPONSE, ACTION_GOAL_REQUEST, ACTION_GOAL_RESPONSE, ACTION_FEEDBACK, ACTION_RESULT, ACTION_CANCEL_REQUEST, ACTION_CANCEL_RESPONSE, DIAGNOSTICS_REQUEST=14, DIAGNOSTICS_RESPONSE=15 };
+enum class ControlMessage : std::uint16_t { HELLO=1, PARAM_GET_REQUEST, PARAM_GET_RESPONSE, PARAM_SET_REQUEST, PARAM_SET_RESPONSE, SERVICE_REQUEST, SERVICE_RESPONSE, ACTION_GOAL_REQUEST, ACTION_GOAL_RESPONSE, ACTION_FEEDBACK, ACTION_RESULT, ACTION_CANCEL_REQUEST, ACTION_CANCEL_RESPONSE, DIAGNOSTICS_REQUEST=14, DIAGNOSTICS_RESPONSE=15, DESCRIPTOR_REQUEST=16, DESCRIPTOR_RESPONSE=17 };
 struct RemoteGoalIdentity {
     RemoteRuntimeIdentity source;std::uint64_t goal_id{0},session_id{0};
     bool operator==(const RemoteGoalIdentity& other) const {return source==other.source&&goal_id==other.goal_id&&session_id==other.session_id;}
@@ -15,6 +15,9 @@ struct RemoteGoalIdentity {
 };
 inline bool IsActionMessage(ControlMessage op){return op>=ControlMessage::ACTION_GOAL_REQUEST&&op<=ControlMessage::ACTION_CANCEL_RESPONSE;}
 inline bool IsDiagnosticsMessage(ControlMessage op){return op==ControlMessage::DIAGNOSTICS_REQUEST||op==ControlMessage::DIAGNOSTICS_RESPONSE;}
+inline bool IsDescriptorMessage(ControlMessage op){return op==ControlMessage::DESCRIPTOR_REQUEST||op==ControlMessage::DESCRIPTOR_RESPONSE;}
+// Descriptor messages add a 4-byte role/reserved extension; all existing frames
+// and wire version remain unchanged. Send only to TYPE_DESCRIPTOR_QUERY peers.
 struct ControlFrame {
     ControlMessage operation{ControlMessage::HELLO};
     RemoteRuntimeIdentity source;
@@ -22,7 +25,7 @@ struct ControlFrame {
     RemoteEndpointIdentity endpoint; // resolved target, retained on response
     TargetScope target{TargetScope::ENDPOINT};
     std::string name;
-    TypeIdentity type; // Service: request type, including in response correlation
+    TypeIdentity type; // Service: request type; Descriptor: queried role, also response correlation
     TypeIdentity response_type; // Service only: 24-byte operation-specific extension
     TypeIdentity feedback_type;
     RemoteGoalIdentity goal;
@@ -33,6 +36,7 @@ struct ControlFrame {
     std::int32_t status{0}; // 0 or negative errno
     CompatibilityReason reason{CompatibilityReason::COMPATIBLE};
     std::vector<std::uint8_t> payload;
+    DescriptorRole descriptor_role{DescriptorRole::NONE};
 };
 // Diagnostics use the unchanged 172-byte common header, target=HOST, empty
 // endpoint/name/type and no Service/Action extensions. Request: nonzero request_id,

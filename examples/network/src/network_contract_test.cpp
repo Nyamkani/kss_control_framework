@@ -311,7 +311,10 @@ void DiagnosticsFrames()
     static_assert(static_cast<unsigned>(n::ControlMessage::DIAGNOSTICS_REQUEST)==14);
     static_assert(static_cast<unsigned>(n::ControlMessage::DIAGNOSTICS_RESPONSE)==15);
     static_assert(n::CapabilityBit(n::Capability::NETWORK_DIAGNOSTICS)==(1ull<<10));
-    static_assert(n::KNOWN_CAPABILITIES==((1ull<<11)-1));
+    static_assert(n::KNOWN_CAPABILITIES==((1ull<<14)-1));
+    static_assert(n::CapabilityBit(n::Capability::TYPE_DESCRIPTOR_QUERY)==(1ull<<11));
+    static_assert(static_cast<unsigned>(n::ControlMessage::DESCRIPTOR_REQUEST)==16);
+    static_assert(static_cast<unsigned>(n::ControlMessage::DESCRIPTOR_RESPONSE)==17);
     assert(!(n::PeerProfile{}.capabilities & n::CapabilityBit(n::Capability::NETWORK_DIAGNOSTICS)));
     n::ControlFrame request;request.operation=n::ControlMessage::DIAGNOSTICS_REQUEST;
     request.source=Runtime(9);request.session_id=1;request.request_id=0x01020304;

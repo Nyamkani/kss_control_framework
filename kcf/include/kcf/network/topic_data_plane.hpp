@@ -3,9 +3,12 @@
 #include "kcf/network/peer_discovery.hpp"
 #include "kcf/network/topic_protocol.hpp"
 #include "kcf/network/detail/proxy_ownership.hpp"
+#include <optional>
 namespace kcf::network {
 struct TopicTypeBinding {std::string name;TypeDescriptor descriptor;};
 struct TopicRateLimit {std::string name;double max_hz{50};};
+class RemoteTopicSubscription;
+class RemoteTopicClient;
 struct TopicConfig {
     bool enabled{false};
     std::uint16_t port{37652}; // shared configured unicast port, separate from discovery
@@ -14,6 +17,8 @@ struct TopicConfig {
     std::vector<TopicTypeBinding> local_types; // destination-native bootstrap descriptors
     std::size_t max_routes{64},max_proxies{32};
     std::uint32_t socket_buffer_bytes{64*1024};
+    bool receive_only{false}; // explicit Client subscriptions, no legacy auto-selection
+    std::optional<std::uint16_t> receive_port; // absent => legacy port; 0 => ephemeral
 };
 enum class TopicRouteState : std::uint8_t { WAITING_SUBSCRIBER, ACTIVE, REJECTED, CLOSED };
 struct TopicRouteInfo {
@@ -43,6 +48,10 @@ public:
     TopicDiagnostics GetDiagnostics() const;
     int GetLastError() const;
 private:
+    friend class RemoteTopicClient;
+    int Subscribe(const NetworkEndpointMetadata&,std::uint64_t,const TypeDescriptor&,std::shared_ptr<RemoteTopicSubscription>&);
+    int Unsubscribe(const std::shared_ptr<RemoteTopicSubscription>&);
+    std::uint16_t ReceivePort() const;
     struct Impl;std::unique_ptr<Impl> impl_;
 };
 }

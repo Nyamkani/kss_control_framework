@@ -5,14 +5,16 @@
 
 namespace kcf::network {
 // Blocking observer API: use a worker thread, never a GUI/event-loop thread.
-// Borrows an already running, DISCOVERY-only PeerDiscovery. Pass the exact config
+// Borrows a running observer PeerDiscovery (DISCOVERY only, or receive-only
+// Topic profile). Pass the exact config
 // used for its Start(); discovery must outlive this client. Serialize discovery
 // Start/Stop/destruction against Query. This API creates no listener or discovery.
 // Use one active client per observer; Query calls on that client are serialized.
 // IDs are process-wide, monotonic (including replacement client objects); do not
 // fork and share a running discovery instance. Each Query opens/closes one TCP
 // connection, with no automatic retry. The gateway may return -EAGAIN for rate
-// limiting, or briefly reject a reconnect while retiring the previous connection.
+// limiting. It permits up to eight limited connections, so Action tracking and
+// dedicated Control calls can coexist with this read-only connection.
 class NetworkDiagnosticsClient {
 public:
     NetworkDiagnosticsClient(PeerDiscovery& discovery, const DiscoveryConfig& config);

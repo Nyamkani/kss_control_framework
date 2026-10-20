@@ -4,7 +4,9 @@
 #include "kcf/dynamic/dynamic_service_client.hpp"
 #include "kcf/dynamic/dynamic_action_client.hpp"
 #include <set>
+#include <bitset>
 #include "kcf/introspection/detail/runtime_registry.hpp"
+#include "kcf/introspection/introspection_client.hpp"
 #include <algorithm>
 #include <atomic>
 #include <deque>
@@ -43,8 +45,8 @@ NetworkEndpointMetadata Consumer(const RemoteRuntimeIdentity& source,const std::
     if(!(feedback==TypeIdentity{})){m.kind=EndpointKind::ACTION;m.feedback_type=feedback;}
     return m;
 }
-bool Request(ControlMessage op){return op==ControlMessage::PARAM_GET_REQUEST||op==ControlMessage::PARAM_SET_REQUEST||op==ControlMessage::SERVICE_REQUEST||op==ControlMessage::ACTION_GOAL_REQUEST||op==ControlMessage::ACTION_CANCEL_REQUEST;}
-ControlMessage ResponseOperation(ControlMessage op){return op==ControlMessage::ACTION_GOAL_REQUEST?ControlMessage::ACTION_GOAL_RESPONSE:op==ControlMessage::ACTION_CANCEL_REQUEST?ControlMessage::ACTION_CANCEL_RESPONSE:op==ControlMessage::SERVICE_REQUEST?ControlMessage::SERVICE_RESPONSE:(op==ControlMessage::PARAM_GET_REQUEST?ControlMessage::PARAM_GET_RESPONSE:ControlMessage::PARAM_SET_RESPONSE);}
+bool Request(ControlMessage op){return op==ControlMessage::DESCRIPTOR_REQUEST||op==ControlMessage::PARAM_GET_REQUEST||op==ControlMessage::PARAM_SET_REQUEST||op==ControlMessage::SERVICE_REQUEST||op==ControlMessage::ACTION_GOAL_REQUEST||op==ControlMessage::ACTION_CANCEL_REQUEST;}
+ControlMessage ResponseOperation(ControlMessage op){return op==ControlMessage::DESCRIPTOR_REQUEST?ControlMessage::DESCRIPTOR_RESPONSE:op==ControlMessage::ACTION_GOAL_REQUEST?ControlMessage::ACTION_GOAL_RESPONSE:op==ControlMessage::ACTION_CANCEL_REQUEST?ControlMessage::ACTION_CANCEL_RESPONSE:op==ControlMessage::SERVICE_REQUEST?ControlMessage::SERVICE_RESPONSE:(op==ControlMessage::PARAM_GET_REQUEST?ControlMessage::PARAM_GET_RESPONSE:ControlMessage::PARAM_SET_RESPONSE);}
 int ReasonError(CompatibilityReason r){return r==CompatibilityReason::TYPE_MISMATCH?-EPROTOTYPE:r==CompatibilityReason::PEER_LOST?-ENOTCONN:-EACCES;}
 }
 struct ControlNode::Impl {
@@ -90,7 +92,17 @@ struct ControlNode::Impl {
     std::thread io,backend;int listener{-1},wake{-1};std::uint64_t session{0},next_request{0},next_connection{0};
     std::deque<std::shared_ptr<Batch>> submissions;std::deque<Job> jobs;std::deque<Reply> replies;
     std::vector<LocalEndpoint> local;std::vector<Storage> storage;
+    struct Window {
+        std::uint64_t high{0};std::bitset<256> bits;
+        bool Admit(std::uint64_t id) {
+            if(id>high){auto delta=id-high;if(delta>=bits.size())bits.reset();else bits<<=static_cast<std::size_t>(delta);high=id;}
+            auto offset=high-id;if(offset>=bits.size()||bits[static_cast<std::size_t>(offset)])return false;
+            bits.set(static_cast<std::size_t>(offset));return true;
+        }
+    };
+    struct ClientSeen {HostIdentity host,boot;std::uint64_t session;Window requests,goals;};
     std::vector<Pending> pending;std::vector<Connection> connections;std::vector<Seen> seen;
+    std::vector<ClientSeen> client_seen;
     std::atomic<std::uint64_t> connected{0},sent{0},ignored{0},rejected{0};
     void Wake(){if(wake>=0){std::uint64_t v=1;const auto n=write(wake,&v,sizeof(v));(void)n;}}
     void Close(){if(listener>=0)close(listener);if(wake>=0)close(wake);listener=wake=-1;}
@@ -105,9 +117,54 @@ struct ControlNode::Impl {
     }
     bool ObserverAllowed(const PeerInfo& p) {
         return config.diagnostics_enabled && p.state==PeerState::ONLINE &&
-            (p.profile.capabilities & KNOWN_CAPABILITIES)==CapabilityBit(Capability::DISCOVERY) &&
+            IsObserverProfile(p.profile) &&
             CheckPeerCompatibility(config.discovery.profile,p.profile,config.discovery.compatibility_policy).Compatible();
     }
+    bool ReadClientAllowed(const PeerInfo& p) {
+        return p.state==PeerState::ONLINE &&
+            IsObserverProfile(p.profile) &&
+            std::find(config.parameter_get_clients.begin(),config.parameter_get_clients.end(),p.host)!=config.parameter_get_clients.end() &&
+            CheckPeerCompatibility(config.discovery.profile,p.profile,config.discovery.compatibility_policy).Compatible();
+    }
+    bool WriteClientAllowed(const PeerInfo& p) {
+        return p.state==PeerState::ONLINE &&
+            IsObserverProfile(p.profile) &&
+            std::find(config.parameter_set_clients.begin(),config.parameter_set_clients.end(),p.host)!=config.parameter_set_clients.end() &&
+            CheckPeerCompatibility(config.discovery.profile,p.profile,config.discovery.compatibility_policy).Compatible();
+    }
+    bool ParameterClientAllowed(const PeerInfo& p,const ControlFrame& f) {
+        return f.target==TargetScope::ENDPOINT &&
+            ((f.operation==ControlMessage::PARAM_GET_REQUEST&&ReadClientAllowed(p))||
+             (f.operation==ControlMessage::PARAM_SET_REQUEST&&WriteClientAllowed(p)));
+    }
+    bool ServiceClientAllowed(const PeerInfo& p) {
+        return p.state==PeerState::ONLINE &&
+            IsObserverProfile(p.profile) &&
+            std::find(config.service_call_clients.begin(),config.service_call_clients.end(),p.host)!=config.service_call_clients.end() &&
+            CheckPeerCompatibility(config.discovery.profile,p.profile,config.discovery.compatibility_policy).Compatible();
+    }
+    bool ServiceClientRequest(const PeerInfo& p,const ControlFrame& f) {
+        return f.target==TargetScope::ENDPOINT&&f.operation==ControlMessage::SERVICE_REQUEST&&ServiceClientAllowed(p);
+    }
+    bool ActionClientAllowed(const PeerInfo& p,bool cancel) {
+        const auto& hosts=cancel?config.action_cancel_clients:config.action_goal_clients;
+        return p.state==PeerState::ONLINE &&
+            IsObserverProfile(p.profile) &&
+            std::find(hosts.begin(),hosts.end(),p.host)!=hosts.end() &&
+            CheckPeerCompatibility(config.discovery.profile,p.profile,config.discovery.compatibility_policy).Compatible();
+    }
+    bool ActionClientRequest(const PeerInfo& p,const ControlFrame& f) {
+        return f.target==TargetScope::ENDPOINT &&
+            ((f.operation==ControlMessage::ACTION_GOAL_REQUEST&&ActionClientAllowed(p,false))||
+             (f.operation==ControlMessage::ACTION_CANCEL_REQUEST&&ActionClientAllowed(p,true)));
+    }
+    bool DescriptorClientAllowed(const PeerInfo& p) {
+        return p.state==PeerState::ONLINE&&
+            IsObserverProfile(p.profile)&&
+            std::find(config.descriptor_query_clients.begin(),config.descriptor_query_clients.end(),p.host)!=config.descriptor_query_clients.end()&&
+            CheckPeerCompatibility(config.discovery.profile,p.profile,config.discovery.compatibility_policy).Compatible();
+    }
+    bool LimitedAllowed(const PeerInfo& p) { return DescriptorClientAllowed(p)||ObserverAllowed(p)||ReadClientAllowed(p)||WriteClientAllowed(p)||ServiceClientAllowed(p)||ActionClientAllowed(p,false)||ActionClientAllowed(p,true); }
     TopicDiagnostics TopicSnapshot() const {
         // TopicDataPlane retains its last published stats after Stop. Never serve
         // that previous run when this ControlNode starts with Topic disabled.
@@ -252,8 +309,8 @@ struct ControlNode::Impl {
     bool Receive(Connection& c,const ControlFrame& f,const std::vector<PeerInfo>& peers) {
         const auto* peer=Find(peers,f.source.host);
         if(!peer||peer->boot_id!=f.source.boot_id||peer->session_id!=f.session_id||peer->address!=c.address)return false;
-        const bool observer=c.ready?c.diagnostics_only:(!c.outbound&&ObserverAllowed(*peer));
-        if(observer?!ObserverAllowed(*peer):!Allowed(*peer))return false;
+        const bool observer=c.ready?c.diagnostics_only:(!c.outbound&&LimitedAllowed(*peer));
+        if(observer?!LimitedAllowed(*peer):!Allowed(*peer))return false;
         if(f.operation==ControlMessage::HELLO) {
             if(c.ready)return false;
             if(c.outbound) {if(c.host!=f.source.host)return false;}
@@ -261,14 +318,39 @@ struct ControlNode::Impl {
                 if(!observer&&!Lower(f.source.host,self.host))return false;
                 if(observer && std::count_if(connections.begin(),connections.end(),[](const auto& other){return other.diagnostics_only;})>=MAX_DIAGNOSTICS_CONNECTIONS)return false;
                 c.diagnostics_only=observer;c.observer_source=f.source;
-                for(const auto& other:connections)if(other.id!=c.id&&other.host==f.source.host)return false;
+                for(const auto& other:connections)if(other.id!=c.id&&other.host==f.source.host) {
+                    if(!observer||!other.diagnostics_only||other.session!=f.session_id||other.observer_source!=f.source)return false;
+                }
                 c.host=f.source.host;c.session=f.session_id;if(!Hello(c))return false;
             }
             c.ready=true;{std::lock_guard<std::mutex> lock(mutex);live_connections.insert(c.id);}
             ++connected;return true;
         }
         if(!c.ready||c.host!=f.source.host||c.session!=f.session_id)return false;
-        if(c.diagnostics_only && (f.source!=c.observer_source || f.operation!=ControlMessage::DIAGNOSTICS_REQUEST))return false;
+        if(f.operation==ControlMessage::DESCRIPTOR_REQUEST&&!DescriptorClientAllowed(*peer)) {
+            auto response=f;response.source=self;response.session_id=session;response.operation=ControlMessage::DESCRIPTOR_RESPONSE;
+            response.timeout_ms=0;response.status=-EACCES;return Queue(c,response);
+        }
+        if(c.diagnostics_only) {
+            if(f.source!=c.observer_source)return false;
+            const bool get=(f.operation==ControlMessage::DESCRIPTOR_REQUEST&&DescriptorClientAllowed(*peer))||ParameterClientAllowed(*peer,f)||ServiceClientRequest(*peer,f)||ActionClientRequest(*peer,f);
+            // Preserve Diagnostics-only observer behavior: unauthorized Control
+            // frames close that connection. Explicit Control clients get denial.
+            if(f.operation==ControlMessage::SERVICE_REQUEST && !get &&
+               !ReadClientAllowed(*peer)&&!WriteClientAllowed(*peer)&&!ServiceClientAllowed(*peer))return false;
+            if((f.operation==ControlMessage::PARAM_SET_REQUEST||f.operation==ControlMessage::SERVICE_REQUEST) && !get) {
+                auto response=f;response.source=self;response.session_id=session;
+                response.operation=ResponseOperation(f.operation);response.timeout_ms=0;
+                response.status=-EACCES;response.payload.clear();return Queue(c,response);
+            }
+            if(!get&&(f.operation==ControlMessage::ACTION_GOAL_REQUEST||f.operation==ControlMessage::ACTION_CANCEL_REQUEST)&&
+               (ReadClientAllowed(*peer)||WriteClientAllowed(*peer)||ServiceClientAllowed(*peer)||ActionClientAllowed(*peer,false)||ActionClientAllowed(*peer,true))) {
+                auto response=f;response.source=self;response.session_id=session;response.operation=ResponseOperation(f.operation);
+                response.timeout_ms=0;response.status=-EACCES;response.payload.clear();response.action_state=ActionState::IDLE;
+                return Queue(c,response);
+            }
+            if(!get && !(f.operation==ControlMessage::DIAGNOSTICS_REQUEST && ObserverAllowed(*peer)))return false;
+        }
         if(f.operation==ControlMessage::DIAGNOSTICS_REQUEST)return AdmitDiagnostics(c,f);
         if(f.operation==ControlMessage::ACTION_FEEDBACK||f.operation==ControlMessage::ACTION_RESULT){
             auto found=std::find_if(outgoing.begin(),outgoing.end(),[&](const auto& o){return o.connection==c.id&&o.session->request_.goal==f.goal;});
@@ -288,12 +370,27 @@ struct ControlNode::Impl {
         }
         if(Request(f.operation)) {
             if(f.endpoint.runtime.host!=self.host||f.endpoint.runtime.boot_id!=self.boot_id)return false;
-            auto known=std::find_if(seen.begin(),seen.end(),[&](const auto& s){return s.host==c.host;});
-            if(known==seen.end()){if(seen.size()>=MAX_CONNECTIONS)return false;seen.push_back({c.host,c.session,0});known=seen.end()-1;}
-            if(known->session!=c.session){known->session=c.session;known->last=0;known->last_goal=0;}
-            if(f.request_id<=known->last){++ignored;return true;} // no replay, including reconnect in same session
-            known->last=f.request_id;
-            if(f.operation==ControlMessage::ACTION_GOAL_REQUEST){if(f.goal.goal_id<=known->last_goal){++ignored;return true;}known->last_goal=f.goal.goal_id;}
+            if(c.diagnostics_only) {
+                auto known=std::find_if(client_seen.begin(),client_seen.end(),[&](const auto& s){return s.host==c.host;});
+                if(known==client_seen.end()) {
+                    if(client_seen.size()>=192)return false;
+                    client_seen.push_back({c.host,f.source.boot_id,c.session,{},{}});known=client_seen.end()-1;
+                }
+                if(known->boot!=f.source.boot_id||known->session!=c.session)*known={c.host,f.source.boot_id,c.session,{},{}};
+                if(!known->requests.Admit(f.request_id)||
+                   (f.operation==ControlMessage::ACTION_GOAL_REQUEST&&!known->goals.Admit(f.goal.goal_id))) {
+                    auto response=f;response.source=self;response.session_id=session;response.operation=ResponseOperation(f.operation);
+                    response.timeout_ms=0;response.status=-EALREADY;response.payload.clear();response.action_state=ActionState::IDLE;
+                    ++ignored;return Queue(c,response);
+                }
+            } else {
+                auto known=std::find_if(seen.begin(),seen.end(),[&](const auto& s){return s.host==c.host;});
+                if(known==seen.end()){if(seen.size()>=MAX_CONNECTIONS)return false;seen.push_back({c.host,c.session,0});known=seen.end()-1;}
+                if(known->session!=c.session){known->session=c.session;known->last=0;known->last_goal=0;}
+                if(f.request_id<=known->last){++ignored;return true;}
+                known->last=f.request_id;
+                if(f.operation==ControlMessage::ACTION_GOAL_REQUEST){if(f.goal.goal_id<=known->last_goal){++ignored;return true;}known->last_goal=f.goal.goal_id;}
+            }
             std::lock_guard<std::mutex> lock(mutex);
             if(jobs.size()>=64)return false;
             jobs.push_back({c.id,f,Clock::now()+std::chrono::milliseconds(f.timeout_ms)});return true;
@@ -366,7 +463,7 @@ struct ControlNode::Impl {
                 for(std::size_t i=connections.size();i--;) {
                     auto& c=connections[i];const auto* peer=Find(peers,c.host);
                     bool abort=false;{std::lock_guard<std::mutex> lock(mutex);abort=abort_connections.count(c.id);}
-                    if(abort||(!c.ready&&now>=c.deadline)||(Valid(c.host)&&(!peer||!(c.diagnostics_only?ObserverAllowed(*peer):Allowed(*peer))||peer->session_id!=c.session||
+                    if(abort||(!c.ready&&now>=c.deadline)||(Valid(c.host)&&(!peer||!(c.diagnostics_only?LimitedAllowed(*peer):Allowed(*peer))||peer->session_id!=c.session||
                         (c.diagnostics_only&&peer->boot_id!=c.observer_source.boot_id))))Drop(i);
                 }
                 ReclaimObserverDiagnostics(peers);
@@ -419,6 +516,38 @@ struct ControlNode::Impl {
         std::lock_guard<std::mutex> lock(mutex);
         for(auto& b:submissions){b->result.error=-ECANCELED;b->promise.set_value(std::move(b->result));}submissions.clear();
     }
+    void ExecuteDescriptor(const Job& job) {
+        const auto& request=job.frame;int code=0;std::vector<std::uint8_t> bytes;
+        auto peers=discovery.GetPeers();const auto* peer=Find(peers,request.source.host);
+        auto entries=Local();auto entry=std::find_if(entries.begin(),entries.end(),[&](const auto& e){return e.metadata.identity==request.endpoint;});
+        if(Clock::now()>=job.deadline)code=-ETIMEDOUT;
+        else if(!peer||peer->boot_id!=request.source.boot_id||peer->session_id!=request.session_id)code=-ESTALE;
+        else if(!DescriptorClientAllowed(*peer))code=-EACCES;
+        else if(entry==entries.end()||entry->metadata.name!=request.name)code=-ENOENT;
+        else if(entry->metadata.scope!=NetworkScope::REMOTE)code=-EACCES;
+        else {
+            TypeIdentity type;code=DescriptorType(entry->metadata,request.descriptor_role,type);
+            if(!code&&!(type==request.type))code=-EPROTOTYPE;
+            auto validate=[&] {
+                switch(entry->metadata.kind){
+                case EndpointKind::PARAMETER:return ValidateLocalParameterEndpoint(*entry);
+                case EndpointKind::TOPIC:return ValidateLocalTopicEndpoint(*entry,entry->metadata.role==EndpointRole::PROVIDER);
+                case EndpointKind::SERVICE:return ValidateLocalServiceEndpoint(*entry);
+                case EndpointKind::ACTION:return ValidateLocalActionEndpoint(*entry);
+                }return -EINVAL;
+            };
+            if(!code)code=validate();
+            if(!code){RuntimeInfo runtime;runtime.pid=request.endpoint.runtime.pid;runtime.process_start_ticks=request.endpoint.runtime.process_start_ticks;
+                IntrospectionClient client;TypeDescriptor descriptor;code=client.GetType(runtime,type.type_id,descriptor);
+                TypeIdentity actual;if(!code)code=ParameterWireType(descriptor,actual);
+                if(!code&&!(actual==type))code=-EPROTOTYPE;
+                if(!code)code=EncodeTypeDescriptor(descriptor,bytes);
+                if(!code)code=validate();
+            }
+        }
+        if(Clock::now()>=job.deadline)code=-ETIMEDOUT;
+        ServiceReply(job,code,CompatibilityReason::COMPATIBLE,std::move(bytes));
+    }
     void Execute(Job job) {
         auto& request=job.frame;ControlFrame response=request;response.source=self;response.session_id=session;
         response.operation=request.operation==ControlMessage::PARAM_GET_REQUEST?ControlMessage::PARAM_GET_RESPONSE:ControlMessage::PARAM_SET_RESPONSE;
@@ -426,10 +555,16 @@ struct ControlNode::Impl {
         auto endpoints=Local();auto entry=std::find_if(endpoints.begin(),endpoints.end(),[&](const auto& e){return e.metadata.identity==request.endpoint;});
         int code=0;auto peers=discovery.GetPeers();const auto* peer=Find(peers,request.source.host);
         if(Clock::now()>=job.deadline)code=-ETIMEDOUT;
-        else if(!peer||!Allowed(*peer)||peer->session_id!=request.session_id)code=-ENOTCONN;
+        else if(!peer||peer->boot_id!=request.source.boot_id||peer->session_id!=request.session_id||
+            !(Allowed(*peer)||ParameterClientAllowed(*peer,request)))code=-ENOTCONN;
         else if(entry==endpoints.end())code=-ENOENT;
         else {
-            auto gate=CheckParameterCompatibility(config.discovery.profile,peer->profile,entry->metadata,
+            // The explicit per-operation grant supplies this operation's capabilities
+            // for the existing endpoint/type/scope validator; Get never grants Set.
+            auto profile=peer->profile;
+            if(ParameterClientAllowed(*peer,request))
+                profile.capabilities|=CapabilityBit(Capability::REMOTE_PARAMETER)|CapabilityBit(Capability::TARGET_ENDPOINT);
+            auto gate=CheckParameterCompatibility(config.discovery.profile,profile,entry->metadata,
                 Consumer(request.source,request.name,request.type),config.discovery.compatibility_policy,request.target);
             if(!gate.Compatible()){code=ReasonError(gate.reason);response.reason=gate.reason;}
             else {
@@ -467,10 +602,13 @@ struct ControlNode::Impl {
         auto entry=std::find_if(entries.begin(),entries.end(),[&](const auto& e){return e.metadata.identity==request.endpoint;});
         auto peers=discovery.GetPeers();const auto* peer=Find(peers,request.source.host);
         int code=0;auto reason=CompatibilityReason::COMPATIBLE;std::vector<std::uint8_t> wire;
-        if(!running||!peer||!Allowed(*peer)||peer->session_id!=request.session_id)code=-ENOTCONN;
+        if(!running||!peer||peer->boot_id!=request.source.boot_id||
+            !(Allowed(*peer)||ServiceClientRequest(*peer,request))||peer->session_id!=request.session_id)code=-ENOTCONN;
         else if(entry==entries.end())code=-ESTALE;
         else {
-            const auto gate=CheckServiceCompatibility(config.discovery.profile,peer->profile,entry->metadata,
+            auto profile=peer->profile;
+            if(ServiceClientRequest(*peer,request))profile.capabilities|=CapabilityBit(Capability::REMOTE_SERVICE)|CapabilityBit(Capability::TARGET_ENDPOINT);
+            const auto gate=CheckServiceCompatibility(config.discovery.profile,profile,entry->metadata,
                 Consumer(request.source,request.name,request.type,request.response_type),config.discovery.compatibility_policy,request.target);
             if(!gate.Compatible()){code=ReasonError(gate.reason);reason=gate.reason;}
             else {
@@ -528,9 +666,12 @@ struct ControlNode::Impl {
         const auto& request=job.frame;auto entries=Local();
         auto found=std::find_if(entries.begin(),entries.end(),[&](const auto& e){return e.metadata.identity==request.endpoint;});
         auto peers=discovery.GetPeers();const auto* peer=Find(peers,request.source.host);
-        if(!Live(job.connection)||!peer||!Allowed(*peer)||peer->session_id!=request.session_id)return -ENOTCONN;
+        if(!Live(job.connection)||!peer||peer->boot_id!=request.source.boot_id||
+            !(Allowed(*peer)||ActionClientRequest(*peer,request))||peer->session_id!=request.session_id)return -ENOTCONN;
         if(found==entries.end())return -ESTALE;
-        auto gate=CheckActionCompatibility(config.discovery.profile,peer->profile,found->metadata,
+        auto profile=peer->profile;
+        if(ActionClientRequest(*peer,request))profile.capabilities|=CapabilityBit(Capability::REMOTE_ACTION)|CapabilityBit(Capability::TARGET_ENDPOINT);
+        auto gate=CheckActionCompatibility(config.discovery.profile,profile,found->metadata,
             Consumer(request.source,request.name,request.type,request.response_type,request.feedback_type),config.discovery.compatibility_policy,request.target);
         if(!gate.Compatible()){reason=gate.reason;return ReasonError(reason);}
         if(Clock::now()>=job.deadline)return -ETIMEDOUT;
@@ -631,6 +772,7 @@ struct ControlNode::Impl {
                     Job job;{std::lock_guard<std::mutex> lock(mutex);if(jobs.empty())break;job=std::move(jobs.front());jobs.pop_front();}
                     if(job.frame.operation==ControlMessage::ACTION_GOAL_REQUEST)LaunchAction(std::move(job));
                     else if(job.frame.operation==ControlMessage::SERVICE_REQUEST||job.frame.operation==ControlMessage::ACTION_CANCEL_REQUEST)LaunchService(std::move(job));
+                    else if(job.frame.operation==ControlMessage::DESCRIPTOR_REQUEST)ExecuteDescriptor(job);
                     else Execute(std::move(job));
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -665,8 +807,15 @@ int ControlNode::Start(const ControlConfig& input) {
     auto& s=*impl_;if(s.io.joinable()||s.backend.joinable())return -EBUSY;
     if(input.metadata_interval.count()<20||input.metadata_interval.count()>60000||input.connect_timeout.count()<20||
         input.connect_timeout.count()>60000||input.reconnect_interval.count()<20||input.reconnect_interval.count()>60000)return -EINVAL;
+    if(input.descriptor_query_clients.size()>32||input.parameter_get_clients.size()>32||input.parameter_set_clients.size()>32||input.service_call_clients.size()>32||input.action_goal_clients.size()>32||input.action_cancel_clients.size()>32)return -EINVAL;
+    for(const auto& host:input.parameter_get_clients)if(!Valid(host)||host==input.discovery.host)return -EINVAL;
+    for(const auto& host:input.parameter_set_clients)if(!Valid(host)||host==input.discovery.host)return -EINVAL;
+    for(const auto& host:input.service_call_clients)if(!Valid(host)||host==input.discovery.host)return -EINVAL;
+    for(const auto& host:input.action_goal_clients)if(!Valid(host)||host==input.discovery.host)return -EINVAL;
+    for(const auto& host:input.action_cancel_clients)if(!Valid(host)||host==input.discovery.host)return -EINVAL;
+    for(const auto& host:input.descriptor_query_clients)if(!Valid(host)||host==input.discovery.host)return -EINVAL;
     s.config=input;s.config.discovery.profile.capabilities=Supported();
-    if(input.topics.enabled)s.config.discovery.profile.capabilities|=CapabilityBit(Capability::REMOTE_TOPIC);
+    if(input.topics.enabled)s.config.discovery.profile.capabilities|=CapabilityBit(Capability::REMOTE_TOPIC)|CapabilityBit(Capability::TOPIC_ENDPOINT_SUBSCRIPTION);
     s.config.metadata.host=input.discovery.host;s.config.metadata.boot_id=input.discovery.boot_id;
     s.self={input.discovery.host,input.discovery.boot_id,getpid(),0};
     if(!Valid(s.self.host)||!Valid(s.self.boot_id)||!kcf::detail::ReadProcessIdentity(getpid(),s.self.process_start_ticks))return -EINVAL;
@@ -687,8 +836,9 @@ int ControlNode::Start(const ControlConfig& input) {
     if(input.topics.enabled){code=s.topics.Start(s.config.topics,s.config.discovery,s.config.metadata,s.self,s.discovery);if(code)return fail(code);}
     // Listener and optional Topic plane are ready before discovery advertises opt-in.
     if(input.diagnostics_enabled)s.config.discovery.profile.capabilities|=CapabilityBit(Capability::NETWORK_DIAGNOSTICS);
+    if(!input.descriptor_query_clients.empty())s.config.discovery.profile.capabilities|=CapabilityBit(Capability::TYPE_DESCRIPTOR_QUERY);
     code=s.discovery.Start(s.config.discovery);if(code)return fail(code);
-    s.session=s.discovery.GetSessionId();s.error=0;s.connected=0;s.sent=0;s.ignored=0;s.rejected=0;s.running=true;s.seen.clear();s.diagnostics_seen.clear();s.observer_diagnostics_seen.clear();s.diagnostics_jobs.clear();s.next_diagnostics=Clock::now();
+    s.session=s.discovery.GetSessionId();s.error=0;s.connected=0;s.sent=0;s.ignored=0;s.rejected=0;s.running=true;s.seen.clear();s.client_seen.clear();s.diagnostics_seen.clear();s.observer_diagnostics_seen.clear();s.diagnostics_jobs.clear();s.next_diagnostics=Clock::now();
     try{s.backend=std::thread([&s]{s.Backend();});s.io=std::thread([&s]{s.IO();});}
     catch(...){Stop();return -EAGAIN;}return 0;
 }

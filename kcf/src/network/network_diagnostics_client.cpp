@@ -1,3 +1,4 @@
+#include "control_client_io.hpp"
 #include "kcf/network/network_diagnostics_client.hpp"
 #include "kcf/network/control_frame.hpp"
 #include "kcf/introspection/detail/runtime_registry.hpp"
@@ -19,46 +20,7 @@ int NextRequest(std::uint64_t& id) {
     while(!next_request.compare_exchange_weak(previous,previous+1));
     id=previous+1;return 0;
 }
-struct Socket {int fd{-1};~Socket(){if(fd>=0)close(fd);}};
-int Wait(int fd,short events,Clock::time_point deadline) {
-    for(;;) {
-        const auto now=Clock::now();if(now>=deadline)return -ETIMEDOUT;
-        const auto remaining=std::chrono::duration_cast<std::chrono::milliseconds>(deadline-now).count()+1;
-        pollfd p{fd,events,0};const int result=poll(&p,1,static_cast<int>(remaining));
-        if(result<0){if(errno==EINTR)continue;return -errno;}
-        if(!result)continue;
-        if(p.revents&POLLNVAL)return -EBADF;
-        // Let send/recv/SO_ERROR report EOF or errors, including POLLHUP with data.
-        return 0;
-    }
-}
-int Transfer(int fd,std::uint8_t* bytes,std::size_t size,bool sending,Clock::time_point deadline) {
-    std::size_t offset=0;
-    while(offset<size) {
-        if(Clock::now()>=deadline)return -ETIMEDOUT;
-        const auto count=sending?send(fd,bytes+offset,size-offset,MSG_NOSIGNAL):recv(fd,bytes+offset,size-offset,0);
-        if(count>0){offset+=static_cast<std::size_t>(count);continue;}
-        if(!count)return -ECONNRESET;
-        if(errno==EINTR)continue;
-        if(errno!=EAGAIN && errno!=EWOULDBLOCK)return -errno;
-        const int code=Wait(fd,sending?POLLOUT:POLLIN,deadline);if(code)return code;
-    }
-    return 0;
-}
-int SendFrame(int fd,const ControlFrame& frame,Clock::time_point deadline) {
-    std::vector<std::uint8_t> bytes;int code=EncodeControlFrame(frame,bytes);
-    return code?code:Transfer(fd,bytes.data(),bytes.size(),true,deadline);
-}
-int ReceiveFrame(int fd,ControlMessage expected,ControlFrame& frame,Clock::time_point deadline) {
-    std::vector<std::uint8_t> bytes(CONTROL_PREFIX_SIZE);
-    int code=Transfer(fd,bytes.data(),bytes.size(),false,deadline);if(code)return code;
-    std::size_t size=0;code=ControlFrameSize(bytes.data(),bytes.size(),size);if(code)return code;
-    if(((unsigned(bytes[6])<<8)|bytes[7])!=static_cast<unsigned>(expected))return -EPROTO;
-    const auto limit=expected==ControlMessage::HELLO?172:172+MAX_NETWORK_DIAGNOSTICS_PAYLOAD;
-    if(size>limit)return -EMSGSIZE;
-    bytes.resize(size);code=Transfer(fd,bytes.data()+CONTROL_PREFIX_SIZE,size-CONTROL_PREFIX_SIZE,false,deadline);
-    return code?code:DecodeControlFrame(bytes.data(),bytes.size(),frame);
-}
+using namespace client_io;
 int Peer(PeerDiscovery& discovery,const DiscoveryConfig& config,const HostIdentity& host,PeerInfo& out) {
     if(discovery.GetLastError())return discovery.GetLastError();
     for(const auto& peer:discovery.GetPeers())if(peer.host==host) {
@@ -82,7 +44,7 @@ NetworkDiagnosticsClient::NetworkDiagnosticsClient(PeerDiscovery& discovery,cons
 int NetworkDiagnosticsClient::Query(const HostIdentity& gateway,NetworkDiagnosticsSnapshot& snapshot,std::chrono::milliseconds timeout) {
     if(timeout.count()<1||timeout.count()>60000||!Valid(gateway)||gateway==config_.host||
        !Valid(config_.host)||!Valid(config_.boot_id)||
-       (config_.profile.capabilities&KNOWN_CAPABILITIES)!=CapabilityBit(Capability::DISCOVERY))return -EINVAL;
+       !IsObserverProfile(config_.profile))return -EINVAL;
     const auto deadline=Clock::now()+timeout;
     std::unique_lock<std::timed_mutex> lock(mutex_,std::defer_lock);
     if(!lock.try_lock_until(deadline))return -ETIMEDOUT;

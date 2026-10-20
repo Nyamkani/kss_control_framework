@@ -30,11 +30,14 @@ enum class Capability : std::uint64_t
     TARGET_APPLICATION = 1ull << 7,
     TARGET_GROUP = 1ull << 8,
     TARGET_ALL = 1ull << 9,
+    REMOTE_TOPIC_RECEIVER = 1ull << 12, // consumer only, no publishing/control grant
+    TOPIC_ENDPOINT_SUBSCRIPTION = 1ull << 13, // INTEREST source-port return routing
+    TYPE_DESCRIPTOR_QUERY = 1ull << 11, // advertised only with explicit descriptor_query_clients
     NETWORK_DIAGNOSTICS = 1ull << 10 // advertised only when ControlConfig::diagnostics_enabled is true
 };
 using CapabilitySet = std::uint64_t;
 inline constexpr CapabilitySet CapabilityBit(Capability c) { return static_cast<CapabilitySet>(c); }
-inline constexpr CapabilitySet KNOWN_CAPABILITIES = (1ull << 11) - 1;
+inline constexpr CapabilitySet KNOWN_CAPABILITIES = (1ull << 14) - 1;
 struct PeerProfile
 {
     FrameworkVersion framework;
@@ -45,6 +48,11 @@ struct PeerProfile
     // successfully before discovery. Capability bits are not protocol versions.
     CapabilitySet capabilities{CapabilityBit(Capability::DISCOVERY)};
 };
+// Receive-only Tools may share discovery with explicitly granted Control clients.
+inline bool IsObserverProfile(const PeerProfile& p) {
+    auto caps=p.capabilities&KNOWN_CAPABILITIES;
+    return caps==CapabilityBit(Capability::DISCOVERY)||caps==(CapabilityBit(Capability::DISCOVERY)|CapabilityBit(Capability::REMOTE_TOPIC_RECEIVER)|CapabilityBit(Capability::TARGET_ENDPOINT));
+}
 inline bool operator==(const PeerProfile& a, const PeerProfile& b)
 {
     return a.framework == b.framework && a.network.major == b.network.major &&
@@ -149,7 +157,12 @@ inline CompatibilityResult CheckEndpointCompatibility(
     case EndpointKind::SERVICE: operation = Capability::REMOTE_SERVICE; break;
     case EndpointKind::ACTION: operation = Capability::REMOTE_ACTION; break;
     }
-    result = CheckCapability(local, remote, CapabilityBit(operation) | TargetCapability(target), policy);
+    auto left=local,right=remote;
+    if(a.kind==EndpointKind::TOPIC) {
+        if(a.role==EndpointRole::CONSUMER&&(left.capabilities&CapabilityBit(Capability::REMOTE_TOPIC_RECEIVER)))left.capabilities|=CapabilityBit(Capability::REMOTE_TOPIC);
+        if(b.role==EndpointRole::CONSUMER&&(right.capabilities&CapabilityBit(Capability::REMOTE_TOPIC_RECEIVER)))right.capabilities|=CapabilityBit(Capability::REMOTE_TOPIC);
+    }
+    result = CheckCapability(left, right, CapabilityBit(operation) | TargetCapability(target), policy);
     if(!result.Compatible()) return result;
     // Fixed-size wire contracts require the entire type identity to match:
     // type ID alone does not establish schema/encoding/native ABI compatibility.

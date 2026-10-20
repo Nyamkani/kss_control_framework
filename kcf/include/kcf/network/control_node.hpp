@@ -18,6 +18,27 @@ struct ControlConfig {
     // 10 admissions/s per Host session, 50 dispatches/s globally. Observer output
     // is capped at 32 KiB / 16 frames. Overload yields -EAGAIN or closes a full queue.
     bool diagnostics_enabled{false};
+    // Explicit LAN policy, NOT authentication. Default denies dedicated clients.
+    // At most 32 observer Host IDs may issue ENDPOINT Parameter Get only.
+    // Existing remote_parameters allowlist and type/owner checks still apply.
+    std::vector<HostIdentity> parameter_get_clients;
+    // Independent explicit Set grant, max 32 Hosts, default deny. No Get grant
+    // implied. Same unauthenticated trusted-LAN policy and REMOTE endpoint checks.
+    std::vector<HostIdentity> parameter_set_clients;
+    // Independent ENDPOINT Service Call grant; max 32 Hosts, default deny.
+    // Does not grant Parameter access or Action; not authenticated authorization.
+    std::vector<HostIdentity> service_call_clients;
+    // Independent ENDPOINT Action grants; each max 32 Hosts, default deny.
+    std::vector<HostIdentity> action_goal_clients, action_cancel_clients;
+    // Read-only schema queries, independent of all Control/Diagnostics grants.
+    // Default empty (capability absent), max 32 observer Hosts. Only REMOTE
+    // registered endpoints are visible. Trusted LAN policy, not authentication.
+    std::vector<HostIdentity> descriptor_query_clients;
+    // Observer (DISCOVERY-only or receive-only Topic profile) connections: at most 8 total (shared with Diagnostics),
+    // same Host/Boot/Session must also use the same HELLO Runtime identity.
+    // Dedicated Control replay window: 256 IDs, max 192 Hosts, retained until
+    // Start; unseen out-of-order IDs inside the window allowed, older IDs denied.
+    // Normal gateway-to-gateway connection direction/deduplication is unchanged.
 };
 struct RemoteActionSnapshot {
     RemoteGoalIdentity goal;

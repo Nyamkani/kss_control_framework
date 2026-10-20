@@ -35,6 +35,7 @@ struct PeerDiscovery::Impl
     DiscoveryStats stats;
     std::vector<Entry> peers;
     std::vector<std::uint8_t> metadata;
+    std::vector<NetworkEndpointMetadata> base_metadata,consumers;
     std::uint16_t endpoint_count{0};
     std::uint64_t revision{1}, sequence{0}, session{0}, request_counter{0};
     int multicast_fd{-1}, unicast_fd{-1}, wake_fd{-1};
@@ -238,7 +239,7 @@ int PeerDiscovery::Start(const DiscoveryConfig& config,const std::vector<Network
         std::uint64_t session=0;ssize_t got;
         do {got=getrandom(&session,sizeof(session),GRND_NONBLOCK);} while(got<0 && errno==EINTR);
         if(got!=sizeof(session) || !session) return got<0?-errno:-EIO;
-        s.config=config;s.metadata=std::move(bytes);s.endpoint_count=endpoints.size();s.session=session;
+        s.config=config;s.base_metadata=endpoints;s.consumers.clear();s.metadata=std::move(bytes);s.endpoint_count=endpoints.size();s.session=session;
         s.revision=1;s.sequence=0;s.request_counter=0;s.peers.clear();s.stats={};s.error=0;s.dirty=true;
         const auto fail=[&] {const int e=errno;s.CloseSockets();return -e;};
         s.multicast_fd=socket(AF_INET,SOCK_DGRAM|SOCK_NONBLOCK|SOCK_CLOEXEC,0);if(s.multicast_fd<0) return fail();
@@ -266,15 +267,36 @@ int PeerDiscovery::Start(const DiscoveryConfig& config,const std::vector<Network
       catch(const std::system_error& e) {s.CloseSockets();return -e.code().value();}
 }
 int PeerDiscovery::UpdateMetadata(const std::vector<NetworkEndpointMetadata>& endpoints)
-{
+try {
     auto& s=*impl_;std::lock_guard<std::mutex> lock(s.mutex);
     if(!s.running) return -ENOTCONN;
     if(!ValidDiscoveryMetadata(endpoints,s.config.host,s.config.boot_id)) return -EINVAL;
-    std::vector<std::uint8_t> bytes;const int result=EncodeDiscoveryMetadata(endpoints,bytes);if(result) return result;
+    auto base=endpoints;auto all=base;all.insert(all.end(),s.consumers.begin(),s.consumers.end());
+    if(!ValidDiscoveryMetadata(all,s.config.host,s.config.boot_id))return -EINVAL;
+    std::vector<std::uint8_t> bytes;const int result=EncodeDiscoveryMetadata(all,bytes);if(result) return result;
     if(bytes==s.metadata) return 0;
     if(s.revision==std::numeric_limits<std::uint64_t>::max()) return -EOVERFLOW;
-    s.metadata=std::move(bytes);s.endpoint_count=endpoints.size();++s.revision;s.dirty=true;s.Wake();return 0;
-}
+    s.metadata=std::move(bytes);s.base_metadata=std::move(base);s.endpoint_count=all.size();++s.revision;s.dirty=true;s.Wake();return 0;
+} catch(const std::bad_alloc&){return -ENOMEM;}
+int PeerDiscovery::RegisterConsumer(std::uint64_t session,const NetworkEndpointMetadata& endpoint) try {
+    auto& s=*impl_;std::lock_guard<std::mutex> lock(s.mutex);
+    if(!s.running||s.session!=session)return -ESTALE;
+    if(endpoint.kind!=EndpointKind::TOPIC||endpoint.role!=EndpointRole::CONSUMER||endpoint.scope!=NetworkScope::REMOTE)return -EINVAL;
+    if(s.consumers.size()>=64)return -ENOSPC;
+    auto all=s.base_metadata;all.insert(all.end(),s.consumers.begin(),s.consumers.end());all.push_back(endpoint);
+    if(!ValidDiscoveryMetadata(all,s.config.host,s.config.boot_id))return -EINVAL;
+    std::vector<std::uint8_t> bytes;int code=EncodeDiscoveryMetadata(all,bytes);if(code)return code;
+    if(s.revision==UINT64_MAX)return -EOVERFLOW;
+    s.consumers.push_back(endpoint);s.metadata=std::move(bytes);s.endpoint_count=all.size();++s.revision;s.dirty=true;s.Wake();return 0;
+} catch(const std::bad_alloc&){return -ENOMEM;}
+int PeerDiscovery::UnregisterConsumer(std::uint64_t session,const RemoteEndpointIdentity& endpoint) try {
+    auto& s=*impl_;std::lock_guard<std::mutex> lock(s.mutex);
+    if(!s.running||s.session!=session)return -ESTALE;
+    auto next=s.consumers;auto i=std::find_if(next.begin(),next.end(),[&](const auto& e){return e.identity==endpoint;});if(i==next.end())return -ENOENT;next.erase(i);
+    auto all=s.base_metadata;all.insert(all.end(),next.begin(),next.end());std::vector<std::uint8_t> bytes;int code=EncodeDiscoveryMetadata(all,bytes);if(code)return code;
+    if(s.revision==UINT64_MAX)return -EOVERFLOW;
+    s.consumers=std::move(next);s.metadata=std::move(bytes);s.endpoint_count=all.size();++s.revision;s.dirty=true;s.Wake();return 0;
+} catch(const std::bad_alloc&){return -ENOMEM;}
 void PeerDiscovery::Stop()
 {
     auto& s=*impl_;

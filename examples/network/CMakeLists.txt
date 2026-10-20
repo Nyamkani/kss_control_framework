@@ -51,3 +51,11 @@ target_compile_options(kcf_lan_action PRIVATE -Wall -Wextra -Wpedantic)
 add_executable(kcf_lan_topic src/lan_topic_main.cpp)
 target_link_libraries(kcf_lan_topic PRIVATE kcf_core)
 target_compile_options(kcf_lan_topic PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(kcf_remote_control_client_test src/remote_control_client_test.cpp)
+target_link_libraries(kcf_remote_control_client_test PRIVATE kcf_core)
+target_compile_options(kcf_remote_control_client_test PRIVATE -UNDEBUG -Wall -Wextra -Wpedantic)
+
+add_executable(kcf_remote_topic_client_test src/remote_topic_client_test.cpp)
+target_link_libraries(kcf_remote_topic_client_test PRIVATE kcf_core ${CMAKE_DL_LIBS})
+target_compile_options(kcf_remote_topic_client_test PRIVATE -UNDEBUG -Wall -Wextra -Wpedantic)

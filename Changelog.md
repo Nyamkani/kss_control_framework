@@ -7,6 +7,42 @@ Phase 2 통신 기능은 v2.0, Phase 3 supervision/recovery는 v3.0에 기록합
 이 문서의 버전 표기는 개발 이력 구분이며 Git tag 또는 배포 생성 여부를 의미하지 않습니다.
 v1.0~v4.3은 historical record입니다. 당시 Mecanum 경로·실행 범위를 현재 Framework 소스 구성으로 해석하지 않습니다.
 
+## v5.4 — Generic Remote Control LAN Validation / Network Deployment Policy
+
+- CMake project version과 기본 FrameworkVersion을 5.4.0으로 정합화. KCF Tools 연동 기준은 v0.14.
+- 기존 RemoteControlClient의 Parameter Get/Set/Readback, Service Call, Action Goal/Feedback/Result/Cancel과
+  TypeDescriptor Query, 정확한 Endpoint 선택 기반 RemoteTopicClient 및 Multi-Host UI 연동을 정리.
+- NetworkProtocolVersion 1.0, Discovery v2, Control TCP v1, Topic wire v1 및 Local IPC storage/protocol 유지.
+  NETWORK_PROTOCOL 정책은 그대로이며 EXACT_FRAMEWORK_VERSION에서 v5.3과 v5.4는 불일치.
+- 다중 장치 공통 Gateway, 고유 Host Identity, TCP/UDP 및 동적 Client 포트 정책을
+  [Deployment Policy v1.0](docs/10_NETWORK_DEPLOYMENT_POLICY.md)에 문서화.
+  39001 기본 포트 자동 적용, 영구 Host ID provisioning 및 Debian/systemd 패키징은 여전히 미구현 설계안.
+
+### 물리 LAN 1차 기능 검증 — 이전 사용자 보고
+
+2026-10-21 Orange Pi 5+ ↔ Ubuntu VM Bridged LAN에서 Framework dev `9e9cc1b`(v5.3),
+Tools main `e332438`(v0.13)로 수행한 사용자 수동 기록이다. v5.4/Tool v0.14 재실행 결과가 아니다.
+
+- Discovery/Metadata, Remote Topic 실제 수신(약 45.96 Hz), Parameter Get/Set/Readback,
+  Service Call/Response, Action Goal/Feedback/SUCCEEDED 및 Cancel ACK/CANCELED: 사용자 확인 PASS.
+- Cancel Result: count=-1, enabled=false, gain=1.5. 최종 execution_unknown=0, cancel_unknown=0.
+- 공개 Action 예제는 2초 완료 설정이며 Cancel 수동 시험은 Orange Pi에서 10초로 변경해 수행.
+- UFW Discovery 차단, 동일 Host ID 중복 Gateway, 일시적 장애 후 양쪽 프로그램 재시작 사례를 보존.
+- Gateway 단독 재시작, Tools 단독 재시작, LAN 장애 후 자동 복구와 다중 Gateway 운영 안정성은 미검증.
+  기존 Action 자동 reattach 및 변경 명령 자동 retry는 미지원.
+- [상세 시험 기록](examples/network/LAN_TEST_GUIDE.md#physical-lan-2026-10-21).
+  1차 기능 PASS는 전체 네트워크 안정성 검증 완료를 뜻하지 않는다.
+
+### v5.4.0 version alignment 검증
+
+- CMake Debug configure 및 전체 build: PASS. CMake/기본 FrameworkVersion 5.4.0 일치.
+- 격리 loopback/SHM 환경에서 직렬 Network 회귀 10/10 PASS:
+  Network contract, Compatibility, PeerDiscovery, Parameter, Service, Action,
+  Topic Data Plane, Proxy Recovery, RemoteControlClient, RemoteTopicClient.
+- 이번 1회 실행에서는 실패·재실행 없음. 과거 간헐적 실패가 해소됐다는 의미는 아님.
+- 물리 LAN 및 KCF Tools v0.14 연동 재검증: 미실행.
+- 기존 v5.3 이하 검증 이력은 보존하며 Commit/Push/Tag/Release는 생성하지 않음.
+
 ## v5.3 — Read-only Network Diagnostics
 
 F-ND1~F-ND5A가 적용된 dev working tree 기준입니다. FrameworkVersion/CMake는 5.3.0이며,

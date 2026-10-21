@@ -1,6 +1,6 @@
 # 08. Network IPC Common Contracts
 
-Framework v5.3.0은 v5.2 Network/Local IPC 계약을 유지하고 read-only Network Diagnostics를 추가한 dev working tree 기준입니다. **현재 Remote Parameter Get/Set, Remote Service Call, Remote Action Goal/Feedback/Result/Cancel 및 UDP Remote Topic을 지원합니다.**
+현재 Framework 기준은 v5.4.0이며 Generic Remote Control 및 Network Deployment Policy를 포함합니다. v5.3에서 추가된 read-only Network Diagnostics와 기존 Network/Local IPC 계약을 유지합니다. **Remote Parameter Get/Set, Remote Service Call, Remote Action Goal/Feedback/Result/Cancel 및 UDP Remote Topic을 지원합니다.** 아래 단계별 구현·검증 기록은 당시 기준이며 v5.4 재검증 결과가 아닙니다.
 현재 구현은 공통 모델, UDP Discovery v2, compatibility, Local metadata 자동 수집, 공통 TCP Control transport, Remote Parameter/Service/Action과 별도의 Topic Data Plane입니다.
 Discovery는 metadata만 교환합니다. 실제 Parameter/Service 요청·응답은 peer당 같은 TCP Control connection으로 처리합니다.
 Network 기능은 dev commit `0a3f2a630cec209793f9ac6e99107752e9e01283`에 최초 반영되었습니다.

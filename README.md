@@ -1,4 +1,4 @@
-# KSS Control Framework (KCF) v5.3.0
+# KSS Control Framework (KCF) v5.4.0
 
 KCF는 Linux 제어 시스템의 Process lifecycle, 실행·통신 구조를 공통화하는 C++17 Framework입니다.
 로봇·산업 장비·센서·액추에이터·SBC 기반 시스템에서 기능별 process를 독립적으로 개발·실행·검증하고,
@@ -48,7 +48,9 @@ Feedback은 bounded latest 방식이며 Cancel 수락과 terminal 취소를 구�
 
 Remote Topic은 `remote_topics` allowlist와 실제 compatible Subscriber를 확인한 뒤 UDP unicast로 전달합니다.
 Control과 분리된 NORMAL Data Plane이며 best-effort latest-data, 기본 최대 50 Hz, 재전송 없음입니다.
-수신 Gateway의 native TypeDescriptor catalog로 빈 Local proxy를 먼저 준비한 뒤 기존 Subscriber를 생성합니다.
+기존 Gateway 경로는 수신 측 native TypeDescriptor catalog로 빈 Local proxy를 먼저 준비한 뒤 Subscriber를 생성합니다.
+Generic RemoteTopicClient는 정확한 원격 Publisher와 Session을 선택하고 TypeDescriptor Query 및 canonical Payload로
+독립 구독합니다. 기존 이름 기반 Gateway 경로와 구분합니다.
 Local Topic Format 4와 API는 유지하며 큰 payload는 명시적으로 거부합니다.
 Gateway 재시작 시 ownership sidecar로 증명된 죽은 Network proxy만 자동 복구합니다.
 일반 Local Publisher·unknown SHM은 삭제하지 않으며, 이전 mapping을 가진 Subscriber는 명시적으로 재연결합니다.
@@ -58,7 +60,7 @@ Gateway 재시작 시 ownership sidecar로 증명된 죽은 Network proxy만 자
 `./tests/network_virtual/run_virtual_network_test.sh`로 실행합니다.
 [Virtual LAN 구성·권한·장애 주입·결과](docs/09_VIRTUAL_LAN_TEST.md)를 참고하세요. 일반 빌드와 별도의 opt-in 시험입니다.
 
-v5.3은 `ControlConfig::diagnostics_enabled`(기본 OFF)로 허용한 Gateway의 route 상태와 9개 누적 counter를
+v5.3에서 추가된 `ControlConfig::diagnostics_enabled`(기본 OFF)로 허용한 Gateway의 route 상태와 9개 누적 counter를
 외부 Observer가 조회할 수 있습니다. `NetworkDiagnosticsClient`는 기존 PeerDiscovery를 빌려 사용하는
 동기식 read-only API이며 worker에서 호출합니다. Snapshot은 최대 16 KiB이고 잘림을 명시합니다.
 Framework는 counter를 제공하며 Hz 계산·Graph freshness는 Tool 책임입니다.
@@ -124,35 +126,55 @@ Application의 Driver와 안전 정책은 이 예제들이 대신 제공하지 �
 
 ## kcf_tools 연동
 
-[kcf_tools](https://github.com/Nyamkani/kcf_tools)는 별도 repository입니다. Application/Element 탐색,
-Topic Echo, Parameter 편집, Service Call을 지원합니다. Dynamic access에는 명시적인 TypeDescriptor가 필요합니다.
-Topology/state는 수동 Refresh, Topic Echo는 polling입니다. Action UI, Timer endpoint, 일반 Topic Publish,
-사용자용 Reset/Launch manager는 제공 기능이 아닙니다. [Local 지원 범위](docs/04_INTROSPECTION_AND_TOOL.md)를 참조하세요.
+[kcf_tools](https://github.com/Nyamkani/kcf_tools)는 별도 repository입니다.
+**현재 연동 기준은 Framework v5.4.0 / KCF Tools v0.14**이며 RemoteControlClient,
+RemoteTopicClient 및 TypeDescriptor Query를 사용합니다.
 
-별도 저장소의 **kcf_tools v0.12** 최초 기능 반영은 GitHub main commit
-[`f4fb447`](https://github.com/Nyamkani/kcf_tools/commit/f4fb4471fc0b03b24663eb20eede8d8491fd87f6)입니다(현재 Tool HEAD를 뜻하지 않습니다). Network 관측에서는 공개 PeerDiscovery API로 Remote Host와
-Application·Element·T/P/S/A metadata, ONLINE/LOST, version·compatibility·capability를 표시합니다.
-Host 계층 Graph와 필터·읽기 전용 Remote Detail을 제공하며, 수동 Refresh는 background worker의 snapshot을 사용합니다.
-Remote Action metadata 표시는 Goal/Cancel 조작 UI와 다릅니다. Tool은 Gateway나 payload broker가 아닙니다.
+- Multi-Host 선택: Local/Remote Host와 정확한 Endpoint를 선택하며, 동일 이름도 Host/Boot/Runtime/등록 ID/Session으로 구분합니다.
+- Parameter: Get → 편집 → Set → Readback. Set 성공과 Readback 실패는 별도로 표시합니다.
+- Service: Request 편집 → Call → 실제 Response 확인.
+- Action: Goal/ACK, 최신 Feedback, Terminal Result, Cancel ACK 및 CANCELED Terminal을 구분합니다.
+- Remote Topic: 정확한 Publisher 선택 → Subscribe/Unsubscribe, 최신 Payload·Sequence·수신률 확인.
 
-**Historical — Tool v0.12 당시에는 외부 Gateway의 active route/statistics 및 proxy 판별이 미지원**이었습니다.
-당시 `ControlNode::GetTopicDiagnostics()`는 객체 내부 조회뿐이었고 외부 공개 관측 API가 없었습니다.
-Tool KCF+Qt 18/18, no-KCF 6/6 PASS 및 당시 Tool+Virtual LAN 미검증은 v0.12 이력입니다.
+Dynamic access는 TypeDescriptor와 canonical codec을 사용하며 Primitive Scalar / Fixed Array 범위입니다.
+Gateway의 REMOTE 노출 설정과 Descriptor/Get/Set/Service/Goal/Cancel별 독립 Allowlist가 필요합니다.
+Host ID 및 Allowlist는 암호학적 인증이 아닙니다. 기존 Action 자동 reattach와 변경 명령 자동 retry는 지원하지 않습니다.
+Tool은 Gateway나 Payload broker가 아니며 기존 Local 탐색·Topic Echo·Parameter 편집·Service Call도 유지합니다.
+Timer endpoint, 일반 Topic Publish, 사용자용 Reset/Launch manager는 제공 기능이 아닙니다.
+[Local 지원 범위](docs/04_INTROSPECTION_AND_TOOL.md)는 해당 구현 단계의 기록이며,
+현재 Remote UI 사용법은 Tool 저장소의 docs/REMOTE_CONTROL.md에 있습니다.
 
-현재 Framework v5.3은 `NetworkDiagnosticsClient`로 외부 Gateway route/counter 관측 경로를 제공합니다.
-별도 Tool 개발 작업에서는 이 API를 이용한 독립 Virtual LAN Observer·Qt offscreen E2E가 PASS했습니다.
-이는 Tool v0.13이 공개·배포됐다는 뜻이 아닙니다. 이름/type만으로 연결선을 추정하지 않으며
-Remote Set/Call/Goal/Cancel UI는 추가하지 않았습니다. Snapshot은 route와 `proxy_recovery`만 전달하며
-전체 proxy inventory를 제공하지 않습니다. 수동 Refresh와 Graph freshness 10초는 Tool 정책입니다.
+Diagnostics는 NetworkDiagnosticsClient로 Gateway route/counter를 조회합니다. 수동 Refresh와 Graph freshness
+10초는 Tool 정책이며, Tool 자체 수신 구독을 양쪽 Gateway에서 검증한 Route Edge로 추정하지 않습니다.
 Source Local Publish Hz, Network Send Hz, Proxy Publish Hz, Application Subscriber 처리율은 서로 다릅니다.
-[검증 출처·측정값·제한](docs/06_VERIFICATION_AND_LIMITATIONS.md#v53-network-diagnostics-검증)에서 구분합니다.
-실제 물리 LAN과 데스크톱 GUI 수동 검증은 미실행입니다.
+Tool Topic 수신률도 해당 subscription의 관측값이며 Application 처리율이 아닙니다.
+
+**Historical — 2026-10-21 사용자 수동 검증(Framework v5.3 / Tools v0.13):** Orange Pi 5+ ↔ Ubuntu VM Bridged LAN에서 Discovery/Metadata,
+Remote Topic 실제 수신(약 45.96 Hz), Parameter Get/Set/Readback, Service Call/Response,
+Action Goal/Feedback/SUCCEEDED 및 Cancel ACK/CANCELED를 확인했습니다.
+[장치·커밋·시험 설정·문제 이력](examples/network/LAN_TEST_GUIDE.md#physical-lan-2026-10-21)에 결과와
+미검증 복구 항목을 구분합니다. 이번 문서 작업에서 시험을 재실행한 결과가 아니며 전체 안정성 검증 완료를 뜻하지 않습니다.
+Multi-Host 선택 기능 지원과 실제 다중 Gateway 동시 제어의 물리 LAN 검증 완료도 구별합니다.
+
+**Historical — v0.12 관측 단계:** 최초 기능 반영은 GitHub main commit
+[`f4fb447`](https://github.com/Nyamkani/kcf_tools/commit/f4fb4471fc0b03b24663eb20eede8d8491fd87f6)입니다
+(현재 Tool HEAD를 뜻하지 않습니다). Remote Host/Application/Element/T/P/S/A metadata와
+ONLINE/LOST, compatibility, 읽기 전용 Detail/Host Graph를 제공했으며 Goal/Cancel UI나
+외부 Gateway active route/statistics·proxy 판별은 미지원이었습니다.
+Tool KCF+Qt 18/18, no-KCF 6/6 PASS와 당시 Tool+Virtual LAN 미검증은 이 단계의 기록입니다.
+
+**Historical — v5.3 Diagnostics-only 연동 단계:** 외부 Diagnostics API와 독립 Virtual LAN Observer·
+Qt offscreen E2E가 추가됐으나, 당시 Remote Set/Call/Goal/Cancel UI와 실제 물리 LAN/데스크톱 GUI
+수동 검증은 미실행이었습니다. 당시 기록은 현재 Remote Control 지원 범위와 구별합니다.
+[기존 검증 출처·측정값·제한](docs/06_VERIFICATION_AND_LIMITATIONS.md#v53-network-diagnostics-검증)은 보존합니다.
+현재 기능 설명으로 새 Tool tag/Release 또는 배포 버전을 선언하지 않습니다.
 
 ## 호환성과 주요 제한 사항
 
 - **Topic SHM Format 4 / Parameter Format 3**. 이전 Topic Format 3과 바이너리 비호환이므로 Publisher/Subscriber 및 Tool을 호환 Core로 재빌드해야 합니다. 이전 SHM은 자동 삭제·변환하지 않습니다.
 - Local IPC는 같은 Linux 호스트와 호환 Payload ABI가 필요합니다. Payload는 fixed-size trivially-copyable이며 pointer/heap ownership을 포함하지 않습니다. Network는 별도 type/schema/encoding 검증과 명시적 노출 설정을 사용합니다.
-- Remote Topic은 유실 없는 Queue 복제가 아닌 best-effort 최신값 전달입니다. 자동 retry·Action re-attach·범용 schema 교환·인증/암호화는 미지원이며 실제 물리 LAN/이기종 장치 검증은 남아 있습니다.
+- Remote Topic은 유실 없는 Queue 복제가 아닌 best-effort 최신값 전달입니다. 기존 Action reattach·변경 명령 자동 retry·인증/암호화는 미지원입니다. Remote TypeDescriptor Query는 Primitive Scalar / Fixed Array 범위이며 임의의 동적 타입을 지원하지 않습니다.
+- 물리 LAN 1차 기능 검증과 별개로 Gateway 단독 재시작, Tools 단독 재시작, 일시적 LAN 장애 후 자동 복구 및 다중 Gateway 동시 제어 안정성은 추가 검증이 필요합니다.
 - Topic은 단일 Publisher/쓰기 thread입니다. Dead-reader pin을 자동 회수하지 않으며 Slot 부족은 `-EAGAIN`입니다. KEEP_LAST는 유실 없는 전달 보장이 아닙니다.
 - SHM 재생성 후 명시적 재연결이 필요합니다. DynamicTopicReader는 교체를 `-ESTALE`로 알립니다.
 - 무한 block된 Setup/Loop의 cleanup, hard real-time, Device watchdog/hardware safety는 보장하지 않습니다. Software SAFE는 장치 안전 기능을 대체하지 않습니다.
@@ -176,10 +198,17 @@ Source Local Publish Hz, Network Send Hz, Proxy Publish Hz, Application Subscrib
 
 공개 문서는 `docs/`에 포함됩니다. `docs/instructions/`만 Git ignore된 로컬 개발 지침 디렉터리입니다.
 
+현재 Remote 기능과 향후 배포 자동화는 별개입니다.
+[Deployment Policy](docs/10_NETWORK_DEPLOYMENT_POLICY.md)의 영구 Host ID provisioning,
+network.conf 로더, systemd Gateway 및 Debian 패키징은 미구현 설계안입니다.
+
 ## Version / Changelog
 
-현재 dev working tree 기준은 **Framework v5.3.0 — Read-only Network Diagnostics**입니다.
-CMake project version과 Network `FrameworkVersion` 기본값은 모두 `5.3.0`입니다.
+현재 Framework 기준 버전은 **v5.4.0**입니다. v5.3의 Read-only Network Diagnostics 도입 이후
+Remote Control Client·TypeDescriptor Query·Generic Remote Topic Client 연동이 추가됐습니다.
+CMake project version과 Network `FrameworkVersion` 기본값은 모두 `5.4.0`입니다.
+v5.4는 Generic Remote Control LAN Validation / Network Deployment Policy를 정리합니다.
+물리 LAN 기록은 v5.3/Tool v0.13 당시 결과이며 v5.4/Tool v0.14로 재실행한 결과가 아닙니다.
 공개·배포 상태나 새로운 tag/Release를 선언하지 않습니다. 아래 v5.2 SHA는 과거 이력입니다.
 KCF v5.2의 5.2.0 version-alignment commit은 [`d41fc2fc71d3b60b0475035ec56ac32b92ffb849`](https://github.com/Nyamkani/kss_control_framework/commit/d41fc2fc71d3b60b0475035ec56ac32b92ffb849)입니다.
 Network 기능은 [`0a3f2a6`](https://github.com/Nyamkani/kss_control_framework/commit/0a3f2a630cec209793f9ac6e99107752e9e01283)에 최초 반영되었으며,
@@ -192,7 +221,7 @@ v5.3의 외부 Diagnostics API 추가는 [v5.3 이력](Changelog.md#v53--read-on
 후속 version/document alignment는 `d41fc2f`로 dev에 반영되었습니다.
 당시 **CMake project version과 Network `FrameworkVersion` 기본값을 `5.2.0`으로 일치**시켰으며, F-ND5A에서 `5.3.0`으로 갱신했습니다.
 `NETWORK_PROTOCOL`은 Framework 버전 차이를 허용하고 Network major 및 capability 조건을 따릅니다.
-`EXACT_FRAMEWORK_VERSION`은 비교 대상 Framework 버전까지 정확히 일치해야 하므로 기본 profile은 `5.3.0`을 요구합니다. v5.2↔v5.3은 EXACT 정책에서 불일치하며, 기본 NETWORK_PROTOCOL 정책은 Network major와 capability 조건을 따릅니다.
+`EXACT_FRAMEWORK_VERSION`은 비교 대상 Framework 버전까지 정확히 일치해야 하므로 기본 profile은 `5.4.0`을 요구합니다. v5.3↔v5.4는 EXACT 정책에서 불일치하며, 기본 NETWORK_PROTOCOL 정책은 Network major와 capability 조건을 따릅니다.
 NetworkProtocolVersion 1.0, Discovery v2, Control TCP v1, Topic wire v1 및 기존 storage format은 변경하지 않았습니다.
 과거 구현 검증과 당시 버전 보정의 실행 결과는 [검증 기록](docs/06_VERIFICATION_AND_LIMITATIONS.md)에서 구분합니다.
 Git tag/GitHub Release 생성 여부는 이번에 확인하지 않았으므로 공개 commit과 동일시하지 않습니다.

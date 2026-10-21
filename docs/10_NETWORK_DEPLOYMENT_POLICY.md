@@ -1,6 +1,9 @@
 # KCF Network Deployment Policy v1.0
 
-대상: KCF Framework v5.3, dev working tree. 정책 작성일: 2026-10-21.
+대상: KCF Framework v5.4, dev working tree. 정책 작성일: 2026-10-21.
+
+최초 작성 및 아래 구현 대조·현장 보고의 기준은 v5.3이다. 이번 변경은 정책 대상 버전을
+v5.4로 정합화하며 당시 검토·검증 결과를 v5.4 재실행 결과로 바꾸지 않는다.
 
 이 문서는 다중 장치 운영과 향후 Debian 패키징의 기준이다. **배포 정책 v1.0은 Network wire/protocol 버전이 아니다.**
 현재 구현과 제안 정책을 구분하며, 아래 기본값이나 파일 경로를 이번 문서 작업에서 자동 적용하지 않는다.

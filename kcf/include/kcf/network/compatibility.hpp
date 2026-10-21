@@ -8,7 +8,7 @@ namespace kcf::network
 // and the existing endpoint/control-model schema (PROTOCOL_VERSION).
 struct FrameworkVersion
 {
-    std::uint16_t major{5}, minor{3}, patch{0};
+    std::uint16_t major{5}, minor{4}, patch{0};
 };
 inline bool operator==(const FrameworkVersion& a, const FrameworkVersion& b)
 {

@@ -41,7 +41,8 @@ Tools main `e332438`(v0.13)로 수행한 사용자 수동 기록이다. v5.4/Too
   Topic Data Plane, Proxy Recovery, RemoteControlClient, RemoteTopicClient.
 - 이번 1회 실행에서는 실패·재실행 없음. 과거 간헐적 실패가 해소됐다는 의미는 아님.
 - 물리 LAN 및 KCF Tools v0.14 연동 재검증: 미실행.
-- 기존 v5.3 이하 검증 이력은 보존하며 Commit/Push/Tag/Release는 생성하지 않음.
+- v5.4 버전 정합화 검증 당시에는 Commit/Push를 수행하지 않았으며, 이후 해당 변경 사항을 
+  dev 브랜치에 반영했다. 기존 v5.3 이하 검증 이력은 보존한다.
 
 ## v5.3 — Read-only Network Diagnostics
 

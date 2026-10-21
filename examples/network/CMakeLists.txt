@@ -59,3 +59,7 @@ target_compile_options(kcf_remote_control_client_test PRIVATE -UNDEBUG -Wall -We
 add_executable(kcf_remote_topic_client_test src/remote_topic_client_test.cpp)
 target_link_libraries(kcf_remote_topic_client_test PRIVATE kcf_core ${CMAKE_DL_LIBS})
 target_compile_options(kcf_remote_topic_client_test PRIVATE -UNDEBUG -Wall -Wextra -Wpedantic)
+
+add_executable(kcf_lan_recovery src/lan_recovery_main.cpp)
+target_link_libraries(kcf_lan_recovery PRIVATE kcf_core)
+target_compile_options(kcf_lan_recovery PRIVATE -Wall -Wextra -Wpedantic)

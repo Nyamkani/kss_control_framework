@@ -370,7 +370,7 @@ Local 회귀 로그는 `build/discovery-local-validation/`, 추가 Queue/Timer �
 
 ### Version과 capability
 
-- `FrameworkVersion`: major/minor/patch, 현재 기본 5.3.0 (최초 구현 당시 5.1.0, v5.2 정합성 보정 당시 5.2.0). 진단 및 제품 운용의 exact-version 정책용입니다.
+- `FrameworkVersion`: major/minor/patch, 현재 기본 5.4.0 (최초 구현 당시 5.1.0, v5.2 정합성 보정 당시 5.2.0). 진단 및 제품 운용의 exact-version 정책용입니다.
 - `NetworkProtocolVersion`: major/minor, 기본 1.0. 미래 Remote IPC wire 호환 계약의 버전입니다.
 - Discovery envelope version은 별도 2이며, 기존 endpoint/Control 모델의 `PROTOCOL_VERSION=1`은 그 모델 schema입니다.
   Framework/Network 버전을 이 단일 schema 필드에 넣지 않습니다. 기존 모델 validation 계약도 유지합니다.

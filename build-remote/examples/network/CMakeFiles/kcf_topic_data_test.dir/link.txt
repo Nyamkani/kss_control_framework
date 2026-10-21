@@ -1,0 +1,1 @@
+/usr/bin/c++ -g CMakeFiles/kcf_topic_data_test.dir/src/topic_data_test.cpp.o -o kcf_topic_data_test  ../../kcf/libkcf_core.a -ldl 

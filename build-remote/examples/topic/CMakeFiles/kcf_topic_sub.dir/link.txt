@@ -1,0 +1,1 @@
+/usr/bin/c++ -g CMakeFiles/kcf_topic_sub.dir/src/subscriber_main.cpp.o -o kcf_topic_sub  ../../kcf/libkcf_core.a -lrt 

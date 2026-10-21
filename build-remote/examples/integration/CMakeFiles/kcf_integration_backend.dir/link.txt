@@ -1,0 +1,1 @@
+/usr/bin/c++ -g CMakeFiles/kcf_integration_backend.dir/src/backend_main.cpp.o CMakeFiles/kcf_integration_backend.dir/src/integration_element.cpp.o -o kcf_integration_backend  ../../kcf/libkcf_core.a -lrt 

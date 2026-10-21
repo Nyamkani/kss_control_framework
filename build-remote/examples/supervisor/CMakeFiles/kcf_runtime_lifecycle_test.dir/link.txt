@@ -1,0 +1,1 @@
+/usr/bin/c++ -g CMakeFiles/kcf_runtime_lifecycle_test.dir/src/runtime_lifecycle_test.cpp.o -o kcf_runtime_lifecycle_test  ../../kcf/libkcf_core.a 

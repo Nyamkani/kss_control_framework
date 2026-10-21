@@ -1,0 +1,1 @@
+/usr/bin/c++ -g CMakeFiles/kcf_type_descriptor_test.dir/src/type_descriptor_test.cpp.o CMakeFiles/kcf_type_descriptor_test.dir/__/__/bringup/src/bringup.cpp.o -o kcf_type_descriptor_test  ../../kcf/libkcf_core.a 

@@ -1,0 +1,1 @@
+/usr/bin/c++ -g -Wl,--wrap=fstat CMakeFiles/kcf_shm_incarnation_test.dir/src/shm_incarnation_test.cpp.o -o kcf_shm_incarnation_test  ../../kcf/libkcf_core.a 

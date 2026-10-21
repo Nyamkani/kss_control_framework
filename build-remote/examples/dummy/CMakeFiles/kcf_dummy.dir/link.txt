@@ -1,0 +1,1 @@
+/usr/bin/c++ -g CMakeFiles/kcf_dummy.dir/src/main.cpp.o CMakeFiles/kcf_dummy.dir/src/dummy_element.cpp.o -o kcf_dummy  ../../kcf/libkcf_core.a 

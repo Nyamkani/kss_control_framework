@@ -172,6 +172,7 @@ Source Local Publish Hz, Network Send Hz, Proxy Publish Hz, Application Subscrib
 - [설계 결정 기록](docs/07_DESIGN_DECISION_LOG.md)
 - [Network IPC 공통 계약](docs/08_NETWORK_ARCHITECTURE.md) — Discovery·compatibility·Control·Remote IPC·proxy recovery
 - [Virtual 2-Host LAN 검증](docs/09_VIRTUAL_LAN_TEST.md) — 격리된 통합 시험과 장애·재시작 검증
+- [Network Deployment Policy v1.0](docs/10_NETWORK_DEPLOYMENT_POLICY.md) — 다중 장치·포트·Identity 운영 및 향후 Debian 패키징 정책
 
 공개 문서는 `docs/`에 포함됩니다. `docs/instructions/`만 Git ignore된 로컬 개발 지침 디렉터리입니다.
 

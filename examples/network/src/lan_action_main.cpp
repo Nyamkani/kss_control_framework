@@ -55,7 +55,7 @@ int Number(const char* text, int maximum) {
 }
 void Usage() {
     std::cout << "Usage:\n"
-        "  kcf_lan_action owner HOST_HEX LOCAL_IPV4 DISCOVERY_PORT CONTROL_PORT\n"
+        "  kcf_lan_action owner HOST_HEX LOCAL_IPV4 DISCOVERY_PORT CONTROL_PORT [TOOL_HOST_HEX]\n"
         "  kcf_lan_action client HOST_HEX LOCAL_IPV4 DISCOVERY_PORT CONTROL_PORT REMOTE_HOST_HEX goal|cancel [COUNT]\n"
         "HOST_HEX: nonzero 128-bit hex ID (optional UUID hyphens); unique per host.\n"
         "COUNT: 1..1000000, default 7; success result is COUNT*2, cancel result -1.\n"
@@ -253,7 +253,7 @@ int main(int argc, char** argv) {
     try {
         if (argc<6) throw std::invalid_argument("missing arguments");
         std::string mode=argv[1]; owner=mode=="owner";
-        if ((owner && argc!=6) || (!owner && (mode!="client" || (argc!=8 && argc!=9))))
+        if ((owner && argc!=6 && argc!=7) || (!owner && (mode!="client" || (argc!=8 && argc!=9))))
             throw std::invalid_argument("invalid mode/argument count");
         if (!Id(argv[2], config.discovery.host)) throw std::invalid_argument("invalid Host ID");
         in_addr ip{};
@@ -263,6 +263,13 @@ int main(int argc, char** argv) {
         config.discovery.port=Number(argv[4],65535);
         config.discovery.metadata_port=Number(argv[5],65535);
         if (config.discovery.port==config.discovery.metadata_port) throw std::invalid_argument("discovery/control ports must differ");
+        if (owner && argc==7) {
+            n::HostIdentity tool;
+            if (!Id(argv[6],tool)) throw std::invalid_argument("invalid Tool Host ID");
+            config.descriptor_query_clients={tool};
+            config.action_goal_clients={tool};
+            config.action_cancel_clients={tool};
+        }
         if (!owner) {
             if (!Id(argv[6],remote) || remote==config.discovery.host) throw std::invalid_argument("invalid/self remote Host ID");
             std::string op=argv[7];

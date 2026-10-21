@@ -1,0 +1,1 @@
+/usr/bin/c++ -g CMakeFiles/kcf_virtual_host_fixture.dir/__/__/tests/network_virtual/host_fixture.cpp.o -o kcf_virtual_host_fixture  ../../kcf/libkcf_core.a 

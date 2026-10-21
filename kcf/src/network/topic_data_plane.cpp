@@ -7,6 +7,9 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstdarg>
 #include <mutex>
 #include <optional>
 #include <thread>
@@ -31,7 +34,7 @@ struct RemoteTopicSubscription::State {
 RemoteTopicSnapshot RemoteTopicSubscription::Snapshot() const {std::lock_guard<std::mutex> lock(state_->mutex);return state_->snapshot;}
 struct TopicDataPlane::Impl {
     struct Proxy {TopicProxyInfo info;TypeDescriptor descriptor;std::unique_ptr<detail::TopicProxy> writer;};
-    struct Incoming {std::shared_ptr<RemoteTopicSubscription::State> subscription;TopicPacket packet;LocalEndpoint consumer;std::size_t proxy;Clock::time_point interest{};TopicRouteInfo stats;std::optional<TopicPacket> latest;};
+    struct Incoming {std::shared_ptr<RemoteTopicSubscription::State> subscription;TopicPacket packet;LocalEndpoint consumer;std::size_t proxy;Clock::time_point interest{};std::uint64_t trace_sends{0};int trace_result{0};const char* trace_stage{"not-called"};TopicRouteInfo stats;std::optional<TopicPacket> latest;};
     struct Outgoing {TopicPacket packet;LocalEndpoint publisher;std::unique_ptr<DynamicTopicReader> reader;Clock::time_point expires,next{};std::string address;std::uint16_t port{0};TopicRouteInfo stats;};
     TopicConfig config;DiscoveryConfig discovery_config;MetadataConfig metadata;RemoteRuntimeIdentity self;PeerDiscovery* discovery{nullptr};
     int fd{-1},wake{-1};std::atomic<bool> running{false},ready{false};std::atomic<int> error{0};std::thread worker;
@@ -39,6 +42,7 @@ struct TopicDataPlane::Impl {
     mutable std::mutex local_mutex,stats_mutex,subscription_mutex;
     std::vector<std::shared_ptr<RemoteTopicSubscription::State>> subscriptions;
     std::uint16_t bound_port{0};
+    bool trace{false};Clock::time_point trace_next{};
     std::shared_ptr<const std::vector<LocalEndpoint>> local=std::make_shared<const std::vector<LocalEndpoint>>();
     TopicDiagnostics published;std::vector<Proxy> proxies;std::vector<Incoming> incoming;std::vector<Outgoing> outgoing;
     std::vector<TopicRouteInfo> history,notices;std::uint64_t malformed{0},stale{0},resource_drops{0},socket_errors{0};
@@ -52,6 +56,34 @@ struct TopicDataPlane::Impl {
         return result;
     }
     bool Gate(const PeerInfo& peer,const NetworkEndpointMetadata& local,const RemoteEndpointIdentity& remote){return PeerGate(peer).Compatible()&&CheckRouteCompatibility(discovery_config,peer,local,remote).Compatible();}
+    // Temporary opt-in diagnostics. No changes to routing decisions or deadlines.
+    void Trace(const char* format,...) const noexcept {
+        if(!trace)return;
+        const int saved=errno;
+        std::fprintf(stderr,"[KCF_TOPIC_TRACE pid=%d fd=%d] ",int(getpid()),fd);
+        va_list args;va_start(args,format);std::vfprintf(stderr,format,args);va_end(args);
+        std::fputc('\n',stderr);errno=saved;
+    }
+    void TraceRoute(const Incoming& r,const PeerInfo* peer) {
+        const auto pg=peer?PeerGate(*peer):CompatibilityResult{};
+        const auto rg=peer?CheckRouteCompatibility(discovery_config,*peer,r.consumer.metadata,r.packet.source):CompatibilityResult{};
+        Trace("route=%llu topic=%s consumer=%llu publisher=%llu peer_present=%d online=%d metadata_ready=%d peer_gate=%s route_gate=%s expected_session=%llu peer_session=%llu target=%s:%u due=%d Send_calls=%llu last_stage=%s last_result=%d",
+            (unsigned long long)r.packet.route_id,r.packet.name.c_str(),
+            (unsigned long long)r.packet.destination.registration_id,(unsigned long long)r.packet.source.registration_id,
+            bool(peer),peer&&peer->state==PeerState::ONLINE,peer&&peer->metadata_ready,
+            peer?CompatibilityReasonName(pg.reason):"NO_PEER",peer?CompatibilityReasonName(rg.reason):"NO_PEER",
+            (unsigned long long)r.packet.source_session,(unsigned long long)(peer?peer->session_id:0),
+            peer?peer->address.c_str():"unknown",unsigned(config.port),Clock::now()>=r.interest,
+            (unsigned long long)r.trace_sends,r.trace_stage,r.trace_result);
+    }
+    // Called with subscription_mutex held. One summary batch per second per worker.
+    void TraceLoop(const std::vector<PeerInfo>& peers) {
+        if(!trace||Clock::now()<trace_next)return;
+        trace_next=Clock::now()+1s;
+        Trace("worker=loop running=%d ready=%d session=%llu error=%d subscriptions=%zu incoming=%zu peers=%zu receive_port=%u",
+            running.load(),ready.load(),(unsigned long long)session,error.load(),subscriptions.size(),incoming.size(),peers.size(),unsigned(bound_port));
+        for(const auto& r:incoming)TraceRoute(r,Peer(peers,r.packet.source.runtime.host));
+    }
     const LocalEndpoint* Find(const std::vector<LocalEndpoint>& entries,const RemoteEndpointIdentity& id){for(const auto& e:entries)if(e.metadata.identity==id)return &e;return nullptr;}
     void Archive(TopicRouteInfo info){info.state=TopicRouteState::CLOSED;if(history.size()==64)history.erase(history.begin());history.push_back(std::move(info));}
     void Notice(const NetworkEndpointMetadata& source,int code,CompatibilityReason reason=CompatibilityReason::COMPATIBLE,TopicRouteState state=TopicRouteState::REJECTED){if(notices.size()>=64)return;TopicRouteInfo n;n.source=source.identity;n.name=source.name;n.error=code;n.reason=reason;n.state=state;notices.push_back(std::move(n));}
@@ -117,9 +149,9 @@ struct TopicDataPlane::Impl {
             else if(Clock::now()>=r.expires)r.stats.state=TopicRouteState::CLOSED;
         }
     }
-    int Send(const TopicPacket& packet,const std::string& ip,std::uint16_t port=0){std::vector<std::uint8_t> bytes;int code=EncodeTopicPacket(packet,bytes);if(code)return code;
-        sockaddr_in address{};address.sin_family=AF_INET;address.sin_port=htons(port?port:config.port);if(inet_pton(AF_INET,ip.c_str(),&address.sin_addr)!=1)return -EINVAL;
-        auto count=sendto(fd,bytes.data(),bytes.size(),MSG_DONTWAIT|MSG_NOSIGNAL,reinterpret_cast<sockaddr*>(&address),sizeof(address));return count==static_cast<ssize_t>(bytes.size())?0:(count<0?-errno:-EIO);
+    int Send(const TopicPacket& packet,const std::string& ip,std::uint16_t port=0,const char** stage=nullptr){if(stage)*stage="encode";std::vector<std::uint8_t> bytes;int code=EncodeTopicPacket(packet,bytes);if(code)return code;
+        if(stage)*stage="address";sockaddr_in address{};address.sin_family=AF_INET;address.sin_port=htons(port?port:config.port);if(inet_pton(AF_INET,ip.c_str(),&address.sin_addr)!=1)return -EINVAL;
+        if(stage)*stage="sendto";auto count=sendto(fd,bytes.data(),bytes.size(),MSG_DONTWAIT|MSG_NOSIGNAL,reinterpret_cast<sockaddr*>(&address),sizeof(address));return count==static_cast<ssize_t>(bytes.size())?0:(count<0?-errno:-EIO);
     }
     void Interest(const TopicPacket& packet,const PeerInfo& peer,const std::vector<LocalEndpoint>& entries,std::uint16_t port){
         if(config.receive_only)return;
@@ -184,7 +216,7 @@ struct TopicDataPlane::Impl {
         const auto now=Clock::now();
         for(auto& r:incoming)if(now>=r.interest){
             const auto* peer=Peer(peers,r.packet.source.runtime.host);if(peer&&Gate(*peer,r.consumer.metadata,r.packet.source)){
-                auto packet=r.packet;packet.sequence=packet.sample_sequence=0;packet.payload.clear();int code=Send(packet,peer->address);if(code)r.stats.error=code;
+                auto packet=r.packet;packet.sequence=packet.sample_sequence=0;packet.payload.clear();int code=Send(packet,peer->address,0,trace?&r.trace_stage:nullptr);if(trace){++r.trace_sends;r.trace_result=code;}if(code)r.stats.error=code;
             }
             r.interest=now+200ms;
         }
@@ -226,25 +258,31 @@ struct TopicDataPlane::Impl {
             else if(!peer||peer->state==PeerState::LOST){code=-ENOTCONN;status=RemoteTopicState::LOST;}
             else if(peer->session_id!=state->snapshot.route.source_session||peer->boot_id!=state->source.identity.runtime.boot_id)code=-ESTALE;
             else if(peer->metadata_ready&&!Gate(*peer,state->consumer,state->source.identity)){code=-ESTALE;if(peer->metadata_ready){for(const auto& endpoint:peer->endpoints)if(endpoint.identity==state->source.identity&&!(endpoint.value_type==state->source.value_type)){code=-EPROTOTYPE;status=RemoteTopicState::ERROR;}}}
-            if(code)CloseSubscription(state,status,code);
+            if(code){
+                if(trace){Trace("subscription=closing route=%llu state=%d error=%d local_session=%llu discovery_session=%llu",
+                    (unsigned long long)state->snapshot.route.route_id,int(status),code,
+                    (unsigned long long)state->local_session,(unsigned long long)discovery->GetSessionId());
+                    for(const auto& r:incoming)if(r.subscription==state)TraceRoute(r,peer);}
+                CloseSubscription(state,status,code);
+            }
         }
     }
-    void Run() noexcept {try{
+    void Run() noexcept {Trace("worker=start receive_port=%u target_port=%u",unsigned(bound_port),unsigned(config.port));try{
         auto next=Clock::time_point{};std::vector<PeerInfo> peers;std::shared_ptr<const std::vector<LocalEndpoint>> entries;
         while(running){
-            if(!ready){std::this_thread::sleep_for(2ms);continue;}
-            if(!session){session=discovery->GetSessionId();if(!session){std::this_thread::sleep_for(2ms);continue;}}
+            if(!ready){if(trace){std::lock_guard<std::mutex> lock(subscription_mutex);TraceLoop(peers);}std::this_thread::sleep_for(2ms);continue;}
+            if(!session){session=discovery->GetSessionId();if(!session){if(trace){std::lock_guard<std::mutex> lock(subscription_mutex);TraceLoop(peers);}std::this_thread::sleep_for(2ms);continue;}}
             {std::lock_guard<std::mutex> subscriptions_lock(subscription_mutex);
             if(Clock::now()>=next){peers=discovery->GetPeers();{std::lock_guard<std::mutex> lock(local_mutex);entries=local;}CheckSubscriptions(peers);Refresh(peers,*entries);Export();next=Clock::now()+20ms;}
-            Receive(peers,*entries);Deliver();Transmit(peers);if(error)break;}
-            pollfd fds[2]{{fd,POLLIN,0},{wake,POLLIN,0}};int code=poll(fds,2,2);if(code<0&&errno!=EINTR){error=-errno;break;}if(fds[1].revents)break;
+            Receive(peers,*entries);Deliver();Transmit(peers);TraceLoop(peers);if(error)break;}
+            pollfd fds[2]{{fd,POLLIN,0},{wake,POLLIN,0}};int code=poll(fds,2,2);if(code<0&&errno!=EINTR){error=-errno;break;}if(fds[1].revents){Trace("worker=wake revents=%d",int(fds[1].revents));break;}
         }
         std::lock_guard<std::mutex> subscriptions_lock(subscription_mutex);
         for(const auto& state:subscriptions)CloseSubscription(state,error?RemoteTopicState::ERROR:RemoteTopicState::CLOSED,error?error.load():-ECANCELED);subscriptions.clear();
         for(const auto& r:incoming)Archive(r.stats);
         for(const auto& r:outgoing)Archive(r.stats);
         incoming.clear();outgoing.clear();Export();
-    }catch(...){error=-EFAULT;try{std::lock_guard<std::mutex> lock(subscription_mutex);for(const auto& state:subscriptions)CloseSubscription(state,RemoteTopicState::ERROR,-EFAULT);subscriptions.clear();incoming.clear();outgoing.clear();Export();}catch(...){} }running=false;}
+    }catch(...){error=-EFAULT;try{std::lock_guard<std::mutex> lock(subscription_mutex);for(const auto& state:subscriptions)CloseSubscription(state,RemoteTopicState::ERROR,-EFAULT);subscriptions.clear();incoming.clear();outgoing.clear();Export();}catch(...){} }Trace("worker=exit running=%d error=%d",running.load(),error.load());running=false;}
 };
 TopicDataPlane::TopicDataPlane():impl_(std::make_unique<Impl>()){}TopicDataPlane::~TopicDataPlane(){Stop();}
 int TopicDataPlane::Start(const TopicConfig& config,const DiscoveryConfig& dc,const MetadataConfig& mc,const RemoteRuntimeIdentity& self,PeerDiscovery& discovery){
@@ -260,6 +298,8 @@ int TopicDataPlane::Start(const TopicConfig& config,const DiscoveryConfig& dc,co
     for(std::size_t i=0;i<config.local_types.size();++i)for(std::size_t j=0;j<i;++j)if(config.local_types[i].name==config.local_types[j].name)return -EINVAL;
     if(!s.proxies.empty()&&(!(s.self==self)||s.proxies.size()>config.max_proxies))return -EINVAL;
     s.ready=false;
+    const char* trace_env=std::getenv("KCF_TOPIC_TRACE");
+    s.trace=config.receive_only&&trace_env&&trace_env[0]=='1'&&trace_env[1]=='\0';s.trace_next={};
     {std::lock_guard<std::mutex> lock(s.local_mutex);s.local=std::make_shared<const std::vector<LocalEndpoint>>();}
     s.config=config;s.discovery_config=dc;s.metadata=mc;s.self=self;s.discovery=&discovery;s.session=config.receive_only?discovery.GetSessionId():0;s.error=0;s.malformed=s.stale=s.resource_drops=s.socket_errors=0;s.history.clear();s.notices.clear();
     s.fd=socket(AF_INET,SOCK_DGRAM|SOCK_NONBLOCK|SOCK_CLOEXEC,0);if(s.fd<0)return -errno;
@@ -301,7 +341,8 @@ int TopicDataPlane::Subscribe(const NetworkEndpointMetadata& source,std::uint64_
     state->snapshot.route=route.stats;
     s.subscriptions.reserve(s.subscriptions.size()+1);s.incoming.reserve(s.incoming.size()+1);
     code=s.discovery->RegisterConsumer(s.session,state->consumer);if(code)return code;
-    s.subscriptions.push_back(state);s.incoming.push_back(std::move(route));output=std::move(handle);return 0;
+    s.subscriptions.push_back(state);s.incoming.push_back(std::move(route));output=std::move(handle);
+    s.Trace("subscription=registered route=%llu subscriptions=%zu incoming=%zu",(unsigned long long)id,s.subscriptions.size(),s.incoming.size());return 0;
 }
 int TopicDataPlane::Unsubscribe(const std::shared_ptr<RemoteTopicSubscription>& handle){
     if(!handle)return -EINVAL;auto& s=*impl_;std::lock_guard<std::mutex> lock(s.subscription_mutex);

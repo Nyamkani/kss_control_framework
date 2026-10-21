@@ -1,0 +1,1 @@
+/usr/bin/c++ -g CMakeFiles/kcf_parameter_recovery_test.dir/src/parameter_recovery_main.cpp.o -o kcf_parameter_recovery_test  ../../kcf/libkcf_core.a -lrt 

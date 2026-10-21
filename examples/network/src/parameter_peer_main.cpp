@@ -21,8 +21,8 @@ bool Id(const std::string& text,n::HostIdentity& id) {
     return n::Valid(id);
 }
 int main(int argc,char** argv) {
-    if(argc!=6&&argc!=8){std::cerr<<"Usage: kcf_parameter_peer HOST_HEX IPV4 DISCOVERY_PORT owner NAME\n"
-        <<"   or: kcf_parameter_peer HOST_HEX IPV4 DISCOVERY_PORT client NAME REMOTE_HOST_HEX NEW_COUNT\nService: replace owner/client with service-owner/service-client (count is request).\n";return 2;}
+    if(argc!=6&&argc!=7&&argc!=8){std::cerr<<"Usage: kcf_parameter_peer HOST_HEX IPV4 DISCOVERY_PORT owner NAME [TOOL_HOST_HEX]\n"
+        <<"   or: kcf_parameter_peer HOST_HEX IPV4 DISCOVERY_PORT client NAME REMOTE_HOST_HEX NEW_COUNT\nService: replace owner/client with service-owner/service-client (count is request; TOOL_HOST_HEX is optional for service-owner).\n";return 2;}
     n::ControlConfig config;std::string boot;std::ifstream("/proc/sys/kernel/random/boot_id")>>boot;
     if(!Id(argv[1],config.discovery.host)||!Id(boot,config.discovery.boot_id))return 2;
     config.discovery.interface_address=argv[2];config.metadata.runtime_pids={getpid()};
@@ -33,7 +33,16 @@ int main(int argc,char** argv) {
     const std::string mode=argv[4];
     const bool service=mode=="service-owner"||mode=="service-client";
     const bool owner=mode=="owner"||mode=="service-owner";
-    if((owner&&argc!=6)||(!owner&&((mode!="client"&&mode!="service-client")||argc!=8)))return 2;
+    if((owner&&argc!=6&&argc!=7)||(!owner&&((mode!="client"&&mode!="service-client")||argc!=8)))return 2;
+    if(owner&&argc==7){
+        n::HostIdentity tool;if(!Id(argv[6],tool))return 2;
+        config.descriptor_query_clients={tool};
+        if(service)config.service_call_clients={tool};
+        else{
+            config.parameter_get_clients={tool};
+            config.parameter_set_clients={tool};
+        }
+    }
     n::RemoteTarget target;target.scope=n::TargetScope::HOST;if(!owner&&!Id(argv[6],target.host))return 2;
     std::signal(SIGINT,Signal);std::signal(SIGTERM,Signal);
     kcf::Parameter<Value> parameter;kcf::ServiceServer server;

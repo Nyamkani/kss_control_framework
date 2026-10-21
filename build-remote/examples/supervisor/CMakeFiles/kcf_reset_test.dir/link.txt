@@ -1,0 +1,1 @@
+/usr/bin/c++ -g CMakeFiles/kcf_reset_test.dir/src/reset_test.cpp.o CMakeFiles/kcf_reset_test.dir/__/__/bringup/src/bringup.cpp.o -o kcf_reset_test  ../../kcf/libkcf_core.a 

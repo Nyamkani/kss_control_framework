@@ -1,0 +1,1 @@
+/usr/bin/c++ -g CMakeFiles/kcf_supervisor_runtime_test.dir/src/runtime_element_main.cpp.o -o kcf_supervisor_runtime_test  ../../kcf/libkcf_core.a 

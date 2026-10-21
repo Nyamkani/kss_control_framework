@@ -1,0 +1,1 @@
+/usr/bin/c++ -g -Wl,--wrap=flock CMakeFiles/kcf_incomplete_recovery_test.dir/src/incomplete_race_main.cpp.o -o kcf_incomplete_recovery_test  ../../kcf/libkcf_core.a -lrt 

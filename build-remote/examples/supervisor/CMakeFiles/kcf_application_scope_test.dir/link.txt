@@ -1,0 +1,1 @@
+/usr/bin/c++ -g CMakeFiles/kcf_application_scope_test.dir/src/application_scope_test.cpp.o CMakeFiles/kcf_application_scope_test.dir/__/__/bringup/src/bringup.cpp.o -o kcf_application_scope_test  ../../kcf/libkcf_core.a 

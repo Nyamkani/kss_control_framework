@@ -1,0 +1,1 @@
+/usr/bin/c++ -g CMakeFiles/kcf_control_parameter_test.dir/src/control_parameter_test.cpp.o -o kcf_control_parameter_test  ../../kcf/libkcf_core.a 

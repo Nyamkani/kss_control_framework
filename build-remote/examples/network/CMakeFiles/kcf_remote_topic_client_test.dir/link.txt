@@ -1,0 +1,1 @@
+/usr/bin/c++ -g CMakeFiles/kcf_remote_topic_client_test.dir/src/remote_topic_client_test.cpp.o -o kcf_remote_topic_client_test  ../../kcf/libkcf_core.a -ldl 

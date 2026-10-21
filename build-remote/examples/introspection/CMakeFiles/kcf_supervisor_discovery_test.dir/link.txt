@@ -1,1 +1,0 @@
-/usr/bin/c++ -g CMakeFiles/kcf_supervisor_discovery_test.dir/src/supervisor_discovery_test.cpp.o CMakeFiles/kcf_supervisor_discovery_test.dir/__/__/bringup/src/bringup.cpp.o -o kcf_supervisor_discovery_test  ../../kcf/libkcf_core.a 

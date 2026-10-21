@@ -1,1 +1,0 @@
-/usr/bin/c++ -g CMakeFiles/kcf_pubsub_subscriber.dir/src/subscriber_main.cpp.o -o kcf_pubsub_subscriber  ../../kcf/libkcf_core.a 

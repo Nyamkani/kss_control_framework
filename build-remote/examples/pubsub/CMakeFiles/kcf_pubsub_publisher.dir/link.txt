@@ -1,1 +1,0 @@
-/usr/bin/c++ -g CMakeFiles/kcf_pubsub_publisher.dir/src/publisher_main.cpp.o -o kcf_pubsub_publisher  ../../kcf/libkcf_core.a 

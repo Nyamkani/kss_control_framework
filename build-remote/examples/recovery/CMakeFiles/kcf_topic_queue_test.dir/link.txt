@@ -1,1 +1,0 @@
-/usr/bin/c++ -g -Wl,--wrap=memcpy -Wl,--wrap=pthread_cond_broadcast CMakeFiles/kcf_topic_queue_test.dir/src/topic_queue_test.cpp.o -o kcf_topic_queue_test  ../../kcf/libkcf_core.a -lrt 

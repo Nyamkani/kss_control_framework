@@ -1,1 +1,0 @@
-/usr/bin/c++ -g CMakeFiles/kcf_control_service_test.dir/src/control_service_test.cpp.o -o kcf_control_service_test  ../../kcf/libkcf_core.a 

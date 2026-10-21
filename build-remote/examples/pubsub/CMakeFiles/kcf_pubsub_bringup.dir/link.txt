@@ -1,1 +1,0 @@
-/usr/bin/c++ -g CMakeFiles/kcf_pubsub_bringup.dir/src/bringup_main.cpp.o CMakeFiles/kcf_pubsub_bringup.dir/__/__/bringup/src/bringup.cpp.o -o kcf_pubsub_bringup  ../../kcf/libkcf_core.a 

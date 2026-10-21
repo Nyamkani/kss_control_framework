@@ -1,1 +1,0 @@
-/usr/bin/c++ -g CMakeFiles/kcf_peer_discovery_test.dir/src/peer_discovery_test.cpp.o -o kcf_peer_discovery_test  ../../kcf/libkcf_core.a 

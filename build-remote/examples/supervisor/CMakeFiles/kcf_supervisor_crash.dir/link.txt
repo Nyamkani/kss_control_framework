@@ -1,1 +1,0 @@
-/usr/bin/c++ -g CMakeFiles/kcf_supervisor_crash.dir/src/crash_element_main.cpp.o -o kcf_supervisor_crash  ../../kcf/libkcf_core.a 

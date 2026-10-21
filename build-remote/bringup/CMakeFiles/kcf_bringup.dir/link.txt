@@ -1,1 +1,0 @@
-/usr/bin/c++ -g CMakeFiles/kcf_bringup.dir/src/main.cpp.o CMakeFiles/kcf_bringup.dir/src/bringup.cpp.o -o kcf_bringup  ../kcf/libkcf_core.a 

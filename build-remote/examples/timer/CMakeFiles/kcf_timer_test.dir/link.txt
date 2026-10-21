@@ -1,1 +1,0 @@
-/usr/bin/c++ -g CMakeFiles/kcf_timer_test.dir/src/timer_main.cpp.o -o kcf_timer_test  ../../kcf/libkcf_core.a -lrt 

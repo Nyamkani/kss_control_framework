@@ -1,1 +1,0 @@
-/usr/bin/c++ -g CMakeFiles/kcf_parameter_peer.dir/src/parameter_peer_main.cpp.o -o kcf_parameter_peer  ../../kcf/libkcf_core.a 

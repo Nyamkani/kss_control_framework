@@ -1,1 +1,0 @@
-/usr/bin/c++ -g CMakeFiles/kcf_network_compatibility_test.dir/src/network_compatibility_test.cpp.o -o kcf_network_compatibility_test  ../../kcf/libkcf_core.a 

@@ -1,1 +1,0 @@
-/usr/bin/c++ -g CMakeFiles/kcf_remote_control_client_test.dir/src/remote_control_client_test.cpp.o -o kcf_remote_control_client_test  ../../kcf/libkcf_core.a 

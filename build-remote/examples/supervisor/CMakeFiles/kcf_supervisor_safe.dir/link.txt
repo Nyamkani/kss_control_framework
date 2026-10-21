@@ -1,1 +1,0 @@
-/usr/bin/c++ -g CMakeFiles/kcf_supervisor_safe.dir/src/safe_element_main.cpp.o -o kcf_supervisor_safe  ../../kcf/libkcf_core.a -lrt 

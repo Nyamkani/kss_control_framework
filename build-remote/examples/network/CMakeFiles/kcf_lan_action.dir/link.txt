@@ -1,1 +1,0 @@
-/usr/bin/c++ -g CMakeFiles/kcf_lan_action.dir/src/lan_action_main.cpp.o -o kcf_lan_action  ../../kcf/libkcf_core.a 

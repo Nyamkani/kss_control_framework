@@ -1,1 +1,0 @@
-/usr/bin/c++ -g -Wl,--wrap=memcpy CMakeFiles/kcf_dynamic_access_test.dir/src/dynamic_access_test.cpp.o CMakeFiles/kcf_dynamic_access_test.dir/__/__/kcf/src/dynamic_access.cpp.o CMakeFiles/kcf_dynamic_access_test.dir/__/__/bringup/src/bringup.cpp.o -o kcf_dynamic_access_test  ../../kcf/libkcf_core.a 

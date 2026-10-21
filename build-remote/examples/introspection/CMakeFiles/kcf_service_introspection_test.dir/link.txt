@@ -1,1 +1,0 @@
-/usr/bin/c++ -g -Wl,--wrap=memcpy CMakeFiles/kcf_service_introspection_test.dir/src/service_introspection_test.cpp.o CMakeFiles/kcf_service_introspection_test.dir/__/__/kcf/src/introspection_client.cpp.o CMakeFiles/kcf_service_introspection_test.dir/__/__/bringup/src/bringup.cpp.o -o kcf_service_introspection_test  ../../kcf/libkcf_core.a 

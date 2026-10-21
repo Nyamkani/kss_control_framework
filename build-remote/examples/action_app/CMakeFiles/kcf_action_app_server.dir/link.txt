@@ -1,1 +1,0 @@
-/usr/bin/c++ -g CMakeFiles/kcf_action_app_server.dir/src/server_main.cpp.o -o kcf_action_server  ../../kcf/libkcf_core.a 

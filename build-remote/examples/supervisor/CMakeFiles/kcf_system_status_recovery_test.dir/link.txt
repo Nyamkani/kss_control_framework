@@ -1,1 +1,0 @@
-/usr/bin/c++ -g CMakeFiles/kcf_system_status_recovery_test.dir/src/system_status_recovery_test.cpp.o -o kcf_system_status_recovery_test  ../../kcf/libkcf_core.a 

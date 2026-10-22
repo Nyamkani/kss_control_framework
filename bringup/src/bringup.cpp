@@ -23,12 +23,42 @@ const char* StateName(bringup::ApplicationState state)
     case bringup::ApplicationState::ERROR: return "ERROR";
     case bringup::ApplicationState::RESETTING: return "RESETTING";
     case bringup::ApplicationState::SHUTTING_DOWN: return "SHUTTING_DOWN";
+    case bringup::ApplicationState::STOPPED: return "STOPPED";
     }
     return "UNKNOWN";
 }
 }
 namespace bringup
 {
+int Bringup::ValidateElements(const std::vector<ElementSpec>& elements,
+                              RegistrationError* error)
+{
+    if (error) *error = {};
+    const auto reject = [&](std::optional<std::size_t> index, const char* field,
+                            const char* reason) {
+        if (error)
+        {
+            error->element_index = index;
+            if (index) error->element_name = elements[*index].name;
+            error->field = field;
+            error->reason = reason;
+        }
+        return -EINVAL;
+    };
+    if (elements.empty()) return reject(std::nullopt, "elements", "empty");
+    for (std::size_t i = 0; i < elements.size(); ++i)
+    {
+        const auto& spec = elements[i];
+        if (spec.name.empty()) return reject(i, "name", "empty");
+        if (spec.executable.empty()) return reject(i, "executable", "empty");
+        if (!spec.startup_timeout_ms) return reject(i, "startup_timeout_ms", "zero");
+        if (!spec.health_timeout_ms) return reject(i, "health_timeout_ms", "zero");
+        if (!spec.shutdown_timeout_ms) return reject(i, "shutdown_timeout_ms", "zero");
+        for (std::size_t j = 0; j < i; ++j)
+            if (elements[j].name == spec.name) return reject(i, "name", "duplicate");
+    }
+    return 0;
+}
 int Bringup::Setup(const std::string& executable)
 {
     return Setup(std::vector<ElementSpec>{{"element1", executable, {}}});
@@ -42,14 +72,12 @@ int Bringup::Setup(const std::string& application_name, std::vector<ElementSpec>
     // Setup is only for the initial lifecycle; Reset is processed by Run.
     if (application_state_ != ApplicationState::INITIALIZING ||
         setup_ || sigint_installed_ || sigterm_installed_) return -EBUSY;
-    if (elements.empty()) return -EINVAL;
-    // Allocate and validate before starting any child.
+    const int validation = ValidateElements(elements);
+    if (validation) return validation;
+    // Validation finished before changing registration or acquiring resources.
     elements_.clear();
     for (auto& spec : elements)
     {
-        if (spec.name.empty() || spec.executable.empty() || !spec.startup_timeout_ms || !spec.health_timeout_ms || !spec.shutdown_timeout_ms) return -EINVAL;
-        for (const auto& entry : elements_)
-            if (entry->spec.name == spec.name) return -EINVAL;
         auto entry = std::make_unique<ManagedElement>();
         entry->spec = std::move(spec);
         elements_.push_back(std::move(entry));
@@ -90,21 +118,21 @@ int Bringup::Setup(const std::string& application_name, std::vector<ElementSpec>
     PublishIntrospection();
     int result = StartGeneration();
     if (!result) result = AwaitRunning();
-    if (result || stop_requested)
+    if (ShutdownRequested())
     {
-        exit_code_ = 1;
         Shutdown();
-        return result ? result : -ECANCELED;
+        return -ECANCELED;
     }
     setup_ = true;
-    SetApplicationState(ApplicationState::RUNNING);
+    SetApplicationState(result ? ApplicationState::ERROR : ApplicationState::RUNNING);
     return 0;
 }
 int Bringup::StartGeneration()
 {
+    ++generation_;
     for (auto& entry : elements_)
     {
-        if (stop_requested) return -ECANCELED;
+        if (ShutdownRequested()) return -ECANCELED;
         int result;
         try { result = entry->process.Start(entry->spec.executable, entry->spec.arguments, status_publisher_.Scope(), entry->spec.execution_profile); }
         catch (...) { result = -ENOMEM; }
@@ -130,7 +158,7 @@ int Bringup::AwaitRunning()
     for (;;)
     {
         const auto cycle = Clock::now();
-        if (stop_requested) return -ECANCELED;
+        if (ShutdownRequested()) return -ECANCELED;
         int failure = PollRuntimeStatuses();
         bool ready = true;
         for (auto& entry : elements_)
@@ -156,9 +184,9 @@ int Bringup::AwaitRunning()
             }
             else if (Clock::now() - entry->last_response_time >= std::chrono::milliseconds(entry->spec.health_timeout_ms))
             { error = -ETIMEDOUT; kind = kcf::ElementFailureKind::STATUS_TIMEOUT; }
-            if (error) { RecordFailure(*entry, kind, error); failure = error; }
+            if (error) { RecordFailure(*entry, kind, kind==kcf::ElementFailureKind::PROCESS_EXIT ? 0 : error); failure = error; }
         }
-        if (stop_requested) return -ECANCELED;
+        if (ShutdownRequested()) return -ECANCELED;
         if (failure)
         {
             std::cerr << "[Supervisor] startup barrier failed error=" << failure << std::endl;
@@ -169,8 +197,17 @@ int Bringup::AwaitRunning()
         std::this_thread::sleep_until(cycle + std::chrono::milliseconds(100));
     }
 }
+bool Bringup::ShutdownRequested() const
+{
+    return stop_requested || shutdown_requested_.load();
+}
+void Bringup::RequestShutdown()
+{
+    shutdown_requested_.store(true);
+}
 void Bringup::RequestReset()
 {
+    if (ShutdownRequested()) return;
     unsigned open = 1;
     reset_gate_.compare_exchange_strong(open, 2);
 }
@@ -178,7 +215,7 @@ void Bringup::ResetGeneration()
 {
     SetApplicationState(ApplicationState::RESETTING);
     int result = StopGeneration();
-    if (stop_requested) return;
+    if (ShutdownRequested()) return;
     if (!result)
     {
         // Old Process objects retain no live PID/fd. Keep specs and replace only
@@ -200,11 +237,11 @@ void Bringup::ResetGeneration()
         result = StartGeneration();
         if (!result) result = AwaitRunning();
     }
-    if (stop_requested) return;
+    if (ShutdownRequested()) return;
     if (result)
     {
         StopGeneration();
-        if (stop_requested) return;
+        if (ShutdownRequested()) return;
         SetApplicationState(ApplicationState::ERROR);
         std::cerr << "[Supervisor] Reset failed error=" << result << std::endl;
         return;
@@ -284,16 +321,25 @@ std::vector<ManagedElementStatus> Bringup::GetElementStatuses() const
 }
 void Bringup::RecordFailure(ManagedElement& element, kcf::ElementFailureKind kind, int runtime_error)
 {
-    if (element.failure_detected) return;
+    if (element.failure_detected || ShutdownRequested()) return;
     element.failure_detected = true;
     element.exit_info = kind==kcf::ElementFailureKind::PROCESS_EXIT ? element.process.GetExitInfo() : kcf::ProcessExitInfo{};
     element.failure_kind = kind;
     element.runtime_error = runtime_error;
     exit_code_ = 1;
-    if (application_state_ == ApplicationState::RUNNING && !application_error_.valid)
+    const bool observed = element.status_valid && element.last_runtime_status.runtime_error != 0;
+    if (kind==kcf::ElementFailureKind::PROCESS_EXIT && observed)
+        element.runtime_error=element.last_runtime_status.runtime_error;
+    ApplicationError event{true,element.spec.name,element.pid,element.exit_info,kind,element.runtime_error};
+    if (error_history_.size()==ERROR_HISTORY_CAPACITY) error_history_.pop_front();
+    error_history_.push_back({++error_sequence_,
+        static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            Clock::now().time_since_epoch()).count()),generation_,event,observed});
+    if (!application_error_.valid)
     {
-        application_error_ = {true, element.spec.name, element.pid, element.exit_info, kind, runtime_error};
-        SetApplicationState(ApplicationState::ERROR);
+        application_error_ = event;
+        if (application_state_ != ApplicationState::RESETTING)
+            SetApplicationState(ApplicationState::ERROR);
         const auto& origin = application_error_;
         std::cerr << "[Supervisor] Origin name=" << origin.element_name << " pid=" << origin.pid
                   << " exited_normally=" << origin.exit_info.exited_normally
@@ -307,6 +353,17 @@ void Bringup::RecordFailure(ManagedElement& element, kcf::ElementFailureKind kin
               << " available=" << info.available << " exited_normally=" << info.exited_normally
               << " exit_code=" << info.exit_code << " signaled=" << info.signaled
               << " signal=" << info.signal_number << " failure_kind=" << int(kind) << " runtime_error=" << runtime_error << std::endl;
+}
+void Bringup::UpdateExitInfo(ManagedElement& element)
+{
+    element.exit_info=element.process.GetExitInfo();
+    if (!element.failure_detected) return;
+    for (auto& event:error_history_)
+        if (event.generation==generation_ && event.error.element_name==element.spec.name &&
+            event.error.pid==element.pid) event.error.exit_info=element.exit_info;
+    if (application_error_.valid && application_error_.pid==element.pid &&
+        application_error_.element_name==element.spec.name)
+        application_error_.exit_info=element.exit_info;
 }
 int Bringup::PollRuntimeStatuses()
 {
@@ -353,25 +410,25 @@ int Bringup::Run()
 {
     if (!setup_) return -EINVAL;
     running_=true;
-    while (running_ && !stop_requested)
+    while (running_ && !ShutdownRequested())
     {
         unsigned pending = 2;
         if (reset_gate_.compare_exchange_strong(pending, 0))
         {
             ResetGeneration();
-            if (stop_requested) break;
+            if (ShutdownRequested()) break;
         }
         const auto cycle=Clock::now();
         const int polling=PollRuntimeStatuses();
         for (auto& entry : elements_)
         {
-            if (stop_requested) break;
+            if (ShutdownRequested()) break;
             if (!entry->process_alive) continue;
             if (!entry->process.IsRunning())
             {
                 entry->process_alive=false;
                 if (!entry->failure_detected) RecordFailure(*entry);
-                else entry->exit_info=entry->process.GetExitInfo();
+                else UpdateExitInfo(*entry);
                 continue;
             }
             if (entry->failure_detected) continue;
@@ -381,13 +438,19 @@ int Bringup::Run()
                 RecordFailure(*entry,kcf::ElementFailureKind::RUNTIME_ERROR,polling);
             else if (Clock::now()-entry->last_response_time>=timeout)
                 RecordFailure(*entry,kcf::ElementFailureKind::STATUS_TIMEOUT);
+            else if (!entry->runtime_ready && !status.runtime_error &&
+                     (!entry->status_valid || status.state==kcf::ProcessState::STARTING))
+            {
+                if (Clock::now()-entry->started_at>=std::chrono::milliseconds(entry->spec.startup_timeout_ms))
+                    RecordFailure(*entry,kcf::ElementFailureKind::STATUS_TIMEOUT);
+            }
             else if (status.state!=kcf::ProcessState::RUNNING || status.runtime_error)
                 RecordFailure(*entry,kcf::ElementFailureKind::RUNTIME_ERROR,
                               status.runtime_error ? status.runtime_error : -EPROTO);
             else if (Clock::now()-entry->last_heartbeat_change_time>=timeout)
                 RecordFailure(*entry,kcf::ElementFailureKind::HEARTBEAT_STALL);
         }
-        if (!stop_requested)
+        if (!ShutdownRequested())
         {
             PublishSystemStatus();
             std::this_thread::sleep_until(cycle+std::chrono::milliseconds(100));
@@ -412,7 +475,7 @@ int Bringup::StopGeneration()
     for (;;)
     {
         const auto cycle = Clock::now();
-        if (stop_requested) SetApplicationState(ApplicationState::SHUTTING_DOWN);
+        if (ShutdownRequested()) SetApplicationState(ApplicationState::SHUTTING_DOWN);
         bool remaining = false;
         for (std::size_t i = 0; i < elements_.size(); ++i)
         {
@@ -422,7 +485,7 @@ int Bringup::StopGeneration()
             {
                 const auto info = entry->process.GetExitInfo();
                 if (!info.available) failure = -ECHILD;
-                entry->exit_info = info;
+                UpdateExitInfo(*entry);
                 entry->started = entry->process_alive = false;
                 std::cout << "[Bringup] reaped name=" << entry->spec.name << " pid=" << entry->pid
                           << " signal=" << info.signal_number << std::endl;
@@ -446,9 +509,12 @@ int Bringup::StopGeneration()
 }
 void Bringup::Shutdown()
 {
+    if (application_state_==ApplicationState::STOPPED) return;
+    RequestShutdown();
     SetApplicationState(ApplicationState::SHUTTING_DOWN);
-    if (StopGeneration()) exit_code_ = 1;
-    PublishIntrospection();
+    if (StopGeneration()) { exit_code_ = 1; return; }
+    // Children have been reaped. Publish the terminal state before unlinking.
+    SetApplicationState(ApplicationState::STOPPED);
     introspection_.End();
     if (status_owned_)
     {

@@ -7,6 +7,46 @@ Phase 2 통신 기능은 v2.0, Phase 3 supervision/recovery는 v3.0에 기록합
 이 문서의 버전 표기는 개발 이력 구분이며 Git tag 또는 배포 생성 여부를 의미하지 않습니다.
 v1.0~v4.3은 historical record입니다. 당시 Mecanum 경로·실행 범위를 현재 Framework 소스 구성으로 해석하지 않습니다.
 
+## v5.5 — Supervisor Lifecycle / Registration / Ownership Contract
+
+### S1 — Lifecycle 및 Error Management
+
+- 초기 Managed 실행/Setup/barrier 실패도 Application ERROR로 유지하며 정상 자식을 계속 감시.
+  Supervisor 준비가 완료되면 Setup은 0을 반환하고 Run 진입 가능; RUNNING 보장과 구분.
+- 최초 Current Error와 최근 64건의 내부 Error History를 분리. 발생 순서·Monotonic 시각·generation·
+  Element/PID·failure_kind·Runtime 오류 관측 여부·exit 정보를 기록하고 반복 폴링을 중복 기록하지 않음.
+- 명시적 RequestReset만 전체 Managed generation을 종료·회수 후 재실행.
+  성공 시 Current Error 해제, History 유지. 자동 Reset/Restart 없음.
+- RequestShutdown 및 SIGINT/SIGTERM의 정상 종료와 Reset 중 Shutdown 우선 처리.
+  자식 회수 후 STOPPED 게시; 기존 enum 숫자값을 유지하도록 마지막에 추가.
+
+### S2 — Element 등록 사전 검증
+
+- static Bringup::ValidateElements와 선택적 RegistrationError(index/name/field/reason) 추가.
+  빈 목록은 index 없음, 성공 시 이전 오류 출력 초기화, 최초 형식 오류는 -EINVAL.
+- Setup도 동일 검증을 사용하며 lifecycle -EBUSY 검사를 유지. 기존 ElementSpec aggregate 및 Setup 호출 호환.
+- 실행 파일·RT 권한·실제 Element Setup 성공 검사는 아님. enabled/동적 등록/의존성 그래프 추가 없음.
+
+### S3 — Managed / External 책임 문서화
+
+- Supervisor는 Managed lifecycle만 소유. External은 독립 실행하며 장애를 자동 전파하지 않음.
+  IPC 공급 중단과 SHM 세대 변경은 외부 소비자에 영향을 줄 수 있음을 명시.
+- Attached는 미구현·보류. Builder의 Managed 실행 목록과 External 정적 참조를 구분하며 도구·파서는 구현하지 않음.
+- [Runtime 계약](docs/02_RUNTIME_AND_SUPERVISION.md)과
+  [Application 가이드](docs/05_APPLICATION_DEVELOPMENT_GUIDE.md)를 현재 API에 맞춰 정리.
+
+### S4 — 버전 정합화 및 통합 검증
+
+- CMake project와 기본 FrameworkVersion을 5.5.0으로 정합화.
+  IPC/storage 및 NetworkProtocol 1.0, Discovery v2, Control TCP v1, Topic wire v1은 변경하지 않음.
+  NETWORK_PROTOCOL 정책 유지; EXACT_FRAMEWORK_VERSION은 v5.4와 v5.5를 구분.
+- Debug 전체 configure/build PASS. 최초 28개 실행 항목은 27 PASS / Discovery 버전 기대값 1 FAIL.
+  광고 minor 기대값 4→5 보정 후 해당 target 재빌드·단독 재실행 PASS; 최초 FAIL 이력 유지.
+  RemoteTopicClient는 이번 1회 PASS이나 기존 Known Intermittent Failure는 미해결로 유지.
+- 실제 최초 실행 결과와 제한은 [v5.5 S4 검증](docs/06_VERIFICATION_AND_LIMITATIONS.md#v55-s4-integration)에 기록.
+  과거 v5.4 Network Timeout, 물리 LAN Discovery 및 PREEMPT_RT 미검증 이력은 보존.
+- README는 이번 범위에서 수정하지 않음. 이 개발 기록은 commit/push/tag/Release 생성을 의미하지 않음.
+
 ## v5.4 — Generic Remote Control LAN Validation / Network Deployment Policy
 
 - CMake project version과 기본 FrameworkVersion을 5.4.0으로 정합화. KCF Tools 연동 기준은 v0.14.

@@ -16,6 +16,74 @@ These paths were used during development verification and are not part of the re
 이전 Topic Queue 문서 반영에서는 아래 구현 완료 보고를 기록했으며 빌드·테스트·CTest 조회를 재실행하지 않았습니다.
 수치와 PASS는 아래 실행 출처의 범위에 한정됩니다. 하드웨어·hard real-time·무한 부하 보증이 아닙니다.
 
+<a id="v55-s4-integration"></a>
+
+## v5.5 S4 — Supervisor 최종 통합 검증 (2026-10-22)
+
+대상은 dev의 로컬 S1/S2B/S3B 변경을 포함한 working tree입니다. 기존 변경 파일의 SHA-256을
+작업 전후 비교하여 보존을 확인했습니다. 이번 단계에서는 신규 기능을 추가하지 않았습니다.
+CMake project와 기본 FrameworkVersion은 **5.5.0**이며 C++17 Debug 전체 configure/build PASS입니다.
+기본 FrameworkVersion 5.5.0 및 NetworkProtocolVersion 1.0은 별도 compile-time assertion으로 확인했습니다.
+NetworkProtocol 1.0, Discovery v2, Control TCP v1, Topic wire v1 및 기존 IPC/storage 버전은 유지합니다.
+NETWORK_PROTOCOL/EXACT_FRAMEWORK_VERSION 정책도 유지하며 후자는 v5.4↔v5.5를 불일치로 판정합니다.
+
+### 실제 실행 결과
+
+각 항목을 독립 Network/IPC/mount namespace와 private SHM에서 직렬 실행했습니다.
+**최초 28개 실행 항목: 27 PASS / 1 FAIL.** 이는 CTest 등록 수가 아니며 Composition runner가
+내부 재실행한 회귀를 별도 항목으로 더하지 않습니다. 실패 항목 수정 후 단독 재실행은 아래에 구분합니다.
+
+| 범위 | 실제 실행 항목 | 최초 결과 |
+| --- | --- | --- |
+| Supervisor S1/S2B | Failure Contract, Registration Validation | 2 PASS |
+| Runtime / Supervisor | Lifecycle, Runtime Supervision, Application Scope | 3 PASS |
+| Reset | failure, repeat, shutdown, shutdown-new | 4 PASS |
+| Local IPC | Topic queue/recovery, Parameter recovery, incomplete Topic/Parameter, 통합 backend/client, 기존 Service 1000회 | 7 PASS |
+| Application Composition | Standalone/Managed 및 External Observer 명시적 재연결 runner | 2 PASS |
+| Network | contract, compatibility, control_parameter/service/action, topic_data, proxy_recovery, RemoteControlClient, RemoteTopicClient | 9 PASS |
+| Network Discovery | peer_discovery | 1 FAIL: 이전 Framework minor 기대값 |
+
+Discovery 최초 실행은 `peer_discovery_test.cpp`의 codec assertion에서 실패했습니다(exit -6, 0.58초).
+광고 Framework minor의 wire byte 기대값 `bytes[83]==4`가 남아 있었으며 실제 기본값은 5입니다.
+**이 버전 기대값만 4→5로 보정**하고 해당 target을 다시 빌드한 후, 단독 재실행은 PASS(3.37초)였습니다.
+Protocol/Codec 동작 변경이나 Timeout 증가는 없었습니다. 최초 결과를 28/28 무실패로 소급하지 않습니다.
+관련 Network contract/compatibility 및 Remote 제어 시험은 별도 최초 실행에서 PASS했습니다.
+
+### Lifecycle 및 소유권 확인
+
+- 초기 자식 Setup 실패와 startup barrier timeout은 ERROR로 유지; Supervisor 준비 성공 후 Setup은 0을 반환.
+  다른 정상 Managed 자식은 유지합니다.
+- 운전 중 SIGKILL과 추가 장애는 History에 누적되며 최초 Current Error를 보존합니다.
+  Runtime 오류 미관측 시 실제 Setup 오류 코드를 추정하지 않습니다.
+- 명시적 Reset 실패 후 ERROR 대기, 자동 재시도 없음. 후속 수동 Reset 성공 시 Current Error 해제 및 History 유지.
+- 정상 Shutdown은 신규 오류가 아니며 중복 요청, 초기화/Reset 중 Shutdown 우선 처리 및 STOPPED 게시를 확인.
+- 등록 검증의 오류 정보·출력 초기화·반복 호출·Setup 판정 일치 및 자식/FD/SHM/Signal 불변성 확인.
+- Composition의 Managed/External 독립성과 동일 Observer PID 재연결 확인.
+  정상 재시작 Sequence 211→75, 장애 재시작 184→77을 새 세대로 수용했습니다.
+  새 데이터 최대 Age는 각각 19.8606ms/9.65707ms이며 FD/stdin/SHM 정리 검증 PASS입니다.
+- 테스트의 자식 회수·FD·SystemStatus/소유 SHM 정리 검증이 통과했습니다.
+
+### Known Issue 및 검증 한계
+
+이번 RemoteTopicClient는 진단 출력이 포함된 상태에서 **단독 항목 최초 1회 PASS(4.08초)**였습니다.
+기존 v5.4의 최초 Timeout FAIL, 후속 5회 중 2회 재현, 진단 후 10/10 PASS 기록은 아래에 그대로 보존합니다.
+이번 PASS로 Known Intermittent Failure를 해제하지 않습니다. 원인은 미확정이며 진단 출력의 타이밍 영향
+가능성이 남아 있습니다. 이번에도 Timeout 진단 실패 분기는 실행되지 않았습니다. 추후 실패 로그 확보 시 재조사합니다.
+
+물리 LAN Discovery 지연·장애 후 복구 안정성과 PREEMPT_RT 실장 미검증 제한은 유지합니다.
+이번에는 물리 LAN/Virtual 2-Host LAN, Tool GUI, RT Benchmark를 재실행하지 않았습니다.
+Attached, 자동 Reset/Restart, History 외부 IPC/Network 공개 및 Builder 기능은 추가하지 않았습니다.
+
+Supervisor 기능 및 이번 검증 대상은 Discovery 기대값 보정 후 모두 PASS 결과를 확보했지만,
+**전체 최초 실행 무실패 또는 Known Issue 해소 판정은 아닙니다.** README는 요청에 따라 수정하지 않아
+현재 버전/기본 profile을 5.4.0으로 설명하는 문구가 남아 있습니다. 공개 전 별도 문서 정리가 필요합니다.
+S1/S2B/S3B 문서 및 이번 Changelog의 개발 계약은 현재 코드와 대조했습니다.
+
+출처: `/tmp/kcf-v55-s4/`의 `configure.log`, `build.log`, `results.json`, 각 항목 로그,
+`discovery-rebuild.log`, `peer_discovery_recheck.log`, `recheck.json`, `version.log`.
+Composition/Observer 상세 로그도 이 디렉터리 아래 별도 보존했으며 과거 로그는 덮어쓰지 않았습니다.
+이들은 로컬 임시 검증 artifact이며 commit/push/tag/Release는 수행하지 않았습니다.
+
 <a id="v54-local-integration"></a>
 
 ## v5.4 로컬 개발 변경 통합 검증 — 2026-10-22

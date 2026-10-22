@@ -41,6 +41,7 @@ struct ElementSpec
     std::uint32_t startup_timeout_ms{5000};
     std::uint32_t health_timeout_ms{2000};
     std::uint32_t shutdown_timeout_ms{1500};
+    kcf::ExecutionProfile execution_profile{};
 };
 class Bringup
 {

@@ -44,6 +44,50 @@ Tools main `e332438`(v0.13)로 수행한 사용자 수동 기록이다. v5.4/Too
 - v5.4 버전 정합화 검증 당시에는 Commit/Push를 수행하지 않았으며, 이후 해당 변경 사항을 
   dev 브랜치에 반영했다. 기존 v5.3 이하 검증 이력은 보존한다.
 
+### Supervisor ExecutionProfile — v5.4 로컬 개발 변경
+
+- `ExecutionProfile`: INHERIT/OTHER/FIFO/RR, priority, cpu_affinity, lock_memory(false).
+  Process::Start의 선택적 네 번째 인자와 ElementSpec의 마지막 멤버로 전달하며 Reset에도 재적용.
+- fork 전 검증, exec 전 affinity/scheduler 적용. 실패 시 `-errno`, exec 중단 및 child 회수.
+- exec 이후 Runtime 초기화와 Element Setup 사이에 opt-in mlockall 적용.
+  내부 환경변수 검증/소비/제거, 부모 값 대체, 실패 시 Element 미실행, 종료 시 획득 잠금 정리.
+
+### 3A / 3B 1kHz Benchmark와 주기 복구
+
+- Runtime 단독 및 별도 Publisher/Subscriber SHM Topic Benchmark 추가. 기존 Process/Supervision 사용,
+  기본 60초/5초 Warm-up, 정상 종료·자식/FD/SHM 회수 확인.
+- 3A `--trace-outliers`: 기본 OFF, 사전 할당 기록, 종료 후 상위 20개/전후 5개 및 임계값별 집계.
+- 지연 시 Runtime을 `next_tick = now + period`로 재예약하고 대기하도록 변경.
+  정상 절대 시각 스케줄링, Loop 오류/heartbeat/Stop/Shutdown 계약은 유지.
+- VM에서 Trace ON A/B/C 각 3회와 수정 후 각 1회 기록을 구분. 수정 후 확인한 상위 60개
+  지연 직후 15–20µs 연속 실행은 없었으나 평균 Hz는 낮아질 수 있음. hard real-time 보장이 아님.
+  초기 B의 680.441ms 이상치는 후속 9회에서 미재현이며 원인 미확정.
+
+### Application Composition / External Observer
+
+- Source 100Hz → Processor 50Hz → 독립 Observer 10Hz. 원본 sequence/timestamp 보존,
+  latest-value skip 및 Age/STALE 관측. Source/Processor만 Bringup 관리, Observer 소유권 추가 없음.
+- 기존 ERROR 정책 및 수동 재시작 유지. 정상 종료의 소유 SHM 정리와 Managed 자식 회수 검증.
+- Observer `r` + Enter로 동일 PID에서 명시적 Close → 세대별 Snapshot/비교 상태 초기화 → Create 1회.
+  실패 시 DISCONNECTED로 이전 데이터를 폐기하고 다음 사용자 요청 대기. 자동 reconnect/retry 없음.
+- 실행 방법: [Composition README](examples/application_composition/README.md).
+
+### 로컬 통합 검증 — 2026-10-22
+
+이번 통합 단계는 미커밋 working tree 기준이며 제품 기능을 추가 수정하지 않습니다.
+전체 Debug 빌드와 실제 회귀 실행 결과는 [v5.4 통합 검증](docs/06_VERIFICATION_AND_LIMITATIONS.md#v54-local-integration)에 기록합니다.
+최초 26개 실행 항목 중 25 PASS / RemoteTopicClient peer 대기 timeout 1 FAIL, 해당 항목 단독 재실행 PASS.
+원인은 미확정이며 최초 전체 PASS로 소급하지 않습니다.
+후속 동일 테스트 5회에서는 2회 동일 Timeout을 재현했고, 테스트 진단 출력 추가 후에는 Debug 빌드 및 10/10 PASS를 기록했습니다.
+두 Host의 ONLINE/Metadata/Endpoint 준비는 정상 관측됐지만 진단 출력의 타이밍 영향 가능성이 있으며,
+Timeout 진단 실패 분기는 아직 실행 검증되지 않았습니다.
+**Known Intermittent Failure**로 유지하고 추후 실패 로그 확보 시 재조사합니다.
+v5.4 기능 개발 완료와 전체 회귀 무실패 판정은 구분하며, 후자는 계속 보류합니다.
+이 후속 결과는 기존 실행 기록의 문서 반영이며 이번 문서 작업에서 테스트를 추가 실행하지 않았습니다.
+기존 1kHz 성능값은 이전 실행 기록이며 이번 문서 정리에서 재측정하지 않습니다.
+PREEMPT_RT 실장 검증은 미수행, 물리 LAN Discovery 지연과 장애 후 복구 안정성은 미해결/미검증으로 유지합니다.
+버전은 5.4.0을 유지하며 commit/push/tag/Release는 생성하지 않습니다.
+
 ## v5.3 — Read-only Network Diagnostics
 
 F-ND1~F-ND5A가 적용된 dev working tree 기준입니다. FrameworkVersion/CMake는 5.3.0이며,

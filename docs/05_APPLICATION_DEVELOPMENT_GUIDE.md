@@ -10,6 +10,7 @@
 | Application | [service_app](../examples/service_app/README.md) | 명시적 port와 Service Call |
 | Application | [timer_app](../examples/timer_app/README.md) | local callback와 Stop |
 | Application | [action_app](../examples/action_app/README.md) | Success/Cancel와 idle/RUNNING |
+| Application | [application_composition](../examples/application_composition/README.md) | 100/50/10Hz 조합, Managed/External 경계 및 명시적 Observer 재연결 |
 
 [USER REQUIREMENT / DECISION] 기존 low-level 예제를 보존하고 Application 예제를 별도로 둡니다.
 
@@ -33,6 +34,50 @@ Loop nonzero는 fatal입니다. 계속 운전할 수 있는 transient 오류만 
 Standalone은 executable 직접 실행입니다. Supervised는 Bringup의 ElementSpec이 같은 executable/arguments를 spawn합니다.
 Mode에 따라 executable을 복제하지 않습니다. 현재 app Bringup은 `/proc/self/exe`로 sibling binary 위치를 찾습니다.
 Setup 성공과 Application RUNNING barrier 완료는 구분합니다.
+
+## Application Composition — Managed / External
+
+[예제 README](../examples/application_composition/README.md)의 실행·실패 계약을 사용합니다.
+Source(100Hz)는 원본 sequence/CLOCK_MONOTONIC timestamp를 Publish하고,
+Processor(50Hz)는 최신 Snapshot을 가공하면서 원본 sequence/timestamp를 보존합니다.
+Observer(10Hz)는 읽기 전용이며 Age/상태를 출력합니다. Topic depth=1의 중간 Sequence 건너뛰기는 정상입니다.
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build --target kcf_composition_bringup kcf_composition_observer -j4
+# 터미널 1: Source/Processor만 관리
+./build/examples/application_composition/kcf_composition_bringup demo_01
+# 터미널 2: RUNNING 확인 후 독립 Observer
+./build/examples/application_composition/kcf_composition_observer demo_01
+```
+
+Source/Processor/Observer executable 각각에 같은 INSTANCE를 전달해 Standalone으로도 실행할 수 있습니다.
+실행마다 고유 INSTANCE를 사용하고 다른 실행의 Topic을 지우지 않습니다. 최초 입력 연결은 최대 3초입니다.
+Bringup의 ElementSpec에는 Source/Processor만 있으며 ExecutionProfile은 기본값입니다.
+Observer 종료는 Supervisor 상태를 바꾸지 않습니다. Managed 장애는 기존 ERROR latch로 남고 자동 재시작하지 않습니다.
+Bringup 종료는 관리 자식만 회수하며, 외부 Observer의 PID나 종료를 소유하지 않습니다.
+명시적 Profile 적용 방법과 권한 실패는 [Runtime 문서](02_RUNTIME_AND_SUPERVISION.md)에 설명합니다.
+
+### External Observer의 명시적 SHM 재연결
+
+Application 재시작으로 같은 이름의 SHM이 재생성돼도 기존 Subscriber는 이전 매핑을 유지합니다.
+Observer는 마지막 원본 Timestamp의 Age로 STALE을 표시하며 자동으로 새 세대에 붙지 않습니다.
+Observer 터미널에서 **`r` + Enter**를 입력하면 정상 Loop에서 다음을 수행합니다.
+
+1. 기존 Subscriber Close.
+2. 예제 Input의 Snapshot, Transport Sequence, 원본 Sequence/Timestamp 비교 기준 및 통계 초기화.
+3. 동일 이름으로 Subscriber Create를 한 번 시도.
+4. 새 세대의 첫 유효 데이터부터 기준 설정. 낮아진 Sequence를 이전 세대와 비교하지 않음.
+
+Observer PID는 유지됩니다. Create 실패 시 이전 Snapshot은 폐기되고 DISCONNECTED/error를 표시하며
+다음 사용자 `r`을 기다립니다. 새 SHM이 생겨도 자동 retry하지 않습니다. 연결 성공과 Freshness는 별개로,
+데이터가 없으면 WAITING, 오래된 데이터면 STALE입니다. 최초 Setup의 3초 대기와 재연결 1회 시도를 구분합니다.
+비차단 stdin 확인만 사용하며 별도 Thread/서버를 만들지 않습니다. EOF이면 명령 입력만 중지하고
+기존 관측은 계속합니다. 정상 종료 시 stdin 플래그를 복원합니다.
+
+Close/Create는 Core API이고 비교 기준 초기화는 Application 책임입니다. Source/Processor의 소유 Topic만
+정상 Shutdown에서 Unlink하며 Observer는 Unlink하지 않습니다. SIGKILL로 남은 SHM은 기존 Core의
+owner 검증을 통한 수동 재실행 시 회수 대상이며 임의 삭제나 자동 재시작 정책을 추가하지 않습니다.
 
 ## 기능 사용의 시작점
 
@@ -111,7 +156,7 @@ Parameter Format 3은 유지합니다. [전체 계약](03_IPC_AND_FEATURES.md#to
 2. 작은 fixed-size payload를 정의합니다. Tool dynamic access가 필요하면 stable descriptor를 추가합니다.
 3. Standalone에서 정상·오류·종료를 확인합니다. callback state lifetime과 partial Setup cleanup을 확인합니다.
 4. 같은 executable을 Bringup으로 실행하고 RUNNING barrier, failure, restart를 확인합니다.
-5. Tool은 수동 Refresh 후 새 identity를 선택합니다. Action/Timer 전용 UI는 기대하지 않습니다.
+5. Tool은 수동 Refresh 후 새 identity를 선택합니다. 지원 기능은 [현재 README](../README.md)의 Tool 연동 범위를 확인합니다.
 6. 기존 회귀는 fixed-name fixture와 충돌하지 않는 환경에서 순차 실행합니다. [검증 목록](06_VERIFICATION_AND_LIMITATIONS.md) 참조.
 
 [FUTURE OPTION] 외부 Application에 대한 설치/export/package workflow는 이 예제의 CMake 사용법에서

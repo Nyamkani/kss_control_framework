@@ -1,0 +1,11 @@
+foreach(role IN ITEMS source processor observer)
+    add_executable(kcf_composition_${role} src/${role}_main.cpp)
+    target_include_directories(kcf_composition_${role} PRIVATE include)
+    target_link_libraries(kcf_composition_${role} PRIVATE kcf_core)
+    target_compile_options(kcf_composition_${role} PRIVATE -Wall -Wextra -Wpedantic)
+endforeach()
+
+add_executable(kcf_composition_bringup src/bringup_main.cpp ../../bringup/src/bringup.cpp)
+target_include_directories(kcf_composition_bringup PRIVATE include ../../bringup/include)
+target_link_libraries(kcf_composition_bringup PRIVATE kcf_core)
+add_dependencies(kcf_composition_bringup kcf_composition_source kcf_composition_processor)

@@ -4,6 +4,7 @@
 #include <cerrno>
 #include <fcntl.h>
 #include <signal.h>
+#include <sched.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <sys/socket.h>
@@ -15,12 +16,50 @@ namespace kcf
 {
 
 int Process::Start(const std::string& executable, const std::vector<std::string>& args,
-                   const std::string& system_status_scope)
+                   const std::string& system_status_scope, const ExecutionProfile& execution_profile)
 {
     if (pid_ > 0)
     {
         const int result = CollectExit(WNOHANG);
         if (result <= 0) return result == 0 ? -EBUSY : result;
+    }
+    // Validate and prepare all scheduling data in the parent. No allocation or
+    // profile traversal is needed in the child between fork and exec.
+    int scheduling_policy = -1;
+    switch (execution_profile.policy)
+    {
+    case SchedulingPolicy::INHERIT:
+        if (execution_profile.priority != 0) return -EINVAL;
+        break;
+    case SchedulingPolicy::OTHER: scheduling_policy = SCHED_OTHER; break;
+    case SchedulingPolicy::FIFO: scheduling_policy = SCHED_FIFO; break;
+    case SchedulingPolicy::RR: scheduling_policy = SCHED_RR; break;
+    default: return -EINVAL;
+    }
+    sched_param scheduling_parameters{};
+    scheduling_parameters.sched_priority = execution_profile.priority;
+    if (scheduling_policy >= 0)
+    {
+        const int minimum = sched_get_priority_min(scheduling_policy);
+        if (minimum < 0) return -errno;
+        const int maximum = sched_get_priority_max(scheduling_policy);
+        if (maximum < 0) return -errno;
+        if (execution_profile.priority < minimum || execution_profile.priority > maximum)
+            return -EINVAL;
+    }
+    cpu_set_t affinity;
+    CPU_ZERO(&affinity);
+    const bool set_affinity = !execution_profile.cpu_affinity.empty();
+    if (set_affinity)
+    {
+        errno = 0;
+        const long configured_cpus = sysconf(_SC_NPROCESSORS_CONF);
+        if (configured_cpus <= 0) return errno ? -errno : -EINVAL;
+        for (const int cpu : execution_profile.cpu_affinity)
+        {
+            if (cpu < 0 || cpu >= CPU_SETSIZE || cpu >= configured_cpus) return -EINVAL;
+            CPU_SET(cpu, &affinity);
+        }
     }
     if (executable.empty() || executable.find('\0') != std::string::npos) return -EINVAL;
     std::string status_name;
@@ -38,12 +77,15 @@ int Process::Start(const std::string& executable, const std::vector<std::string>
     argv.push_back(nullptr);
     // Environment storage is prepared before fork. Preserve user variables and
     // replace the internal FD entry and any explicitly supplied SystemStatus scope.
+    const std::string lock_memory_prefix = std::string(detail::EXECUTION_LOCK_MEMORY_ENV) + "=";
     std::vector<std::string> environment;
     for (char** entry = environ; *entry; ++entry)
         if (std::strncmp(*entry, "KCF_SUPERVISION_FD=", 19) != 0 &&
+            std::strncmp(*entry, lock_memory_prefix.c_str(), lock_memory_prefix.size()) != 0 &&
             (system_status_scope.empty() || std::strncmp(*entry,"KCF_SYSTEM_STATUS_SCOPE=",sizeof("KCF_SYSTEM_STATUS_SCOPE=")-1)!=0))
             environment.emplace_back(*entry);
     if(!system_status_scope.empty())environment.emplace_back(std::string(detail::SYSTEM_STATUS_SCOPE_ENV)+"="+system_status_scope);
+    environment.emplace_back(lock_memory_prefix + (execution_profile.lock_memory ? "1" : "0"));
     int sockets[2];
     if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC | SOCK_NONBLOCK, 0, sockets) != 0) return -errno;
     try { environment.emplace_back(std::string(SUPERVISION_FD_ENV) + "=" + std::to_string(sockets[1])); }
@@ -73,7 +115,10 @@ int Process::Start(const std::string& executable, const std::vector<std::string>
     {
         close(pipe_fd[0]);
         close(sockets[0]);
-        if (fcntl(sockets[1], F_SETFD, 0) == 0)
+        if (fcntl(sockets[1], F_SETFD, 0) == 0 &&
+            (!set_affinity || sched_setaffinity(0, sizeof(affinity), &affinity) == 0) &&
+            (scheduling_policy < 0 ||
+             sched_setscheduler(0, scheduling_policy, &scheduling_parameters) == 0))
             execve(path, arguments, child_environment);
         const int error = errno;
         const char* data = reinterpret_cast<const char*>(&error);

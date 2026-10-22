@@ -1,4 +1,5 @@
 #include "kcf/process/process_runtime.hpp"
+#include "kcf/process/execution_profile.hpp"
 #include "kcf/introspection/detail/runtime_registry.hpp"
 
 #include <chrono>
@@ -14,6 +15,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/socket.h>
+#include <sys/mman.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -29,6 +31,31 @@ void HandleStopSignal(int)
     stop_requested = 1;
 }
 
+// Parse before starting Runtime workers; consume even malformed requests.
+int ConsumeMemoryLockRequest(bool& requested)
+{
+    const char* value = std::getenv(kcf::detail::EXECUTION_LOCK_MEMORY_ENV);
+    if (!value) return 0;
+    const bool valid = std::strcmp(value, "0") == 0 || std::strcmp(value, "1") == 0;
+    requested = valid && value[0] == '1';
+    if (unsetenv(kcf::detail::EXECUTION_LOCK_MEMORY_ENV) != 0) return -errno;
+    return valid ? 0 : -EINVAL;
+}
+
+struct RuntimeMemoryLock
+{
+    bool acquired{false};
+    int Acquire()
+    {
+        if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0) return -errno;
+        acquired = true;
+        return 0;
+    }
+    // Only release locks acquired by this opt-in Run, including error returns.
+    // Lifetime covers Element Shutdown, worker join and introspection cleanup.
+    ~RuntimeMemoryLock() { if (acquired) munlockall(); }
+};
+
 } // namespace
 
 namespace kcf
@@ -36,6 +63,9 @@ namespace kcf
 
 int ProcessRuntime::Run(ProcessElement& element)
 {
+    bool lock_memory = false;
+    const int profile_error = ConsumeMemoryLockRequest(lock_memory);
+    RuntimeMemoryLock memory_lock;
     stop_reason_ = 0;
     state_ = ProcessState::STARTING;
 
@@ -46,6 +76,10 @@ int ProcessRuntime::Run(ProcessElement& element)
     int initialized = Initialize();
     const int supervised = StartSupervision();
     if (!initialized) initialized = supervised;
+    if (!initialized) initialized = profile_error;
+    // Exec has completed and Runtime infrastructure exists; no Element callback
+    // runs until memory locking succeeds. Preserve normal initialization errors.
+    if (!initialized && lock_memory) initialized = memory_lock.Acquire();
     if (initialized != 0)
     {
         running_ = false;
@@ -132,15 +166,12 @@ int ProcessRuntime::Run(ProcessElement& element)
 
             next_tick += period;
             const auto now = Clock::now();
-            if (now < next_tick)
+            if (now >= next_tick)
             {
-                std::this_thread::sleep_until(next_tick);
+                // Discard missed ticks and wait a full period after an overrun.
+                next_tick = now + period;
             }
-            else
-            {
-                // Discard missed ticks instead of running catch-up iterations.
-                next_tick = now;
-            }
+            std::this_thread::sleep_until(next_tick);
         }
     }
     catch (...)

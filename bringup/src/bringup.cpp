@@ -106,7 +106,7 @@ int Bringup::StartGeneration()
     {
         if (stop_requested) return -ECANCELED;
         int result;
-        try { result = entry->process.Start(entry->spec.executable, entry->spec.arguments, status_publisher_.Scope()); }
+        try { result = entry->process.Start(entry->spec.executable, entry->spec.arguments, status_publisher_.Scope(), entry->spec.execution_profile); }
         catch (...) { result = -ENOMEM; }
         if (result)
         {

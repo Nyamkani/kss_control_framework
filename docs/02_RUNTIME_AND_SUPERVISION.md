@@ -10,6 +10,55 @@ Process::Start 성공은 exec 성공이며, Setup 완료 또는 RUNNING 보장�
 RequestStop은 정상 SIGTERM 요청, ForceStop은 명시적 SIGKILL, Wait/IsRunning의 collect는 child reap을 담당합니다.
 Process destructor는 FD만 닫으며 child를 자동 kill/reap하지 않습니다. PID는 단일 owner가 관리합니다.
 
+## ExecutionProfile — v5.4 로컬 개발 변경
+
+[IMPLEMENTED] [ExecutionProfile](../kcf/include/kcf/process/execution_profile.hpp)은
+`SchedulingPolicy::{INHERIT, OTHER, FIFO, RR}`, `priority`, `cpu_affinity`, `lock_memory`를 제공합니다.
+기본값은 INHERIT / 0 / 빈 CPU 목록 / false로 기존 실행 동작을 유지합니다.
+[Process::Start](../kcf/include/kcf/process/process.hpp)의 네 번째 선택 인자가 Profile입니다.
+
+```cpp
+kcf::ExecutionProfile profile;
+profile.policy = kcf::SchedulingPolicy::OTHER;
+profile.cpu_affinity = {0}; // 실제 장치에서 허용된 CPU를 선택
+// profile.lock_memory = true; // 충분한 MEMLOCK 한도가 있는 경우에만 요청
+process.Start(executable, arguments, system_status_scope, profile);
+// Bringup에서는 ElementSpec의 마지막 멤버:
+spec.execution_profile = profile;
+```
+
+- fork 전에 정책/priority/CPU ID를 검증합니다. INHERIT/OTHER priority는 0,
+  FIFO/RR은 플랫폼의 허용 범위를 사용합니다. CPU ID는 cpu_set_t 및 configured CPU 범위 내여야 합니다.
+- 빈 affinity는 상속합니다. 비어 있지 않으면 child의 execve 전에 sched_setaffinity를 적용하며,
+  명시된 정책은 sched_setscheduler로 적용합니다. 실제 cpuset/온라인 CPU/권한 검사는 커널이 수행합니다.
+- 실패하면 exec를 진행하지 않고 기존 실패 pipe 경로로 `-errno`를 반환하며 child를 회수합니다.
+  FIFO/RR 권한 부족을 OTHER로 자동 fallback하지 않습니다. Start 성공은 여전히 exec 성공만 의미합니다.
+- Bringup의 StartGeneration은 `ElementSpec::execution_profile`을 전달합니다.
+  Reset도 같은 Profile로 새 generation을 실행하며 기존 aggregate 초기화를 유지합니다.
+
+`lock_memory=true`는 exec 이전 mlock이 아닙니다. Process는 부모의 동명 환경변수를 제외하고
+내부 `KCF_EXECUTION_LOCK_MEMORY=0/1`을 명시적으로 전달합니다. Runtime은 값을 검증·소비·제거하고,
+exec 이후 Runtime/supervision 초기화 뒤 Element Setup 전에 `mlockall(MCL_CURRENT | MCL_FUTURE)`을 호출합니다.
+잘못된 값은 `-EINVAL`, 잠금 실패는 `-errno`로 ERROR 처리하며 Setup/Loop/Shutdown을 호출하지 않습니다.
+Setup에 진입한 이후의 종료에서는 기존 exactly-once Shutdown 계약을 유지합니다.
+획득한 잠금은 Shutdown, worker join, Finalize/introspection 정리를 마친 뒤 해제합니다.
+
+충분한 RT Priority/MEMLOCK 권한은 실행 환경의 책임입니다. API가 권한을 올리거나 한도를 조정하지 않습니다.
+잠금 성공이 이후 모든 할당 성공이나 hard real-time을 보장하지 않으며,
+외부 프로세스 관리·PREEMPT_RT 설치·CPU/IRQ 격리 정책은 제공하지 않습니다.
+
+## Loop 주기와 지연 복구 — v5.4 로컬 개발 변경
+
+정상 실행은 steady_clock 절대 시각 기준 `next_tick += period`와 `sleep_until(next_tick)`을 유지합니다.
+성공 Loop 후 이미 다음 tick이 지났으면 `next_tick = now + period`로 재예약하고 그 시각까지 대기합니다.
+밀린 주기를 보상하려고 즉시 Loop를 연속 실행하지 않습니다. 이전 `next_tick = now` 후 무대기 경로를 변경했습니다.
+Loop 오류, 성공 heartbeat 증가, Stop/Supervisor loss 우선순위 및 Shutdown 경로는 변경하지 않았습니다.
+
+지연 후 한 주기를 기다리므로 평균 실행 Hz는 낮아질 수 있습니다. 정상 절대 시각 처리 중에는
+1주기보다 짧은 간격이 여전히 생길 수 있으며, 모든 Loop 간격의 최솟값을 보장하는 API는 아닙니다.
+20ms 주기에서 70ms 초과 Loop 후 최소 20ms 대기를 확인하는 기존 lifecycle 테스트에 회귀를 추가했습니다.
+1kHz VM 측정과 실장 미검증 범위는 [검증 기록](06_VERIFICATION_AND_LIMITATIONS.md#v54-local-integration)에 구분합니다.
+
 ## Runtime supervision
 
 [RuntimeStatus protocol](../kcf/include/kcf/process/runtime_supervision.hpp): version 1,

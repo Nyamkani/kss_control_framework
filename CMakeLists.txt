@@ -32,3 +32,5 @@ add_subdirectory(examples/timer_app)
 add_subdirectory(examples/action_app)
 
 add_subdirectory(examples/network)
+
+add_subdirectory(examples/application_composition)

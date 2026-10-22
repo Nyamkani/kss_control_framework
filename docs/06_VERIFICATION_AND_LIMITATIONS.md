@@ -16,6 +16,156 @@ These paths were used during development verification and are not part of the re
 이전 Topic Queue 문서 반영에서는 아래 구현 완료 보고를 기록했으며 빌드·테스트·CTest 조회를 재실행하지 않았습니다.
 수치와 PASS는 아래 실행 출처의 범위에 한정됩니다. 하드웨어·hard real-time·무한 부하 보증이 아닙니다.
 
+<a id="v54-local-integration"></a>
+
+## v5.4 로컬 개발 변경 통합 검증 — 2026-10-22
+
+현재 dev working tree의 ExecutionProfile/mlockall, Runtime 주기 복구, Benchmark,
+Application Composition/Observer 명시적 재연결 변경을 대상으로 합니다.
+**미커밋 개발 변경 검증이며 새 commit/tag/Release 기록이 아닙니다.** 기존 v5.4 버전 정합화 및
+아래 v5.3 이하 PASS/FAIL 기록은 당시 사실로 보존합니다. 현재 CMake/FrameworkVersion은 5.4.0입니다.
+
+### 이번 실행과 기존 측정의 구분
+
+- 이번 통합 단계: CMake Debug configure/전체 build, 기존 회귀 및 현재 API 대조.
+- 기존 ExecutionProfile 임시 probe는 현재 Core/Bringup에 다시 링크한 후 실행합니다.
+  제품 소스/테스트를 수정하거나 실패를 우회하지 않습니다.
+- 실행 로그/runner: `/tmp/kcf-v54-integration-final/`. 이는 임시 개발 artifact이며 배포 테스트가 아닙니다.
+- 각 실행 항목은 독립 Network/IPC/SHM namespace에서 직렬 실행합니다. Namespace는 시험 자원 격리이며
+  물리 LAN/PREEMPT_RT 환경을 대신하지 않습니다. Reset fixture 이름 충돌 방지를 위해 host PID를 유지합니다.
+- 아래 1kHz 성능값은 **이전 실제 실행 로그**를 재검토한 것입니다. 이번 통합 단계에서 60초 측정을 재실행하지 않습니다.
+
+### 이번 통합 실행 결과
+
+전체 Debug configure/build PASS. 기존 실행 대상 26개 항목의 **최초 실행은 25 PASS / 1 FAIL**입니다.
+이 수치는 CTest 등록 개수가 아니며 Composition runner 내부에서 중복 실행한 회귀는 별도 항목으로 늘리지 않습니다.
+
+| 기능 | 실제 실행 항목 | 이번 결과 |
+| --- | --- | --- |
+| ExecutionProfile / mlockall | 현재 Core에 재링크한 기존 `/tmp/kcf-profile2-test.cpp` | PASS: 잠금 성공/실패, Setup 전 실패, Setup 실패 후 정리, 내부 env 대체/소비, invalid priority, FIFO EPERM/FD 정리 |
+| Runtime lifecycle / 주기 복구 | `kcf_runtime_lifecycle_test` | PASS: 기존 11개 lifecycle case와 초과 Loop 2회. 초과 후 대기 20.344ms / 20.269ms |
+| Supervision | `kcf_runtime_supervision_test` + `kcf_supervisor_runtime_test` | PASS: protocol/state/heartbeat/FD |
+| Reset | `kcf_reset_test` repeat / failure, 현재 Core에 재링크한 기존 `/tmp/kcf-profile2-reset.cpp` repeat | 3개 항목 PASS: 기본 Reset, 실패 경로, OTHER/단일 affinity/mlock 재적용 |
+| Supervisor scope | `kcf_application_scope_test` | PASS: 다른/동일 Application 이름의 상태·Reset·종료 격리 |
+| Topic | `kcf_topic_queue_test`, `kcf_topic_recovery_test` | 2개 항목 PASS |
+| Parameter / incomplete SHM | `kcf_parameter_recovery_test`, `kcf_incomplete_recovery_test topic/parameter` | 3개 항목 PASS |
+| Local Service / IPC 통합 | 기존 Service server/client 1000회, Integration backend/client | 2개 항목 PASS: Topic/Timer, Parameter Get/Set, Service multi-ID, Action Success/Cancel 및 동시 동작 |
+| Composition / Observer | 기존 `/tmp/kcf-composition-verify.py`, `/tmp/kcf-observer-r-test.py` | 2개 항목 PASS: Standalone/Managed, ERROR, 이름 충돌/연결 순서/타임아웃, 동일 PID 재연결, SHM 부재, cleanup |
+| Network | contract, compatibility, peer_discovery, control_parameter/service/action, topic_data, proxy_recovery, remote_control_client | 9개 항목 PASS |
+| Network Remote Topic Client | `kcf_remote_topic_client_test` | **최초 FAIL**, 동일 조건 단독 1회 재실행 **PASS**. 원인 미확정 |
+
+Observer 재연결에서는 정상 재시작 시 원본 Sequence 211→77, 장애 재시작 시 194→77을 새 세대로 수용했습니다.
+동일 Observer PID 유지, 새 Timestamp 증가, 중복/역순 0, 최대 Age 3.86245ms / 13.3175ms,
+FD/매핑 수 유지, stdin 플래그 복원 및 자식/SHM 회수를 확인했습니다.
+재연결 대상 부재 시 이전 Snapshot을 출력하지 않고 DISCONNECTED로 유지하며 사용자 `r` 전 자동 연결하지 않았습니다.
+
+#### 이번 최초 실패와 재실행 기록
+
+`remote_topic_client.log`의 최초 실패는 `remote_topic_client_test.cpp`의 `peer(host)` lambda가
+8초 안에 `ONLINE && metadata_ready && 충분한 endpoint 수` 조건을 만족하지 못한 Until assertion입니다.
+로그에는 어느 Host/어느 호출 단계인지 식별할 정보가 없으며, 이후 Owner의 recv assertion도 기록됐습니다.
+`results.json`: exit -6, 8.48초. 코드·테스트 변경 없이 동일 namespace 조건의 단독 재실행은
+`remote_topic_client-recheck.log` / `recheck.json`: exit 0, 4.43초입니다.
+
+재실행 PASS를 최초 26/26 PASS로 소급하지 않습니다. 원인은 미확정이며 기존 간헐적 timeout과
+동일 원인인지, 현재 변경에 의한 회귀인지 또는 실행 환경 영향인지 단정하지 않습니다.
+따라서 기능별 검증과 문서 정합성 확인은 완료했지만 **완전 무실패 통합 PASS 판정은 보류**합니다.
+
+
+#### 후속 조사 — Known Intermittent Failure (2026-10-22)
+
+RemoteTopicClient Peer 준비 Timeout은 **Known Intermittent Failure / 원인 미확정**으로 유지합니다.
+최초 통합 FAIL 및 단독 재실행 PASS는 위 기록 그대로이며, 후속 실행을 별도로 구분합니다.
+
+| 검증 단계 | 결과 | 관측 |
+| --- | --- | --- |
+| 진단 추가 전 동일 테스트 5회 | 3 PASS / 2 FAIL | 3번째 8.54초, 5번째 8.60초에 최초와 동일한 Peer 대기 assertion 재현 |
+| 테스트 진단 출력 추가 후 Debug 빌드 및 10회 | 빌드 PASS, 10/10 PASS | 각 실행 4.08~4.39초; 이번 반복에서 Timeout 미재현 |
+
+두 단계 모두 해당 테스트만 독립 Network/SHM namespace에서 직렬 실행했습니다.
+진단 추가 전 FAIL 로그는 최초 FAIL과 동일하며, 이전 시험의 소켓·SHM 잔재가 원인이라는 근거는 없습니다.
+Announce 수신·ONLINE·Metadata 준비 중 실제로 막힌 단계는 당시 로그로 구분하지 못했습니다.
+
+후속 테스트 진단은 단계별 Monotonic 시각, PID·실제 소켓 포트, Host별 Peer 상태,
+공개 Stats/오류를 출력하며 조회 API가 없는 항목은 `unavailable`로 표시합니다.
+기존 8초 제한, 대기 조건, 시작 순서 및 PASS/FAIL 판정은 유지했습니다.
+진단 추가 후에는 Host 10/20 모두 ONLINE 및 `metadata_ready=true`, Metadata revision 2,
+Endpoint 수 각각 5/5·4/4를 관측했습니다. 초기 Host 10 대기는 약 95~171ms였습니다.
+잔존 테스트 PID는 없었으며 기존 FD/Proxy 정리 검증과 격리 Network/SHM 자원 회수를 확인했습니다.
+
+**10/10 PASS는 원인 해결 또는 간헐적 실패 해소를 의미하지 않습니다.**
+진단 출력이 실행 타이밍에 영향을 주었을 가능성을 배제하지 않으며, 원인으로 확정하지도 않습니다.
+Timeout이 재현되지 않아 **Timeout 진단 실패 분기는 아직 실행 검증되지 않았습니다.**
+추후 실패 로그에서 Host 존재 여부, ONLINE, Metadata 준비·revision·Endpoint 수 및 오류를 확보한 뒤 재조사합니다.
+현재 근거로 Timeout 증가나 제품 기능 수정안을 확정하지 않습니다.
+
+v5.4의 요청된 기능 개발 완료와 **전체 회귀 무실패 판정은 별개**입니다.
+기능 개발 완료 상태를 유지하되, 이 Known Intermittent Failure가 미해결이므로 전체 회귀 무실패 판정은 계속 보류합니다.
+이번 최종 문서 반영에서는 빌드·Benchmark·Network 테스트를 추가 실행하지 않았습니다.
+
+근거 로그: `/tmp/kcf-remote-topic-timeout-investigation/` (5회),
+`/tmp/kcf-peer-readiness-diagnostics/` (진단 후 10회 및 `summary.json`).
+기존 `/tmp/kcf-v54-integration-final/`의 최초 검증 기록은 보존합니다.
+이 경로들은 로컬 임시 검증 artifact이며 저장소에 배포되는 로그가 아닙니다.
+
+### 기존 1kHz VM Benchmark 기록 — 이번 단계 재실행 아님
+
+환경: Ubuntu 24.04.5 LTS / VMware 4 vCPU / kernel 6.8.0-147-generic,
+PREEMPT_DYNAMIC, CPU affinity 0–3, RT Priority limit 99, MEMLOCK unlimited.
+**PREEMPT_RT 커널 또는 실제 Linux 장치 검증이 아닙니다.** FIFO/10 적용 성공과 PREEMPT_RT 지원은 별개입니다.
+3A는 Process::Start/Supervision으로 자식을 관리하고 Runtime 1000Hz를 측정합니다.
+`--trace-outliers`는 기본 OFF이며 ON일 때 사전 할당 버퍼에 시각/간격/CPU를 기록하고
+종료 후 측정 구간 상위 20개와 전후 5개를 출력합니다. >2/5/10/100ms 집계는 Warm-up을 제외합니다.
+Trace ON 자체의 CPU 조회/기록 오버헤드는 별도로 정량화하지 않았습니다.
+
+Release, 매회 60초/최초 5초 제외. 변경 전은 Trace ON A/B/C 각 3회 범위,
+변경 후는 주기 복구 수정 후 Trace ON 각 1회입니다. 최대 주기의 변경 전 값은 3회 중 최댓값입니다.
+
+| 조건 | 평균 Hz 변경 전 → 후 | p99 µs 변경 전 → 후 | 최대 µs 변경 전 → 후 | >1500µs 비율 변경 전 → 후 |
+| --- | --- | --- | --- | --- |
+| A OTHER/0, CPU 0–3 | 975.441–981.964 → 933.874 | 2226.930–2423.909 → 2357.776 | 10045.185 → 7212.194 | 6.890–8.252% → 8.049% |
+| B OTHER/0, CPU 0 | 969.620–976.255 → 919.557 | 2504.279–2676.519 → 2697.902 | 8872.466 → 8726.541 | 7.053–8.626% → 9.279% |
+| C FIFO/10, CPU 0 | 997.427–998.711 → 991.590 | 1613.476–1623.367 → 1616.784 | 10918.668 → 5369.624 | 2.661–2.731% → 2.538% |
+
+변경 후 >2/5/10ms 횟수는 A 1007/4/0, B 1336/7/0, C 70/1/0입니다.
+각 상위 20개 지연 직후 간격 최솟값은 A 1.167ms / B 1.182ms / C 1.180ms로,
+확인한 60개 사례에서 이전 15–20µs 즉시 재실행은 없었습니다. 모든 짧은 주기가 제거됐다는 뜻은 아닙니다.
+지연 후 한 주기를 대기하는 정책은 평균 Hz를 낮출 수 있습니다. FIFO에서 p99가 더 작더라도
+최대 1ms 상한, hard real-time 또는 실행 환경의 지연 원인을 입증하지 않습니다.
+
+초기 Trace OFF B에서 최대 680.441ms를 관측했으나 당시에는 개별 시각/전후 샘플이 없어 원인을 확정하지 못했습니다.
+후속 Trace ON 9회(A→B→C, C→A→B, B→C→A)에서는 100ms 초과가 0회여서 해당 지연은 재현되지 않았습니다.
+가상화/CPU 경합 등을 원인으로 단정하지 않으며 별도 커널 추적은 수행하지 않았습니다.
+출처: `/tmp/kcf-release-results/`, `/tmp/kcf-rt-trace-results/`, `/tmp/kcf-post-recovery-results/`.
+
+3B SHM Topic은 실제 Publisher/Subscriber 두 프로세스와 Runtime 1000Hz를 사용합니다.
+Release 기본 OTHER/0, CPU 0–3, 55초 측정에서 주기 복구 변경 전 → 후:
+
+| 지표 | 변경 전 | 변경 후 |
+| --- | --- | --- |
+| Publish 성공 / 수신 수 | 53,501 / 49,665 | 50,600 / 49,315 |
+| 수신 Hz | 903.000 | 896.636 |
+| Publish→Callback mean / p99 / max µs | 184.092 / 918.290 / 3065.867 | 190.587 / 992.982 / 3711.794 |
+| 원본 Sequence gap | 3,836 | 1,285 |
+
+두 실행 모두 Publish 실패/EAGAIN/중복/역순은 0이며, gap은 latest-value 건너뛰기로 분리했습니다.
+Subscriber Loop 관측 지연과 Callback 도착 지연은 다릅니다. 3B CLI의 RT 설정은 제공하지 않으므로
+RT Topic 성능으로 해석하지 않습니다. 이전 Debug 결과 역시 다른 시점/조건의 관측값이므로
+Release 최적화나 주기 수정의 효과만으로 차이를 단정하지 않습니다.
+
+### 남은 제한 및 미검증
+
+- PREEMPT_RT **실장 검증 미수행**. 접근 가능한 환경은 기존 VM뿐이며 실제 장치의 커널/권한/빌드 가능 여부는 미확인.
+- 물리 LAN Discovery 지연은 **미해결 사항으로 유지**합니다. 이번 Local/격리 Network 회귀 PASS로
+  물리 LAN 지연 원인·재발견 시간·장애 후 자동 복구 안정성을 해결했다고 판단하지 않습니다.
+- 기존 Network Service/Topic/Action의 간헐적 timeout 및 재실행 PASS 이력은 아래/Network 문서에 보존합니다.
+- RT 권한/MEMLOCK은 OS 조건이며 자동 권한 상승·커널 변경을 제공하지 않습니다.
+  테스트에서 실패 조건을 만들기 위한 한도/권한 하향은 해당 테스트 자식에만 적용됩니다.
+- Composition은 일반 실행 예제입니다. External Observer는 자동 재연결하지 않으며 stdin EOF 시
+  기존 관측만 계속합니다. SIGKILL 이후 owner SHM 회수에는 기존 소유권/세대 계약과 명시적 재실행이 필요합니다.
+- `/tmp`의 Profile probe·Composition runner 및 측정 로그는 영구 CI/배포 artifact가 아닙니다.
+  실제 실행 항목과 내부 assertion 수, CTest 등록 수를 혼동하지 않습니다.
+
 ## v5.3 Network Diagnostics 검증
 
 F-ND1~F-ND5A 적용 dev working tree와 별도 Tool 저장소의 기존 실행 로그를 대조한 기록입니다.

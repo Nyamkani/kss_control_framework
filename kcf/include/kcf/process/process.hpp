@@ -1,6 +1,7 @@
 #pragma once
 
 #include "kcf/process/runtime_supervision.hpp"
+#include "kcf/process/execution_profile.hpp"
 #include <string>
 #include <vector>
 #include <sys/types.h>
@@ -27,9 +28,11 @@ public:
     Process(const Process&) = delete;
     Process& operator=(const Process&) = delete;
 
+    // Profile is validated before fork and applied before exec; failures return -errno.
     // Empty scope preserves the inherited SystemStatus scope; Bringup supplies its own.
     int Start(const std::string& executable, const std::vector<std::string>& args = {},
-              const std::string& system_status_scope = {});
+              const std::string& system_status_scope = {},
+              const ExecutionProfile& execution_profile = {});
     int RequestStop();
     int ForceStop(); // explicit controlled cleanup only
     bool IsRunning();

@@ -1,0 +1,5 @@
+add_executable(kcf_mecanum_keyboard src/main.cpp)
+target_include_directories(kcf_mecanum_keyboard PRIVATE ../include)
+target_link_libraries(kcf_mecanum_keyboard PRIVATE kcf_core)
+target_compile_features(kcf_mecanum_keyboard PRIVATE cxx_std_17)
+target_compile_options(kcf_mecanum_keyboard PRIVATE -Wall -Wextra -Wpedantic)

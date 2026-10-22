@@ -33,6 +33,7 @@ public:
 
 private:
     friend class DynamicServiceClient;
+    friend class DynamicActionClient;
     int CallRaw(std::uint16_t service_id, const void* request, std::size_t request_size,
                 void* response, std::size_t response_size,
                 detail::StorageIdentity request_identity, detail::StorageIdentity response_identity);

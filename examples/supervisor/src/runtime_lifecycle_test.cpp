@@ -4,6 +4,7 @@
 #include "kcf/process/process_runtime.hpp"
 #include "kcf/process/execution_mode.hpp"
 #include <cassert>
+#include <array>
 #include <cerrno>
 #include <chrono>
 #include <cstdlib>
@@ -73,6 +74,35 @@ public:
     }
 };
 
+// Two deliberate overruns must each be followed by a full idle period.
+class OverrunElement : public kcf::ProcessElement
+{
+public:
+    using Clock = std::chrono::steady_clock;
+    explicit OverrunElement(kcf::ProcessRuntime& runtime) : runtime_(runtime) {}
+    int Setup() override { ++setups; return 0; }
+    int Loop() override
+    {
+        const auto index = loops++;
+        assert(index < starts.size());
+        starts[index] = Clock::now();
+        if (index == 0 || index == 2)
+            std::this_thread::sleep_for(std::chrono::milliseconds(70));
+        if (index == 3) runtime_.RequestStop();
+        finishes[index] = Clock::now();
+        return 0;
+    }
+    void Shutdown() override
+    {
+        ++shutdowns;
+        assert(runtime_.GetState() == State::STOPPING);
+    }
+    unsigned setups{0}, loops{0}, shutdowns{0};
+    std::array<Clock::time_point, 4> starts{}, finishes{};
+private:
+    kcf::ProcessRuntime& runtime_;
+};
+
 int main()
 {
     alarm(30);
@@ -118,6 +148,23 @@ int main()
         assert(kcf::DetectLaunchExecutionMode()==kcf::ExecutionMode::SUPERVISED);
         assert(runtime.Run(element)==-EINVAL && runtime.GetState()==State::ERROR);
         assert(element.setups==0 && element.loops==0 && element.shutdowns==0);
+        assert(fds()==baseline);
+    }
+    {
+        kcf::ProcessRuntime runtime;
+        runtime.SetLoopFrequency(50); // 20ms, well below each intentional 70ms overrun
+        OverrunElement element(runtime);
+        assert(runtime.Run(element)==0 && runtime.GetState()==State::STOPPED);
+        assert(element.setups==1 && element.loops==4 && element.shutdowns==1);
+        for (const unsigned index : {0U, 2U})
+        {
+            assert(element.finishes[index]-element.starts[index] >= std::chrono::milliseconds(70));
+            const auto idle = element.starts[index+1]-element.finishes[index];
+            assert(idle >= std::chrono::milliseconds(20));
+            std::cout<<"Overrun cycle="<<index<<" idle_us="
+                     <<std::chrono::duration_cast<std::chrono::microseconds>(idle).count()
+                     <<" PASS"<<std::endl;
+        }
         assert(fds()==baseline);
     }
     std::cout<<"ExecutionMode / Runtime lifecycle/cleanup/error precedence/heartbeat/FD PASS"<<std::endl;

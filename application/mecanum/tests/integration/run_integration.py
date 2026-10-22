@@ -144,7 +144,11 @@ def main():
         victim=children(live)['kcf_mecanum_imu'];os.kill(victim,signal.SIGKILL)
         failed=wait(lambda s:estimate(s).get('valid')=='false' and any(v['state']=='ERROR' for n,v in s['apps'].items() if n.startswith('mecanum_integration_'+str(os.getpid()))),'sigkill_error_and_invalid')
         stop(imu,1);stop(ekf);stop(motor)
-        bad,bname,blog=start('motor',True);assert bad.wait(timeout=8)!=0
+        bad,bname,blog=start('motor',True)
+        # v5.5 retains the Supervisor in ERROR after child startup failure.
+        wait(lambda s:s['apps'].get(bname,{}).get('state')=='ERROR','missing_uart_supervisor_error')
+        assert bad.poll() is None
+        stop(bad,1)
         assert 'UART initialization failed' in blog.read_text();results.append('missing_uart_initialization_failure')
         assert u.commands and all(all(v==0 for v in x) for x in u.commands)
         (out/'result.json').write_text(json.dumps({'passed':results,'zero_commands':len(u.commands),'prefix':prefix,'initial_pids':ids,'tool':'existing KcfBackend Refresh/GetElements/StartTopicEcho/ReadTopicEcho'},indent=2))

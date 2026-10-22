@@ -26,6 +26,7 @@ public:
     ServiceServer(const ServiceServer&) = delete;
     ServiceServer& operator=(const ServiceServer&) = delete;
     int Create(std::uint16_t port);
+    std::uint16_t Port() const noexcept { return port_; } // controlling-thread metadata accessor
 
     template <typename Request, typename Response>
     int Register(std::uint16_t service_id, std::function<void(const Request&, Response&)> callback)

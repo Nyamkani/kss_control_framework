@@ -1,0 +1,170 @@
+{
+  "date": "2026-10-23",
+  "branch": "mecanum",
+  "head": "70267a7ff6201709a50d7a2d94178cae8261d39b",
+  "target": "f184787d7d68e8e1d3adbcd27d9ee09d170893a9",
+  "upstream_paths": 95,
+  "core_bringup_exact_files": 99,
+  "original_application_files": 62,
+  "original_application_changed": [
+    "application/mecanum/tests/integration/run_integration.py"
+  ],
+  "keyboard": [
+    {
+      "duplicate_publisher_rejected": true
+    },
+    {
+      "key": "w",
+      "cmd": [
+        0.12,
+        0.0,
+        0.0
+      ],
+      "rpm_uart": [
+        -27.949162,
+        -27.949162,
+        -27.949162,
+        -27.949162
+      ],
+      "space_stop_ms": 9.066418
+    },
+    {
+      "key": "s",
+      "cmd": [
+        -0.12,
+        0.0,
+        0.0
+      ],
+      "rpm_uart": [
+        27.949162,
+        27.949162,
+        27.949162,
+        27.949162
+      ],
+      "space_stop_ms": 6.485913
+    },
+    {
+      "key": "a",
+      "cmd": [
+        0.0,
+        0.12,
+        0.0
+      ],
+      "rpm_uart": [
+        27.949162,
+        -27.949162,
+        27.949162,
+        -27.949162
+      ],
+      "space_stop_ms": 20.635943
+    },
+    {
+      "key": "d",
+      "cmd": [
+        0.0,
+        -0.12,
+        0.0
+      ],
+      "rpm_uart": [
+        -27.949162,
+        27.949162,
+        -27.949162,
+        27.949162
+      ],
+      "space_stop_ms": 6.459313
+    },
+    {
+      "key": "q",
+      "cmd": [
+        0.0,
+        0.0,
+        0.4
+      ],
+      "rpm_uart": [
+        18.399864,
+        18.399864,
+        -18.399864,
+        -18.399864
+      ],
+      "space_stop_ms": 5.480711
+    },
+    {
+      "key": "e",
+      "cmd": [
+        0.0,
+        0.0,
+        -0.4
+      ],
+      "rpm_uart": [
+        -18.399864,
+        -18.399864,
+        18.399864,
+        18.399864
+      ],
+      "space_stop_ms": 24.062649
+    },
+    {
+      "input_idle_stop_ms": 174.428754
+    },
+    {
+      "publisher_recreated_motor_no_reconnect": true
+    },
+    {
+      "supervisor_independence": true,
+      "escape_final_zero": true
+    },
+    {
+      "sigint_final_zero": true,
+      "stop_ms": 20.887143
+    },
+    {
+      "sigterm_final_zero": true,
+      "stop_ms": 10.243721
+    },
+    {
+      "sigkill_motor_timeout_ms": 254.606318
+    },
+    {
+      "supervisor_registration_rejected": true
+    }
+  ],
+  "integration": {
+    "passed": [
+      "group_running",
+      "independent_publishers_progress",
+      "input_silence_invalid",
+      "input_resume_valid",
+      "group_normal_shutdown",
+      "isolated_supervisors_running",
+      "ekf_only_restart",
+      "imu_stopped_invalid",
+      "imu_restart_reconnected",
+      "motor_stopped_invalid",
+      "motor_restart_reconnected",
+      "sigkill_error_and_invalid",
+      "missing_uart_supervisor_error",
+      "missing_uart_initialization_failure"
+    ],
+    "zero_commands": 31,
+    "prefix": "/mecanum_integration_3709712",
+    "initial_pids": {
+      "kcf_mecanum_ekf": 3709720,
+      "kcf_mecanum_motor": 3709718,
+      "kcf_mecanum_imu": 3709719
+    },
+    "tool": "existing KcfBackend Refresh/GetElements/StartTopicEcho/ReadTopicEcho"
+  },
+  "motion": {
+    "prefix": "/mecanum_motion_3708259",
+    "passed": [
+      "forward",
+      "lateral",
+      "rotation"
+    ],
+    "expiry_stop_ms": [
+      251.678908,
+      252.546989,
+      253.916986
+    ]
+  }
+}

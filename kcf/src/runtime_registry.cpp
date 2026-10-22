@@ -3,6 +3,7 @@
 #include "kcf/introspection/detail/endpoint_registry.hpp"
 #include "kcf/introspection/detail/type_registry.hpp"
 #include "kcf/introspection/detail/service_registry.hpp"
+#include "kcf/introspection/detail/action_registry.hpp"
 #include <algorithm>
 #include <charconv>
 #include <fstream>
@@ -108,6 +109,7 @@ void BeginRuntimeIntrospection(ExecutionMode mode) noexcept
         BeginTypeRegistry(info.pid, info.process_start_ticks);
         BeginEndpointRegistry(info.pid, info.process_start_ticks);
         BeginServiceRegistry(info.pid, info.process_start_ticks);
+        BeginActionRegistry(info.pid, info.process_start_ticks);
     }
     catch (...) {} // Introspection never changes Runtime's result.
 }
@@ -125,6 +127,7 @@ void EndRuntimeIntrospection(ProcessState state, int runtime_error) noexcept
     try
     {
         std::lock_guard<std::mutex> lock(registry_mutex);
+        EndActionRegistry();
         EndServiceRegistry();
         EndEndpointRegistry();
         EndTypeRegistry();

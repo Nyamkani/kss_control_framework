@@ -1,4 +1,5 @@
 #include "kcf/service/service_server.hpp"
+#include "kcf/introspection/detail/action_registry.hpp"
 #include <new>
 #include <system_error>
 #include <arpa/inet.h>
@@ -59,6 +60,7 @@ int ServiceServer::Start()
     }
     catch (const std::bad_alloc&) { running_.store(false); return -ENOMEM; }
     PublishServices();
+    detail::SetActionPortActive(port_,true);
     return 0;
 }
 
@@ -70,6 +72,7 @@ void ServiceServer::Stop()
         if (worker_.get_id() == std::this_thread::get_id()) return;
         worker_.join();
     }
+    detail::SetActionPortActive(port_,false);
     RemoveServices();
     if (fd_ >= 0) { close(fd_); fd_ = -1; }
     port_ = 0;

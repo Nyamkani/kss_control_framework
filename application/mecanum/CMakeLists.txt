@@ -22,3 +22,9 @@ if(MECANUM_BUILD_TESTS)
     target_compile_definitions(mecanum_firmware_tests PRIVATE MECANUM_MAX_ABS_RPM=120)
     target_compile_options(mecanum_firmware_tests PRIVATE -Wall -Wextra -Wpedantic)
 endif()
+
+# Standalone host discovery gateway; intentionally not registered with Bringup.
+add_executable(kcf_mecanum_gateway src/network_gateway_main.cpp)
+target_link_libraries(kcf_mecanum_gateway PRIVATE kcf_core)
+target_compile_features(kcf_mecanum_gateway PRIVATE cxx_std_17)
+target_compile_options(kcf_mecanum_gateway PRIVATE -Wall -Wextra -Wpedantic)

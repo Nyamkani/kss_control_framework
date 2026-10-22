@@ -20,7 +20,8 @@ int ArduinoMotorDriver::PrepareStartup() {
         const int result = serial_.ReadFrame(frame, std::min(deadline, quiet_deadline));
         if (result == -ETIMEDOUT && frame.empty() && quiet_deadline <= deadline) return 0;
         if (result) return result;
-        if (!frame.empty() && frame != "Setup Complete!") return -EPROTO;
+        if (!frame.empty() && frame != "Setup Complete!" && frame.compare(0, 4, "RPM:") != 0)
+            return -EPROTO;
         if (MonotonicNs() >= deadline) return -ETIMEDOUT;
     }
 }
@@ -32,7 +33,14 @@ CommandResult ArduinoMotorDriver::Transaction(const std::string& command, std::s
     const auto send_deadline = valid_until ? std::min<std::uint64_t>(deadline, valid_until) : deadline;
     int result = serial_.SendData(command, send_deadline);
     if (result) return {result, SendPhase::SendAttempted};
-    return {serial_.ReadFrame(response, deadline), SendPhase::SendAttempted};
+    for (;;) {
+        response.clear();
+        result = serial_.ReadFrame(response, deadline);
+        if (result || response.compare(0, 4, "RPM:") != 0)
+            return {result, SendPhase::SendAttempted};
+        // Only complete debug frames are skipped; all reads share the send's deadline.
+        if (MonotonicNs() >= deadline) return {-ETIMEDOUT, SendPhase::SendAttempted};
+    }
 }
 CommandResult ArduinoMotorDriver::Ack(const std::string& command, std::uint64_t valid_until) {
     std::string response;

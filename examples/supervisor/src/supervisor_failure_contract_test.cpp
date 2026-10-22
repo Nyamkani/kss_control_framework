@@ -10,7 +10,22 @@
 #include <fstream>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <sys/syscall.h>
 
+// Test executable interposition only: production Process/Bringup have no test hooks.
+static pid_t fault_pid=-1;
+static int fault_mode=0, force_attempts=0;
+extern "C" int kill(pid_t pid,int signal) noexcept {
+    if(pid==fault_pid && (signal==SIGTERM || (signal==SIGKILL && fault_mode==2))) {
+        if(signal==SIGKILL) ++force_attempts;
+        errno=EPERM;return -1;
+    }
+    return static_cast<int>(syscall(SYS_kill,pid,signal));
+}
+extern "C" pid_t waitpid(pid_t pid,int* status,int options) {
+    if(pid==fault_pid && fault_mode==3) {errno=EIO;return -1;}
+    return static_cast<pid_t>(syscall(SYS_wait4,pid,status,options,nullptr));
+}
 using namespace std::chrono_literals;
 using State = kcf::ApplicationState;
 namespace fs = std::filesystem;
@@ -204,6 +219,58 @@ static void StartupBoundary(const std::string& executable,std::uint64_t ticks,
     assert(!fs::exists(path) && Fds()==baseline);
     std::cout<<"Startup "<<(cancel?"explicit cancellation":"barrier timeout")<<" PASS\n";
 }
+static void TestSignalHandler(int) {}
+static void ShutdownFault(const std::string& executable,const std::string& path,int mode) {
+    const auto baseline=Fds();
+    struct sigaction saved_int{},saved_term{},custom{};
+    custom.sa_handler=TestSignalHandler;sigemptyset(&custom.sa_mask);
+    assert(sigaction(SIGINT,&custom,&saved_int)==0);
+    assert(sigaction(SIGTERM,&custom,&saved_term)==0);
+    bringup::Bringup app;
+    auto specs=Specs(executable,false,0);
+    for(auto& spec:specs)spec.shutdown_timeout_ms=100;
+    assert(app.Setup("shutdown-fault",specs)==0);
+    const auto children=app.GetElementStatuses();
+    // Keep the first child stopped so a denied kill cannot be masked by its
+    // own Supervisor-loss timeout. The second child must still be cleaned up.
+    assert(kill(children[0].pid,SIGSTOP)==0);
+    fault_pid=children[0].pid;fault_mode=mode;force_attempts=0;
+    const auto begin=std::chrono::steady_clock::now();
+    app.RequestShutdown();assert(app.Run()==1);
+    assert(std::chrono::steady_clock::now()-begin<4s);
+    assert(!app.GetApplicationError().valid && app.GetErrorHistory().empty());
+    assert(!fs::exists(path));
+    struct sigaction current{};
+    assert(sigaction(SIGINT,nullptr,&current)==0 && current.sa_handler==TestSignalHandler);
+    assert(sigaction(SIGTERM,nullptr,&current)==0 && current.sa_handler==TestSignalHandler);
+    auto statuses=app.GetElementStatuses();
+    assert(!statuses[1].running && statuses[1].exit_info.available);
+    assert(!fs::exists("/proc/"+std::to_string(children[1].pid)));
+    if(mode==1) {
+        assert(app.GetApplicationState()==State::STOPPED);
+        Cleanup(app,path,baseline);
+        app.Shutdown();Cleanup(app,path,baseline);
+    } else {
+        assert(app.GetApplicationState()==State::SHUTTING_DOWN);
+        assert(statuses[0].pid==children[0].pid && !statuses[0].exit_info.available);
+        assert(fs::exists("/proc/"+std::to_string(children[0].pid)));
+        assert(Fds()==baseline+1); // Retained ownership includes its supervision FD.
+        assert(app.Run()==-EINVAL); // No implicit restart of the monitor/generation.
+        if(mode==2) {
+            assert(force_attempts==1);
+            app.Shutdown(); // Explicit retry only, still bounded.
+            assert(force_attempts==2 && app.GetApplicationState()==State::SHUTTING_DOWN);
+        }
+    }
+    fault_pid=-1;fault_mode=0;
+    app.Shutdown(); // Explicit cleanup after the OS fault is removed.
+    assert(app.GetApplicationState()==State::STOPPED);
+    Cleanup(app,path,baseline);
+    app.Shutdown();Cleanup(app,path,baseline);
+    assert(sigaction(SIGINT,&saved_int,nullptr)==0);
+    assert(sigaction(SIGTERM,&saved_term,nullptr)==0);
+    std::cout<<"Shutdown fault mode="<<mode<<" ownership/FD/SHM/signal/idempotence PASS\n";
+}
 int main(int argc,char** argv) {
     if(argc==5 && std::string(argv[1])=="--fixture") {
         int code=0;std::ifstream in(argv[3]);in>>code;assert(in);
@@ -226,5 +293,8 @@ int main(int argc,char** argv) {
     RunningExit(argv[1],ticks,path,false);
     StartupBoundary(argv[1],ticks,path,false);
     StartupBoundary(argv[1],ticks,path,true);
+    ShutdownFault(argv[1],path,1);
+    ShutdownFault(argv[1],path,2);
+    ShutdownFault(argv[1],path,3);
     std::cout<<"Supervisor failure contract PASS\n";
 }

@@ -464,11 +464,18 @@ int Bringup::StopGeneration()
     const auto start = Clock::now();
     int failure = 0;
     std::vector<bool> forced(elements_.size(), false);
+    // One force attempt per child per invocation, plus a bounded reap grace.
+    // A successful SIGKILL does not guarantee prompt exit (e.g. kernel D-state).
+    auto deadline = start + std::chrono::seconds(1);
+    for (const auto& entry : elements_)
+        if (entry->started) deadline = std::max(deadline,
+            start + std::chrono::milliseconds(entry->spec.shutdown_timeout_ms) +
+            std::chrono::seconds(1));
     for (auto& entry : elements_)
     {
         if (!entry->started || !entry->process.IsRunning()) continue;
         const int result = entry->process.RequestStop();
-        if (result && result != -ESRCH) failure = result;
+        if (result && result != -ESRCH && !failure) failure = result;
         std::cout << "[Bringup] stop name=" << entry->spec.name << " pid=" << entry->pid
                   << " error=" << result << std::endl;
     }
@@ -481,21 +488,25 @@ int Bringup::StopGeneration()
         {
             auto& entry = elements_[i];
             if (!entry->started) continue;
-            if (!entry->process.IsRunning())
+            const bool alive = entry->process.IsRunning();
+            const auto info = entry->process.GetExitInfo();
+            if (!alive && info.available)
             {
-                const auto info = entry->process.GetExitInfo();
-                if (!info.available) failure = -ECHILD;
                 UpdateExitInfo(*entry);
                 entry->started = entry->process_alive = false;
                 std::cout << "[Bringup] reaped name=" << entry->spec.name << " pid=" << entry->pid
                           << " signal=" << info.signal_number << std::endl;
                 continue;
             }
+            // IsRunning=false can also mean waitpid failed. Do not treat that
+            // as reaping, clear ownership, or signal a PID discarded by Process.
             remaining = true;
+            if (!alive && !failure) failure = -ECHILD;
+            if (entry->process.GetPid() <= 0) continue;
             if (!forced[i] && cycle - start >= std::chrono::milliseconds(entry->spec.shutdown_timeout_ms))
             {
                 const int result = entry->process.ForceStop();
-                if (result && result != -ESRCH) return result; // never start a new generation
+                if (result && result != -ESRCH && !failure) failure = result;
                 forced[i] = true;
                 std::cout << "[Bringup] force stop name=" << entry->spec.name << " pid=" << entry->pid
                           << " error=" << result << std::endl;
@@ -503,18 +514,37 @@ int Bringup::StopGeneration()
         }
         PublishIntrospection();
         if (!remaining) return failure;
+        if (Clock::now() >= deadline)
+        {
+            for (const auto& entry : elements_)
+                if (entry->started)
+                    std::cerr << "[Supervisor] unreaped child name=" << entry->spec.name
+                              << " pid=" << entry->pid << " process_pid=" << entry->process.GetPid()
+                              << " supervision_fd=" << entry->process.GetSupervisionFd() << std::endl;
+            return failure ? failure : -ETIMEDOUT;
+        }
         PublishSystemStatus();
         std::this_thread::sleep_until(cycle + std::chrono::milliseconds(100));
     }
 }
 void Bringup::Shutdown()
 {
-    if (application_state_==ApplicationState::STOPPED) return;
+    if (application_state_==ApplicationState::STOPPED && !status_owned_ &&
+        !sigint_installed_ && !sigterm_installed_) return;
     RequestShutdown();
-    SetApplicationState(ApplicationState::SHUTTING_DOWN);
-    if (StopGeneration()) { exit_code_ = 1; return; }
-    // Children have been reaped. Publish the terminal state before unlinking.
-    SetApplicationState(ApplicationState::STOPPED);
+    if (application_state_!=ApplicationState::STOPPED)
+        SetApplicationState(ApplicationState::SHUTTING_DOWN);
+    const int stopped = StopGeneration();
+    if (stopped)
+    {
+        if (!exit_code_) exit_code_ = 1;
+        std::cerr << "[Supervisor] StopGeneration error=" << stopped << std::endl;
+    }
+    const bool reaped = std::none_of(elements_.begin(), elements_.end(),
+                                    [](const auto& entry) { return entry->started; });
+    // A stop error alone does not imply live children; conversely an unknown
+    // wait result is never proof of completion. Keep Process ownership for retry.
+    if (reaped) SetApplicationState(ApplicationState::STOPPED);
     introspection_.End();
     if (status_owned_)
     {
@@ -522,19 +552,29 @@ void Bringup::Shutdown()
         const int unlinked = status_publisher_.Unlink();
         if (closed || unlinked)
         {
-            exit_code_ = 1;
+            if (!exit_code_) exit_code_ = 1;
             std::cerr << "[Supervisor] SystemStatus cleanup close=" << closed << " unlink=" << unlinked << std::endl;
         }
-        status_owned_ = false;
+        // Close consumes the wrapper handles even on failure; retry only a
+        // name still pending unlink, not an already unlinked object.
+        status_owned_ = unlinked != 0 && unlinked != -ENOENT;
     }
     running_ = false;
     setup_ = false;
     RestoreSignalHandlers();
-    std::cout << "[Bringup] Shutdown complete" << std::endl;
+    std::cout << "[Bringup] Shutdown " << (reaped ? "complete" : "incomplete: child ownership retained") << std::endl;
 }
 void Bringup::RestoreSignalHandlers()
 {
-    if (sigterm_installed_) { sigaction(SIGTERM, &previous_sigterm_, nullptr); sigterm_installed_ = false; }
-    if (sigint_installed_) { sigaction(SIGINT, &previous_sigint_, nullptr); sigint_installed_ = false; }
+    const auto restore = [&](int signal, const struct sigaction& previous, bool& installed) {
+        if (!installed) return;
+        if (sigaction(signal, &previous, nullptr)==0) installed=false;
+        else {
+            if (!exit_code_) exit_code_=1;
+            std::cerr << "[Supervisor] signal restore signal=" << signal << " error=" << -errno << std::endl;
+        }
+    };
+    restore(SIGTERM,previous_sigterm_,sigterm_installed_);
+    restore(SIGINT,previous_sigint_,sigint_installed_);
 }
 } // namespace bringup

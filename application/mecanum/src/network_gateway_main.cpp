@@ -14,12 +14,17 @@ namespace network = kcf::network;
 
 void Usage() {
     std::cout << "Usage: kcf_mecanum_gateway --host-id ID --local-ip IPV4\n"
-                 "       [--discovery-port 37651] [--control-port 39001]\n"
+                 "       [--discovery-port 37651] [--control-port 39001] [--tools-host-id 32HEX]\n"
                  "ID: nonzero 32 hexadecimal digits or canonical UUID; keep stable per host.\n"
                  "--control-port: shared numeric UDP metadata / TCP control port.\n"
                  "boot_id: /proc/sys/kernel/random/boot_id\n"
                  "Standalone discovery gateway; all local runtime metadata is collected.\n"
-                 "Topic forwarding, remote endpoint exposure and remote control grants are disabled.\n";
+                 "Topics/Diagnostics: disabled by default; --tools-host-id enables both.\n"
+                 "Topic UDP port 37652, default rate limit 50 Hz; exposed Topics (5):\n"
+                 "  /mecanum/wheel_state, /mecanum/wheel_odometry, /mecanum/imu/raw_data,\n"
+                 "  /mecanum/imu/mag_raw, /mecanum/ekf/odometry\n"
+                 "Only the specified Tools Host ID may query Type Descriptors.\n"
+                 "Tools Host ID must differ from Gateway Host ID. Remote control grants remain disabled.\n";
 }
 
 bool ParseId(const std::string& text, network::HostIdentity& id) {
@@ -57,7 +62,12 @@ public:
         if (result) std::cerr << "Gateway start failed: " << result << '\n';
         else std::cout << "Gateway started: local_ip=" << config_.discovery.interface_address
                        << " discovery_port=" << config_.discovery.port
-                       << " metadata/control_port=" << config_.discovery.metadata_port << '\n';
+                       << " metadata/control_port=" << config_.discovery.metadata_port
+                       << " topics=" << (config_.topics.enabled ? "enabled" : "disabled")
+                       << " diagnostics=" << (config_.diagnostics_enabled ? "enabled" : "disabled")
+                       << " exposed_topics=" << config_.metadata.remote_topics.size()
+                       << " topic_udp_port=" << config_.topics.port
+                       << (config_.topics.enabled ? "" : " (inactive)") << '\n';
         return result;
     }
     int Loop() override {
@@ -81,10 +91,10 @@ int main(int argc, char** argv) {
     config.discovery.port = 37651;
     config.discovery.metadata_port = 39001;
     config.topics.enabled = false;
-    // Default-empty remote_* exposure lists and all client permission lists deny
-    // remote access. Empty runtime_pids collects all local runtimes, preserving
+    // Remote exposure and client grants stay empty unless explicitly enabled below. Empty runtime_pids collects all local runtimes, preserving
     // the Framework's existing Supervisor Application/Element associations.
-    bool have_host = false, have_address = false;
+    bool have_host = false, have_address = false, have_tools_host = false;
+    network::HostIdentity tools_host;
     for (int i = 1; i < argc; ++i) {
         const std::string key = argv[i];
         if (key == "--help") { Usage(); return 0; }
@@ -92,6 +102,8 @@ int main(int argc, char** argv) {
         const std::string value = argv[i];
         bool valid = false;
         if (key == "--host-id") valid = have_host = ParseId(value, config.discovery.host);
+        else if (key == "--tools-host-id")
+            valid = have_tools_host = value.size() == 32 && ParseId(value, tools_host);
         else if (key == "--local-ip") {
             in_addr address{};
             valid = have_address = inet_pton(AF_INET, value.c_str(), &address) == 1 &&
@@ -104,6 +116,24 @@ int main(int argc, char** argv) {
     if (!have_host || !have_address || config.discovery.port == config.discovery.metadata_port) {
         Usage();
         return 2;
+    }
+    if (have_tools_host) {
+        if (tools_host == config.discovery.host) {
+            std::cerr << "Tools Host ID must differ from Gateway Host ID\n";
+            return 2;
+        }
+        if (config.topics.port == config.discovery.port ||
+            config.topics.port == config.discovery.metadata_port) {
+            std::cerr << "Topic UDP port conflicts with Discovery/Control port\n";
+            return 2;
+        }
+        config.topics.enabled = true;
+        config.diagnostics_enabled = true;
+        config.metadata.remote_topics = {
+            "/mecanum/wheel_state", "/mecanum/wheel_odometry",
+            "/mecanum/imu/raw_data", "/mecanum/imu/mag_raw", "/mecanum/ekf/odometry"};
+        config.descriptor_query_clients = {tools_host};
+        // No cmd_vel exposure or Parameter/Service/Action permissions are granted.
     }
     if (kcf::DetectLaunchExecutionMode() != kcf::ExecutionMode::STANDALONE) {
         std::cerr << "Gateway must be launched as a standalone process\n";

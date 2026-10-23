@@ -82,3 +82,22 @@ python3 application/mecanum/tests/integration/run_integration.py \
 Tool 확인 범위는 **실제 백엔드와 descriptor 기반 데이터 읽기**입니다. 매 관찰 시 새 조회·Echo 세션을 열므로 재시작 이후 재조회는 검증하지만 기존 GUI의 장기 Echo 세션 자동 재연결이나 실제 화면 조작·렌더링은 검증하지 않습니다. 기존 Tool의 Refresh 이후 다시 선택·읽기 하는 절차를 사용해야 합니다. 그래프·이력 기능은 추가하지 않았습니다.
 
 실제 UART 지연·단절, 보드 재부팅, 물리적 정지·watchdog, 장착 축·방향 기준, 실제 이동 정확도는 별도 실기 검증 사항입니다. 입력 공백 중 로봇이 이동하면 EKF가 복구되더라도 누락 위치가 복원되거나 위치 정확도가 보장되는 것은 아닙니다.
+
+## 독립 Network Gateway
+
+Gateway는 Bringup에 등록하지 않고 별도 터미널에서 실행합니다. 기존 로컬 메타데이터 수집과 Supervisor 소속 관계를 사용하며 PID 목록을 제한하지 않습니다.
+
+```sh
+cmake --build /tmp/kcf-mecanum-ekf-build --target kcf_mecanum_gateway -j2
+/tmp/kcf-mecanum-ekf-build/application/mecanum/kcf_mecanum_gateway \
+  --host-id 11111111111111111111111111111111 --local-ip 192.168.1.10 \
+  --tools-host-id 22222222222222222222222222222222
+```
+
+예시 IPv4는 RPi5의 실제 주소로, 두 ID는 Gateway와 Tools의 서로 다른 실제 Host ID로 바꿉니다. `--tools-host-id`는 32자리 16진수이며, 지정하면 Topic 전송과 Network Diagnostics를 활성화하고 해당 Host ID에만 Type Descriptor 조회를 허용합니다. Diagnostics 자체의 접근 정책은 기존 Framework API를 그대로 사용합니다.
+
+기본 포트는 Discovery UDP 37651, Metadata UDP / Control TCP 39001, Topic UDP 37652입니다. 기존 Topic 전송률 제한 기본값 50 Hz를 사용하며 모든 센서 샘플의 전송을 보장하지 않습니다. `--discovery-port`와 `--control-port`로 포트를 바꾸는 경우에도 활성 Topic 포트와의 충돌은 거부합니다.
+
+노출 이름은 `/mecanum/wheel_state`, `/mecanum/wheel_odometry`, `/mecanum/imu/raw_data`, `/mecanum/imu/mag_raw`, `/mecanum/ekf/odometry`로 고정합니다. 기본 `/mecanum` 접두사로 실행한 Publisher가 대상입니다. `/mecanum/cmd_vel`은 노출하지 않으며 Parameter·Service·Action 제어 권한은 부여하지 않습니다.
+
+`--tools-host-id`를 생략하면 기존 Discovery-only 모드로 실행하며 Topic 전송·Diagnostics·Descriptor 조회 권한은 비활성 상태입니다. SIGINT/SIGTERM으로 Gateway만 종료할 수 있습니다. 실제 PC↔RPi5 LAN 수신은 별도 실기 검증이 필요합니다.

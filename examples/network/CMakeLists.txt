@@ -63,3 +63,15 @@ target_compile_options(kcf_remote_topic_client_test PRIVATE -UNDEBUG -Wall -Wext
 add_executable(kcf_lan_recovery src/lan_recovery_main.cpp)
 target_link_libraries(kcf_lan_recovery PRIVATE kcf_core)
 target_compile_options(kcf_lan_recovery PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(kcf_host_identity_test src/host_identity_test.cpp)
+target_link_libraries(kcf_host_identity_test PRIVATE kcf_core)
+target_compile_options(kcf_host_identity_test PRIVATE -UNDEBUG -Wall -Wextra -Wpedantic)
+
+add_executable(kcf_network_interface_test src/network_interface_test.cpp)
+target_link_libraries(kcf_network_interface_test PRIVATE kcf_core)
+target_compile_options(kcf_network_interface_test PRIVATE -UNDEBUG -Wall -Wextra -Wpedantic)
+
+add_executable(kcf_topic_exposure_test src/topic_exposure_test.cpp)
+target_link_libraries(kcf_topic_exposure_test PRIVATE kcf_core)
+target_compile_options(kcf_topic_exposure_test PRIVATE -UNDEBUG -Wall -Wextra -Wpedantic)

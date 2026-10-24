@@ -37,7 +37,8 @@ struct RemoteTopicConfig {
 // Additive Consumer metadata survives base UpdateMetadata calls. Subscription IDs
 // are process-wide monotonic; never fork a running client. Terminal/LOST handles
 // retain historical data and occupy a slot until Unsubscribe or Stop.
-// Publisher needs TOPIC_ENDPOINT_SUBSCRIPTION and descriptor-query permission.
+// Publisher needs TOPIC_ENDPOINT_SUBSCRIPTION and descriptor-query permission
+// (explicit Host allowlist or Gateway topic_observer_enabled opt-in).
 // GetDiagnostics is the receive-side snapshot; NetworkDiagnosticsClient queries
 // the sender Gateway. This client does not create a Diagnostics TCP listener.
 // Trusted LAN only: peer/session checks are not cryptographic authentication.

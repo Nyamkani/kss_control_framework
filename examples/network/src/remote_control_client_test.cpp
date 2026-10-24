@@ -170,6 +170,22 @@ void ActionClientTests() {
         // Named storage recreated while metadata is still the old registration.
         assert(!topic.Unlink());topic.Close();assert(!topic.Create("/rcc/schema_topic"));assert(raw(te,type)!=0);
     }
+    // Public Topic schema permission must not grant other schema/control access.
+    schema_session=peer.session_id;gateway.Stop();
+    auto saved=gc;gc.descriptor_query_clients.clear();gc.parameter_get_clients.clear();
+    gc.parameter_set_clients.clear();gc.service_call_clients.clear();gc.topic_observer_enabled=true;
+    assert(!gateway.Start(gc));select(schema_session);
+    query(endpoint("/rcc/schema_topic"),n::DescriptorRole::VALUE);
+    for(const auto& e:std::vector<n::NetworkEndpointMetadata>{pe,se,ae}) {
+        auto role=e.kind==n::EndpointKind::PARAMETER?n::DescriptorRole::VALUE:n::DescriptorRole::REQUEST;
+        n::TypeIdentity expected;assert(!n::DescriptorType(e,role,expected));
+        assert(client.QueryTypeDescriptor(e.identity,peer.session_id,e.name,role,expected,schema)==-EACCES);
+    }
+    assert(client.SetParameter(pe.identity,peer.session_id,pe.name,type,bytes(4)).error!=0);
+    assert(client.CallService(se.identity,peer.session_id,se.name,type,type,bytes(4)).error!=0);
+    assert(start(0,7).error!=0&&calls[0]==0&&service_calls==0);
+    schema_session=peer.session_id;gateway.Stop();gc=saved;assert(!gateway.Start(gc));select(schema_session);
+    std::cout<<"Topic Observer denies Parameter/Service/Action schemas and mutation requests PASS\n";
     // New session resets raw request replay window, without changing endpoint APIs.
     schema_session=peer.session_id;gateway.Stop();assert(!gateway.Start(gc));select(schema_session);
     std::cout<<"Descriptor Parameter/Service/Action/Topic roles, permission/default capability, live endpoint/type/scope gates PASS\n";

@@ -176,3 +176,6 @@ Process exit의 [RecordFailure](../bringup/src/bringup.cpp) 분류는 PROCESS_EX
 Bringup 종료·재실행 후 새 Supervisor/child PID/start_ticks generation과 Standalone discovery도 확인했습니다.
 이 결합 결과는 자동 fixture가 아닌 manual integration verification입니다.
 Tool topology/state는 [수동 Refresh](04_INTROSPECTION_AND_TOOL.md)로 갱신됩니다.
+
+
+OS 오류로 Managed 자식 회수에 실패한 경우, Supervisor는 STOPPED를 선언하지 않고 SHUTTING_DOWN 상태를 유지한다. 재시도 및 자원 소유권은 Bringup 객체의 수명 내에서만 유지되며, 객체 소멸 이후 자식 회수는 보장하지 않는다.

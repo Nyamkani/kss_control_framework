@@ -1,4 +1,6 @@
 add_library(kcf_core
+    src/network/network_interface.cpp
+    src/network/host_identity.cpp
     src/network/network_diagnostics.cpp
     src/network/network_diagnostics_client.cpp
     src/network/remote_control_client.cpp

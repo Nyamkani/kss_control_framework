@@ -6,7 +6,8 @@ KCF는 Linux C++17 Application의 프로세스 실행·주기·감시와 IPC를 
 
 ## 버전과 사용 범위
 
-현재 로컬 `dev`의 기준은 **Framework v5.5.0 (S1~S4)**입니다.
+현재 로컬 `dev`의 버전은 **Framework v5.5.0**이며, Supervisor S1~S4와 NET56 개발 구현을 포함합니다.
+NET56 개발 완료 범위는 v5.6.0 정식 릴리스 완료를 의미하지 않습니다.
 루트 [CMakeLists.txt](CMakeLists.txt)의 project version과
 [FrameworkVersion](kcf/include/kcf/network/compatibility.hpp)의 기본값은 모두 **5.5.0**입니다.
 `NETWORK_PROTOCOL` 정책은 Network major와 capability를 검사하고,
@@ -302,10 +303,24 @@ v5.3에서 추가된 `ControlConfig::diagnostics_enabled`(기본 OFF)로 허용�
 Framework는 counter를 제공하며 Hz 계산·Graph freshness는 Tool 책임입니다.
 [Diagnostics API·통신 계약](docs/08_NETWORK_ARCHITECTURE.md#network-diagnostics-v53)을 참고하세요.
 
+### NET56 개발 구현 (버전 5.5.0 유지)
+
+영구 Host ID/NIC 자동 선택, 독립 `kcf_gateway`, systemd 템플릿, Network 재바인딩,
+Prefix 기반 Publisher 공개·read-only Topic Observer 및 same-UID Local IPC 조회를 구현했습니다.
+Topic별 Rate/100Hz 송신 스케줄러, 새 Route의 과거 명령 차단 Fresh-start,
+수신 Commit 기반 `CommandFreshnessMonitor`도 제공합니다. Application 제어 주기와 Network 주기는 독립적입니다.
+
+[현재 옵션·실행 예시·검증 경계](docs/11_NETWORK_V56_DESIGN.md#0-현재-개발-구현과-검증-범위),
+[systemd 템플릿](gateway/systemd/README.md), [Local IPC v1](gateway/LOCAL_IPC.md)을 참고하세요.
+Gateway 기본 포트는 Discovery UDP 37651, Control TCP/Metadata UDP 39001, Topic UDP 37652입니다.
+`--topic-rate /robot/cmd_vel:100`은 기본 50Hz를 대체하지만 권한이나 100Hz 도착을 보장하지 않습니다.
+`--topic-allow-prefix /robot/`와 `--topic-fresh-start /robot/cmd_vel`은 각각 공개와 새 Publish 요구 정책입니다.
+실제 systemd 설치·운영, NET56 물리 LAN, hard real-time 100Hz 및 로봇 Fail-safe는 미검증입니다.
+
 ### 별도 KCF Tools와 검증 범위
 
 [kcf_tools](https://github.com/Nyamkani/kcf_tools)는 별도 repository입니다.
-**기존 연동 기준은 Framework v5.4.0 / KCF Tools v0.14**이며 RemoteControlClient,
+**현재 NET56 연동 대상은 Framework 5.5.0 개발 작업 트리 / KCF Tools 0.14.0**이며 RemoteControlClient,
 RemoteTopicClient 및 TypeDescriptor Query를 사용합니다.
 
 - Multi-Host 선택: Local/Remote Host와 정확한 Endpoint를 선택하며, 동일 이름도 Host/Boot/Runtime/등록 ID/Session으로 구분합니다.
@@ -315,7 +330,10 @@ RemoteTopicClient 및 TypeDescriptor Query를 사용합니다.
 - Remote Topic: 정확한 Publisher 선택 → Subscribe/Unsubscribe, 최신 Payload·Sequence·수신률 확인.
 
 Dynamic access는 TypeDescriptor와 canonical codec을 사용하며 Primitive Scalar / Fixed Array 범위입니다.
-Gateway의 REMOTE 노출 설정과 Descriptor/Get/Set/Service/Goal/Cancel별 독립 Allowlist가 필요합니다.
+Gateway의 REMOTE 노출 설정과 Get/Set/Service/Goal/Cancel별 독립 Allowlist가 필요합니다.
+NET56 Topic Exposure 활성 시 공개 Publisher의 VALUE Descriptor는 Topic Observer에게 별도 Host Allowlist 없이 허용됩니다.
+Tools는 Host ID 미설정 시 임시 Topic Observer로 구독할 수 있으며 제어 버튼은 활성화하지 않습니다.
+Local Gateway IPC 상태·Peer 조회는 별도 Snapshot으로 표시하며 Direct Observer나 원격 제어 권한을 대체하지 않습니다.
 Host ID 및 Allowlist는 암호학적 인증이 아닙니다. 기존 Action 자동 reattach와 변경 명령 자동 retry는 지원하지 않습니다.
 Tool은 Gateway나 Payload broker가 아니며 기존 Local 탐색·Topic Echo·Parameter 편집·Service Call도 유지합니다.
 Timer endpoint, 일반 Topic Publish, 사용자용 Reset/Launch manager는 제공 기능이 아닙니다.
@@ -389,10 +407,11 @@ Composition Observer의 `r` + Enter는 해당 예제에 구현된 명시적 재�
 - [설계 결정 기록](docs/07_DESIGN_DECISION_LOG.md)
 - [Network IPC 공통 계약](docs/08_NETWORK_ARCHITECTURE.md) — Discovery·compatibility·Control·Remote IPC·proxy recovery
 - [Virtual 2-Host LAN 검증](docs/09_VIRTUAL_LAN_TEST.md) — 격리된 통합 시험과 장애·재시작 검증
+- [NET56 현재 개발 구현·원 설계](docs/11_NETWORK_V56_DESIGN.md)
 - [Network Deployment Policy v1.0](docs/10_NETWORK_DEPLOYMENT_POLICY.md) — 다중 장치·포트·Identity 운영 및 향후 Debian 패키징 정책
 
 공개 문서는 `docs/`에 포함됩니다. `docs/instructions/`만 Git ignore된 로컬 개발 지침 디렉터리입니다.
 
 현재 Remote 기능과 향후 배포 자동화는 별개입니다.
-[Deployment Policy](docs/10_NETWORK_DEPLOYMENT_POLICY.md)의 영구 Host ID provisioning,
-network.conf 로더, systemd Gateway 및 Debian 패키징은 미구현 설계안입니다.
+[Deployment Policy](docs/10_NETWORK_DEPLOYMENT_POLICY.md)의 당시 미구현 기록은 보존합니다. 영구 ID API와 Gateway/systemd 템플릿은 현재 구현됐고,
+network.conf 로더·Debian 패키징·실제 systemd 운영 검증은 아직 완료되지 않았습니다.

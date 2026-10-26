@@ -68,30 +68,34 @@ void BeginTypeRegistry(std::int32_t pid,std::uint64_t ticks) noexcept {
         owner_pid=pid;owner_ticks=ticks;
     } catch (...) {}
 }
-std::uint64_t RegisterType(const TypeDescriptor& descriptor) noexcept {
-    if(!ValidateTypeDescriptor(descriptor)) return 0;
+TypeRegistrationResult RegisterTypeDetailed(const TypeDescriptor& descriptor) noexcept {
+    using Failure = TypeRegistrationFailure;
+    if(!ValidateTypeDescriptor(descriptor)) return {0,-EINVAL,Failure::INVALID_DESCRIPTOR};
     try {
         std::lock_guard<std::mutex> lock(mutex);
-        if(owner_pid!=getpid() || !owner_ticks) return 0;
+        if(owner_pid!=getpid() || !owner_ticks) return {0,-ESHUTDOWN,Failure::INACTIVE};
         if(!storage) {
             auto values=std::make_unique<TypeRegistrySnapshot>();values->pid=owner_pid;values->process_start_ticks=owner_ticks;
             auto channel=std::make_unique<SharedChannel<TypeRegistrySnapshot>>();
-            if(channel->TryCreate(TypeRegistryName(owner_pid,owner_ticks))!=0) return 0;
-            // First registration is committed in the first publication below.
+            const int error=channel->TryCreate(TypeRegistryName(owner_pid,owner_ticks));
+            if(error) return {0,error,Failure::STORAGE_CREATE};
             snapshot=std::move(values);storage=std::move(channel);
         }
         for(std::uint32_t i=0;i<snapshot->type_count;++i)
             if(snapshot->types[i].type_id==descriptor.type_id)
-                return Equal(snapshot->types[i],descriptor)?descriptor.type_id:0;
-        if(snapshot->type_count>=MAX_TYPES) return 0;
+                return Equal(snapshot->types[i],descriptor) ? TypeRegistrationResult{descriptor.type_id,0,Failure::NONE}
+                    : TypeRegistrationResult{0,-EEXIST,Failure::SCHEMA_CONFLICT};
+        if(snapshot->type_count>=MAX_TYPES) return {0,-ENOSPC,Failure::CAPACITY};
         snapshot->types[snapshot->type_count++]=Normalize(descriptor);
-        // TryPublishSnapshot has no post-commit notification failure. If pinned,
-        // rollback the local append and leave existing published types untouched.
-        if(storage->TryPublishSnapshot(*snapshot)!=0) {
-            snapshot->types[--snapshot->type_count]={};return 0;
+        const int error=storage->TryPublishSnapshot(*snapshot);
+        if(error) {
+            snapshot->types[--snapshot->type_count]={};return {0,error,Failure::SNAPSHOT_PUBLISH};
         }
-        return descriptor.type_id;
-    } catch (...) { return 0; }
+        return {descriptor.type_id,0,Failure::NONE};
+    } catch (...) { return {0,-ENOMEM,Failure::RESOURCE}; }
+}
+std::uint64_t RegisterType(const TypeDescriptor& descriptor) noexcept {
+    return RegisterTypeDetailed(descriptor).type_id;
 }
 void EndTypeRegistry() noexcept {
     try {

@@ -121,11 +121,13 @@ static void Network(const std::string& executable) {
     assert(first.Stop()==0);
     assert(parameter.Get(value)==0&&value.count==7);
     Child second(args,root/"second.log");assert(Until([&]{return Read(root/"second.log").find("[Gateway] ready")!=std::string::npos;}));
-    assert(Until([&]{return Read(root/"second.log").find("observed_session=")!=std::string::npos;}));
+    assert(Until([&]{return Read(root/"second.log").find("[Gateway] session=")!=std::string::npos;}));
     assert(Read(root/"host-id")==stored);assert(second.Stop(SIGKILL)==128+SIGKILL);
     Child third(args,root/"third.log");assert(Until([&]{return Read(root/"third.log").find("[Gateway] ready")!=std::string::npos;}));
-    assert(Until([&]{return Read(root/"third.log").find("observed_session=")!=std::string::npos;}));
-    const auto session=[](const std::string& text){auto pos=text.find("observed_session=");assert(pos!=std::string::npos);return std::stoull(text.substr(pos+17));};
+    assert(Until([&]{return Read(root/"third.log").find("[Gateway] session=")!=std::string::npos;}));
+    const auto session=[](const std::string& text){auto pos=text.find("[Gateway] session=");assert(pos!=std::string::npos);return std::stoull(text.substr(pos+18));};
+    assert(session(Read(root/"second.log"))>0&&session(Read(root/"third.log"))>0);
+    assert(session(Read(root/"first.log"))!=session(Read(root/"second.log")));
     assert(session(Read(root/"second.log"))!=session(Read(root/"third.log")));
     assert(Read(root/"host-id")==stored);assert(third.Stop(SIGINT)==0);
     assert(parameter.Get(value)==0&&value.count==7);
@@ -179,9 +181,23 @@ static void LocalOwner() {
     std::signal(SIGTERM,OwnerSignal);std::signal(SIGINT,OwnerSignal);
     kcf::detail::BeginRuntimeIntrospection(kcf::ExecutionMode::STANDALONE);
     kcf::Parameter<Value> parameter;assert(parameter.Create("/gateway/recovery/owner",{7,true,1.5})==0);
+    kcf::Publisher<Value> publisher;kcf::Subscriber<Value> subscriber;
+    assert(publisher.Create("/gateway/recovery/local-topic")==0);
+    assert(subscriber.Create("/gateway/recovery/local-topic")==0);
     kcf::detail::UpdateRuntimeIntrospection(kcf::ProcessState::RUNNING,0);
     std::cout<<"Local owner ready pid="<<getpid()<<std::endl;
-    while(!owner_stop){Value value;assert(parameter.Get(value)==0&&value.count==7);std::this_thread::sleep_for(100ms);}
+    std::uint64_t commits=0;
+    while(!owner_stop){
+        Value value;assert(parameter.Get(value)==0&&value.count==7);
+        assert(publisher.Publish(value)==0);
+        Value received{};kcf::TopicReadInfo info;
+        assert(subscriber.ReadLatest(received,info)==0&&info.sequence==++commits);
+        assert(received.count==7&&received.enabled&&received.gain==1.5);
+        std::this_thread::sleep_for(100ms);
+    }
+    assert(commits>0);
+    assert(subscriber.Close()==0);assert(publisher.Close()==0);assert(publisher.Unlink()==0);
+    std::cout<<"Local Topic maintained commits="<<commits<<" across Gateway recovery PASS\n";
     assert(parameter.Close()==0);assert(parameter.Unlink()==0);
     kcf::detail::EndRuntimeIntrospection(kcf::ProcessState::STOPPED,0);
     std::cout<<"Local owner maintained value and exited normally PASS\n";

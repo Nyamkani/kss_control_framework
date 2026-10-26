@@ -69,8 +69,8 @@ wait_pattern() {
 }
 wait_pattern 'state=WAITING_NETWORK'
 ip link set n56a up
-wait_pattern 'observed_session='
-first_session=$(sed -n 's/.*observed_session=//p' "$state/recovery.log" | head -n1)
+wait_pattern '\[Gateway\] session='
+first_session=$(sed -n 's/.*\[Gateway\] session=//p' "$state/recovery.log" | head -n1)
 first_host=$(cat "$state/host-id")
 sleep 2
 baseline_fd=$(ls "/proc/$child/fd" | wc -l)
@@ -83,7 +83,7 @@ for cycle in 1 2 3; do
     ip link set n56a up
     wait_pattern "successful_restarts=$cycle"
     for ((j=0;j<100;j++)); do
-        if [[ $(grep -c 'observed_session=' "$state/recovery.log") -ge $((cycle+1)) ]]; then break; fi
+        if [[ $(grep -c '\[Gateway\] session=' "$state/recovery.log") -ge $((cycle+1)) ]]; then break; fi
         sleep 0.1
     done
     sleep 0.2
@@ -92,8 +92,8 @@ for cycle in 1 2 3; do
 done
 [[ $(cat "$state/host-id") == "$first_host" ]]
 [[ $(grep -c 'topic=ON topic_max_hz=50 allow_prefixes=1 exclude_prefixes=1' "$state/recovery.log") == 4 ]]
-[[ $(sed -n 's/.*observed_session=//p' "$state/recovery.log" | sort -u | wc -l) == 4 ]]
-[[ $(sed -n 's/.*observed_session=//p' "$state/recovery.log" | tail -n1) != "$first_session" ]]
+[[ $(sed -n 's/.*\[Gateway\] session=//p' "$state/recovery.log" | sort -u | wc -l) == 4 ]]
+[[ $(sed -n 's/.*\[Gateway\] session=//p' "$state/recovery.log" | tail -n1) != "$first_session" ]]
 ip link set n56a down
 sleep 1.5
 stop

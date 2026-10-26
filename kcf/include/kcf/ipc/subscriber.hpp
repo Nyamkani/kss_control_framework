@@ -78,8 +78,8 @@ public:
             channel_.Close();
             return -ENOMEM;
         }
-        registration_id_ = detail::RegisterEndpoint(EndpointKind::TOPIC,
-            EndpointRole::SUBSCRIBER, name, sizeof(T), detail::DiagnosticTypeName<T>(), detail::RegisterEndpointType<T>());
+        registration_id_ = detail::RegisterTypedEndpoint<T>(EndpointKind::TOPIC,
+            EndpointRole::SUBSCRIBER, name, detail::DiagnosticTypeName<T>());
         return 0;
     }
 
@@ -90,8 +90,8 @@ public:
         const int result=channel_.Open(name,start);
         if (!result) {
             error_.store(0);
-            registration_id_=detail::RegisterEndpoint(EndpointKind::TOPIC,
-                EndpointRole::SUBSCRIBER,name,sizeof(T),detail::DiagnosticTypeName<T>(),detail::RegisterEndpointType<T>());
+            registration_id_=detail::RegisterTypedEndpoint<T>(EndpointKind::TOPIC,
+                EndpointRole::SUBSCRIBER,name, detail::DiagnosticTypeName<T>());
         }
         return result;
     }

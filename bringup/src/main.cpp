@@ -6,7 +6,7 @@ int main(int argc, char* argv[])
 {
     if (argc < 2)
     {
-        std::cerr << "Usage: " << argv[0] << " <executable> [args...] [--next <executable> [args...]]" << std::endl;
+        std::cerr << "Usage: " << argv[0] << " [--application-name NAME] <executable> [args...] [--element-name NAME] [--next <executable> [args...] [--element-name NAME]]" << std::endl;
         return 1;
     }
     int first = 1;
@@ -23,9 +23,16 @@ int main(int argc, char* argv[])
         if (std::string(argv[i]) == "--next") return 1;
         bringup::ElementSpec spec{"element" + std::to_string(elements.size() + 1), argv[i++], {}};
         while (i < argc && std::string(argv[i]) != "--next") spec.arguments.emplace_back(argv[i++]);
+        bool named=false;
         for (std::size_t j=0; j<spec.arguments.size();)
         {
             auto& option=spec.arguments[j];
+            if(option=="--element-name") {
+                if(named || j+1>=spec.arguments.size() || spec.arguments[j+1].empty() || spec.arguments[j+1].rfind("--",0)==0)return 1;
+                named=true;spec.name=spec.arguments[j+1];
+                spec.arguments.erase(spec.arguments.begin()+j,spec.arguments.begin()+j+2);
+                continue;
+            }
             if (option!="--startup-timeout-ms" && option!="--health-timeout-ms" && option!="--shutdown-timeout-ms") { ++j; continue; }
             if (j+1>=spec.arguments.size()) return 1;
             std::uint32_t value=0;
@@ -37,8 +44,6 @@ int main(int argc, char* argv[])
             else spec.shutdown_timeout_ms=value;
             spec.arguments.erase(spec.arguments.begin()+j,spec.arguments.begin()+j+2);
         }
-        for (std::size_t j = 0; j + 1 < spec.arguments.size(); ++j)
-            if (spec.arguments[j] == "--element-name") spec.name = spec.arguments[j + 1];
         elements.push_back(std::move(spec));
         if (i < argc && ++i == argc) return 1;
     }

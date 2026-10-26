@@ -1,5 +1,4 @@
 #include "gateway_support.hpp"
-#include "session_log.hpp"
 #include "local_ipc.hpp"
 #include "network_lifecycle.hpp"
 #include "kcf/network/host_identity.hpp"
@@ -39,9 +38,6 @@ int main(int argc,char** argv) {
         code=ipc.Start(options.ipc_socket);if(code)return Error("local IPC",code);
         std::cout<<"[Gateway] local_ipc="<<options.ipc_socket<<" uid="<<geteuid()<<'\n';
         std::unique_ptr<n::ControlNode> node;
-        std::unique_ptr<gateway::SessionLog> session_log;
-        bool session_pending=false;
-        auto session_deadline=std::chrono::steady_clock::time_point{};
         std::cout<<"[Gateway] host="<<Hex(host)<<" boot="<<Hex(boot)<<" pid="<<getpid()<<'\n';
         gateway::NetworkLifecycle lifecycle({
             [&](n::NetworkInterfaceSelection& nic){return n::ResolveNetworkInterface(options.nic,nic);},
@@ -59,15 +55,12 @@ int main(int argc,char** argv) {
                 for(const auto& name:config.topics.fresh_start_topics)std::cout<<"[Gateway] topic_fresh_start="<<name<<'\n';
                 for(const auto& rate:config.topics.rate_limits)std::cout<<"[Gateway] topic_rate="<<rate.name<<":"<<rate.max_hz<<'\n';
                 for(const auto& name:config.metadata.remote_topics)std::cout<<"[Gateway] legacy_remote_topic="<<name<<'\n';
-                session_log=std::make_unique<gateway::SessionLog>();
-                const int observation=session_log->Start(config.discovery);session_pending=observation==0;
-                if(observation){session_log.reset();std::cerr<<"[Gateway] session=unavailable observation_error="<<observation<<'\n';}
                 node=std::make_unique<n::ControlNode>();result=node->Start(config);
-                if(result){node->Stop();node.reset();session_log.reset();session_pending=false;return result;}
-                session_deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+                if(result){node->Stop();node.reset();return result;}
+                std::cout<<"[Gateway] session="<<node->GetSessionId()<<'\n';
                 std::cout<<"[Gateway] ready\n";return 0;
             },
-            [&]{local_status.state=gateway::NetworkState::REBINDING;local_status.session=0;local_status.nic={};ipc.Publish(local_status,{});session_log.reset();session_pending=false;if(node){node->Stop();node.reset();}std::cout<<"[Gateway] generation closed session=none\n";},
+            [&]{local_status.state=gateway::NetworkState::REBINDING;local_status.session=0;local_status.nic={};ipc.Publish(local_status,{});if(node){node->Stop();node.reset();}std::cout<<"[Gateway] generation closed session=0\n";},
             [&]{return node?node->GetLastError():0;},
             [&]{return stopping!=0;},
             [&](gateway::NetworkState state,const char* reason,int error){
@@ -76,7 +69,7 @@ int main(int argc,char** argv) {
                 ipc.Publish(local_status,node?node->GetPeers():std::vector<n::PeerInfo>{});
                 std::cout<<"[Gateway] state="<<gateway::StateName(state)<<" reason="<<reason<<" error="<<error
                          <<" recovery_attempts="<<lifecycle.Attempts()<<" successful_restarts="<<lifecycle.Restarts()
-                         <<" last_recovery_error="<<lifecycle.LastRecoveryError()<<'\n';
+                         <<" session="<<local_status.session<<" last_recovery_error="<<lifecycle.LastRecoveryError()<<'\n';
             }
         });
         while(!stopping){
@@ -86,12 +79,6 @@ int main(int argc,char** argv) {
             ipc.Publish(local_status,node?node->GetPeers():std::vector<n::PeerInfo>{});
             if(ipc.GetLastError()){Error("local IPC worker",ipc.GetLastError());break;}
             if(lifecycle.State()==gateway::NetworkState::ERROR)break;
-            if(session_pending){
-                auto session=session_log->Poll();
-                if(session){std::cout<<"[Gateway] observed_session="<<session<<'\n';session_pending=false;}
-                else if(std::chrono::steady_clock::now()>=session_deadline){std::cerr<<"[Gateway] session=unavailable observation_timeout\n";session_pending=false;}
-                if(!session_pending)session_log.reset();
-            }
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
         lifecycle.Stop();

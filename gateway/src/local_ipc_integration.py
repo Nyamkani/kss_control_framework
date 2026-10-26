@@ -2,6 +2,7 @@
 """Run in isolated user/net/ipc/mount namespace; requires iproute2/dummy NIC."""
 import json
 import os
+import re
 from pathlib import Path
 import socket
 import struct
@@ -54,15 +55,26 @@ def start():
 def running():
     value = query(1)
     return value if value['state'] == 'RUNNING' and int(value['session']) else None
+def check_session(status):
+    text = Path(logs[-1].name).read_text()
+    sessions = re.findall(r'^\[Gateway\] session=(\d+)$', text, re.MULTILINE)
+    assert sessions and sessions[-1] == status['session'] and int(status['session']) > 0
+    # Only the Discovery receiver may bind the multicast port: no diagnostic socket.
+    inodes = {os.readlink(fd)[8:-1] for fd in Path(f'/proc/{gateway.pid}/fd').iterdir()
+              if os.readlink(fd).startswith('socket:[')}
+    receivers = [line for line in Path(f'/proc/{gateway.pid}/net/udp').read_text().splitlines()[1:]
+                 if line.split()[9] in inodes and int(line.split()[1].split(':')[1], 16) == 47651]
+    assert len(receivers) == 1, receivers
+    print(f"Session log=IPC={status['session']} pid={gateway.pid} discovery_receivers={len(receivers)} PASS", flush=True)
 try:
     ip('link','add','ipc0','type','dummy')
     ip('link','set','ipc0','multicast','on')
     ip('addr','add','192.0.2.1/24','dev','ipc0')
     gateway = start()
-    until(lambda: query(1)['state'] == 'WAITING_NETWORK')
+    until(lambda: query(1)['state'] == 'WAITING_NETWORK' and query(1)['session'] == '0')
     ip('link','set','ipc0','up')
-    until(lambda: query(1)['state'] == 'REBINDING')
-    first = until(running)
+    until(lambda: query(1)['state'] == 'REBINDING' and query(1)['session'] == '0')
+    first = until(running);check_session(first)
     peer = sp.Popen([str(build/'kcf_gateway_local_ipc_test'), '--peer'], stdin=sp.PIPE, stdout=sp.PIPE, text=True)
     children.append(peer)
     assert peer.stdout.readline().strip() == 'ready'
@@ -80,12 +92,12 @@ try:
     ip('link','set','ipc0','down')
     until(lambda: query(1)['state'] == 'WAITING_NETWORK' and query(1)['session'] == '0')
     ip('addr','del','192.0.2.1/24','dev','ipc0');ip('addr','add','192.0.2.2/24','dev','ipc0');ip('link','set','ipc0','up')
-    second = until(running)
+    second = until(running);check_session(second)
     assert second['host'] == first['host'] and second['boot'] == first['boot'] and second['session'] != first['session'] and second['ipv4'] == '192.0.2.2'
     until(lambda: len(list(Path(f'/proc/{gateway.pid}/fd').iterdir())) == fd_count and len(list(Path(f'/proc/{gateway.pid}/task').iterdir())) == threads)
     gateway.terminate();assert gateway.wait(timeout=6) == 0;assert not Path(path).exists()
-    gateway = start();third = until(running);gateway.kill();gateway.wait(timeout=5);assert Path(path).exists()
-    gateway = start();fourth = until(running)
+    gateway = start();third = until(running);check_session(third);assert third['session'] != second['session'];gateway.kill();gateway.wait(timeout=5);assert Path(path).exists()
+    gateway = start();fourth = until(running);check_session(fourth)
     assert third['host'] == fourth['host'] and third['session'] != fourth['session']
     gateway.terminate();assert gateway.wait(timeout=6) == 0;assert not Path(path).exists()
     print('Local IPC real Gateway WAITING/REBINDING/RUNNING, peer add/revision/LOST, session/IP change, FD/worker, SIGTERM/SIGKILL recovery PASS')

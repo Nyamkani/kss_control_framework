@@ -11,6 +11,8 @@ target_link_options(kcf_endpoint_registry_test PRIVATE "-Wl,--wrap=pthread_mutex
 add_executable(kcf_supervisor_discovery_test src/supervisor_discovery_test.cpp ../../bringup/src/bringup.cpp)
 target_include_directories(kcf_supervisor_discovery_test PRIVATE ../../bringup/include)
 target_link_libraries(kcf_supervisor_discovery_test PRIVATE kcf_core)
+# Deterministic real directory-flock contention, confined to this test.
+target_link_options(kcf_supervisor_discovery_test PRIVATE "-Wl,--wrap=flock")
 
 add_executable(kcf_type_descriptor_test src/type_descriptor_test.cpp ../../bringup/src/bringup.cpp)
 target_include_directories(kcf_type_descriptor_test PRIVATE include ../../bringup/include)
@@ -36,3 +38,11 @@ add_executable(kcf_shm_incarnation_test src/shm_incarnation_test.cpp)
 target_include_directories(kcf_shm_incarnation_test PRIVATE include)
 target_link_libraries(kcf_shm_incarnation_test PRIVATE kcf_core)
 target_link_options(kcf_shm_incarnation_test PRIVATE "-Wl,--wrap=fstat")
+
+add_executable(kcf_type_registration_recovery_test src/type_registration_recovery_test.cpp)
+target_link_libraries(kcf_type_registration_recovery_test PRIVATE kcf_core)
+target_link_options(kcf_type_registration_recovery_test PRIVATE "-Wl,--wrap=flock")
+
+add_executable(kcf_service_registration_recovery_test src/service_registration_recovery_test.cpp)
+target_include_directories(kcf_service_registration_recovery_test PRIVATE include)
+target_link_libraries(kcf_service_registration_recovery_test PRIVATE kcf_core)

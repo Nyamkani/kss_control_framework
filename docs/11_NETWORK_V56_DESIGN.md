@@ -1,8 +1,111 @@
 # 11. KCF v5.6 — Framework-managed Network Architecture Contract
 
-작성: 2026-10-23. NET56-1 설계 문서이며 **현재 구현 버전은 5.5.0**이다.
-이 문서의 v5.6 목표·권장안은 구현 완료나 검증 PASS를 의미하지 않는다.
-C++ API, CMake, Wire 및 Local SHM은 이번 단계에서 변경하지 않는다.
+작성: 2026-10-23 NET56-1. 구현 대조 갱신: 2026-10-25 STAB-3.
+**현재 Framework 버전은 5.5.0, Tools는 0.14.0**이다. 아래 NET56 개발 구현 완료는
+v5.6.0 정식 릴리스·Tag·배포 완료를 의미하지 않는다. 문서 작업에서 빌드·시험은 재실행하지 않았다.
+
+## 0. 현재 개발 구현과 검증 범위
+
+이 절이 현재 개발 작업 트리의 기준이다. 1~10절은 NET56-1 당시의 설계·검토 기록을
+보존하며, 당시의 미구현 설명과 목표 전체를 현재 상태로 해석하지 않는다.
+
+| 영역 | 구현 완료: 현재 코드·테스트 | 남은 경계 |
+| --- | --- | --- |
+| NET56-2A/B | `LoadOrCreateHostIdentity`, `ReadLinuxBootIdentity`, `ResolveNetworkInterface`: 영구 UUIDv4, 원자적 생성, IPv4 NIC 열거/명시 override | 유효 후보 1개만 자동 선택. 다중 후보는 `-ENOTUNIQ`; route metric 우선 선택, 원격 중복 ID 자동 진단·재발급은 미구현 |
+| NET56-3A/B | 독립 `kcf_gateway`, 보호된 OS lock, same-UID systemd Unit/환경 템플릿 | 설치·enable·Debian 패키징은 미구현. 실제 systemd 운영 미검증 |
+| NET56-3C | WAITING_NETWORK / REBINDING / RUNNING / ERROR, NIC/IP 변화 감지 후 Network Stop/Start | Host/Boot 유지, 새 Session. 기존 Topic handle 자동 재선택·Action reattach·명령 replay 없음 |
+| NET56-4A/B/C | 경로 경계 Prefix 허용/제외(제외 우선), 동적 Publisher Metadata 공개, Topic read-only Observer | Subscriber 자동 공개 없음. 공개 REMOTE Publisher VALUE Descriptor만 자동 조회 허용. 제어 권한은 별개 |
+| NET56-5B1 | same-UID Unix socket `GET_STATUS` / `GET_PEERS`, 복사 Snapshot, Local IPC v1 | 조회 전용. Payload·Diagnostics·Parameter/Service/Action 중계 없음 |
+| Tools NET56-5A/5B2 | 임시 Topic Observer 및 별도 Local Gateway IPC Snapshot/UI | Direct Observer 유지, 두 Snapshot 무조건 병합 안 함. 영구 Gateway Identity 공유 없음 |
+| NET56-6A/6B2 | Topic별 0.1~1000Hz override, monotonic 절대 송신 Deadline 및 bounded wake-up | 기본 50Hz는 override를 제한하지 않음. 지연 시 건너뛰며 burst 보상 없음. 수신률 admission/QoS 협상은 미구현 |
+| NET56-6B1 | `fresh_start_topics`: 새 Route 기준 Sequence 이후 Publish만 전송 | Payload 값 비교나 고정 Delay가 아님. 일반 Topic의 기존 Latest 유지 |
+| NET56-6B3A | `CommandFreshnessMonitor`: INVALID/VALID/EXPIRED, 기본 100ms, 새 Commit에서만 갱신 | `ReadNext` + `NEXT`, 재연결 시 Reset. Age는 수신 관측 이후 시간이며 원본 생성 시각이 아님. 실제 정지는 Application 책임 |
+
+구현 근거: [Identity API](../kcf/include/kcf/network/host_identity.hpp),
+[NIC API](../kcf/include/kcf/network/network_interface.hpp), [Gateway CLI](../gateway/src/main.cpp),
+[Network lifecycle](../gateway/src/network_lifecycle.hpp), [systemd 운영 템플릿](../gateway/systemd/README.md),
+[Local IPC 계약](../gateway/LOCAL_IPC.md), [Freshness Helper](../kcf/include/kcf/ipc/command_freshness.hpp).
+
+### 실행 계약과 기본값
+
+Gateway는 `/var/lib/kcf/host-id`, `/run/kcf/gateway.lock`, `/run/kcf/gateway.sock`을 기본 사용한다.
+상태·Runtime 디렉터리는 미리 존재하고 실행 UID 소유여야 한다. 개발 시 모두 override한다.
+Local Runtime·Gateway·IPC Client는 같은 UID 및 PID/SHM 가시성을 사용한다.
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build --target kcf_gateway
+state_dir=$(mktemp -d)
+runtime_dir=$(mktemp -d)
+./build/gateway/kcf_gateway --state-dir "$state_dir" \
+  --lock-file "$runtime_dir/gateway.lock" --ipc-socket "$runtime_dir/gateway.sock" \
+  --topic-allow-prefix /robot/ --topic-exclude-prefix /robot/private/ \
+  --topic-rate /robot/cmd_vel:100 --topic-fresh-start /robot/cmd_vel
+```
+
+단일 적합 NIC는 자동 선택한다. 다중 NIC에서는 실제 이름으로 `--interface NAME`을 추가한다.
+격리 Loopback 시험만 `--interface lo --allow-loopback`을 사용한다. 재실행 시 동일 state_dir를
+재사용해야 동일 영구 ID가 유지된다. 임시 디렉터리 생성은 운영 provisioning을 대신하지 않는다.
+
+| 기능 | Gateway 기본값 / override |
+| --- | --- |
+| Discovery UDP multicast | `239.255.75.67:37651`, `--discovery-port` |
+| Control TCP / Metadata UDP | 각각 `39001`, 공통 `--control-port` |
+| Topic UDP | `37652`, `--topic-port` |
+| Local IPC | `/run/kcf/gateway.sock`, `--ipc-socket` |
+
+UDP 세 포트 번호는 서로 달라야 하며 CLI 포트 범위는 1~65535다. 이 값들은 공통 Gateway의
+기본값이며 라이브러리 `DiscoveryConfig::metadata_port=0`의 OS 동적 할당 계약은 유지한다.
+`--topic-rate`와 `--topic-fresh-start`는 권한을 부여하지 않는다. 반복 가능한 Prefix 옵션은
+Publisher만 공개한다. 수신 opt-in `--remote-topic NAME`은 기존 exact-name `remote_topics`로
+양쪽 역할에 적용되며 Local consumer descriptor/bootstrap이 필요하다. Topic 이름을 받는 것만으로
+임의 제어 Subscriber가 생성되지 않는다. 공통 Gateway의 Diagnostics와 원격 Control grants는 OFF다.
+
+NIC 조회는 1초 간격이며 후보 안정화 조건은 500ms(조회 간격 때문에 정확한 500ms 복구 보장 아님)다.
+NIC 부재·주소 부재·모호성은 대기한다. 일시적 시작/Worker 오류는 제한된 backoff 후 최대 5회 실패에서
+ERROR, 정상 10초 유지 후 실패 카운터 초기화다. 설정·권한 오류는 별도로 실패한다.
+
+### 검증 기록의 구분
+
+- **구현 완료:** 위 소스와 해당 Gateway/Network/Tools 테스트가 존재한다. 존재만으로 모든 환경 PASS를 주장하지 않는다.
+- **실제 수행 기록 확인:** NET56-6A/B1/B2/B3A의 격리 Loopback Rate/Fresh-start/Watchdog 시험과 기존 회귀 로그,
+  STAB-2B/C의 직렬 격리 회귀를 확인했다. 100Hz 개선 시험은 6초 이상 3회 측정 기록이며
+  목표 95Hz와 실제 100Hz/hard real-time 보장은 구분한다. 과거 Virtual LAN·Mock/Qt PASS는
+  [기존 검증 기록](06_VERIFICATION_AND_LIMITATIONS.md)의 당시 기준으로만 보존한다.
+- **STAB-3 당시 Tools 증거 한계:** 당시 보존된 `kcf-tools-name` Qt 기록은 Explorer identity/Local Graph/Network Graph
+  세 시험 PASS다. NET56 Temporary Observer·Local IPC 테스트 소스는 확인했지만 해당 실행 로그는 이번에
+  확보하지 못했다. 과거 Mock/Qt PASS를 신규 NET56 전체 PASS로 소급하지 않는다.
+- **미검증:** 이번 NET56 기능의 물리 LAN, 실제 systemd 부팅·재시작 운영, hard real-time 100Hz,
+  실제 로봇 Fail-safe 및 PREEMPT_RT 실장. 과거 물리 LAN 1차 기능 PASS와 별개다.
+
+STAB-2C: Service 개별 30/30, 전체 Topic 20/20, Conflict 20/20 및 관련 회귀 9/9 PASS.
+앞선 STAB-2B의 Service Endpoint 선택 `-ENOENT`와 과거 Integration/ControlTraffic 실패는 삭제하지 않는다.
+Service Metadata 누락 원인은 미확정이다. Dynamic Access는 정상 Slot Backpressure `-EAGAIN`을
+허용하지 않던 테스트 전제를 수정했다(수정 전 17/30 실패 → 수정 후 30/30 PASS, 실패 Publish의 Commit 불변 확인).
+Type Registry의 일시적 EAGAIN 자동 복구는 완료했으며 같은 Endpoint registration_id를 유지한다.
+50ms 간격 최대 64회 소진 후 중단하고 오류를 보존한다. 당시 Service/Action 전용 Registry 복구는 범위 밖이었다.
+
+후속 STAB-6B-3/4에서는 Service Registry 생성 EAGAIN과 Service Request/Response Type 등록 복구를 구현·검증했다.
+Service 내부 토큰과 관측 registration_id를 유지하며 Stop/Runtime 종료 시 보류 작업을 취소하고 Worker를 회수한다.
+Supervisor 초기 Registry 생성도 bounded 재시도로 복구한다. Type/Service 복구는 최대 64회 제한을 유지하며,
+영구 오류 및 소진 후에는 자동 무한 재시도를 하지 않는다. Action 전용 Registry 복구는 여전히 범위 밖이다.
+
+STAB-6B-5의 Graph 준비 조건은 Runtime 이름만이 아니라 RUNNING 및 실제 Subscriber Endpoint를 확인하도록 보완했다.
+통제 재현에서 namespace PID 1의 assertion/abort가 SIGSEGV로 나타나는 경로를 backtrace로 확인했지만,
+과거 Network Service 선택 `-ENOENT`의 최초 Registry 누락 원인은 미확정으로 유지한다.
+STAB-6B-6의 Real Smoke 6.4Hz(Topic 재생성 후) / 24.9Hz(depth4 최초 Echo)도 원인 미확정이다.
+진단 추가 후 각 5회 및 CTest 1~10번은 PASS했으나 과거 실패를 해결로 소급하지 않는다.
+실제 NET56 LAN·systemd 운영·RT 성능·로봇 Fail-safe는 여전히 미검증이다.
+근거는 로컬 `/tmp/kcf-stab6b4`, `/tmp/kcf-stab6b5`, `/tmp/kcf-stab6b6` 기록이며 배포 자료가 아니다.
+개발 로그 근거: `/tmp/kcf-net566a-results`, `/tmp/kcf-net566b1-results`, `/tmp/kcf-net566b2-results`,
+`/tmp/kcf-net566b3a-results`, `/tmp/kcf-stab2b-results`, `/tmp/kcf-stab2c-results` (로컬 임시 기록, 배포 자료 아님).
+
+### 아직 목표/미확정인 사항
+
+설정 파일 parser/hot reload, Debian 설치, 다중 UID 권한 모델, 중복 Host ID 진단/관리자 재발급,
+다중 NIC 운영·route 우선순위, Local IPC 원격 작업 중계, QoS admission/capability 협상 및 종단 timestamp는
+미구현이다. 아래 원 설계의 넓은 facade/QoS 목표와 현재 read-only IPC·Rate/Freshness 구현을 혼동하지 않는다.
+
 
 ## 1. 기준과 현재 구현 구분
 
@@ -23,7 +126,7 @@ C++ API, CMake, Wire 및 Local SHM은 이번 단계에서 변경하지 않는다
 08 문서의 상단 v5.4 소개와 단계별 미구현 목록은 현행 구현 전체를 대체하지 않는다.
 10 문서의 v5.3/v5.4 구현 대조와 물리 LAN 기록도 당시 기록으로 보존한다.
 
-| 항목 | 현재 v5.5 코드 기준 |
+| 항목 | NET56-1 당시 v5.5 코드 기준 |
 | --- | --- |
 | Discovery/Metadata | IPv4 multicast announce, 필요 시 unicast metadata, ONLINE/LOST, 세대 검증 구현 |
 | Local introspection | Parameter/Topic/Service/Action 및 Application/Element 매핑 자동 수집 구현 |
@@ -39,7 +142,7 @@ Application Supervisor의 Managed 자식 목록이나 Local Runtime의 실행 �
 
 ## 2. Host Identity
 
-### 현재 구현
+### NET56-1 당시 구현
 
 `HostIdentity`는 호출자가 공급하는 nonzero 128-bit 값이다. Boot ID와 별개이며,
 `RemoteRuntimeIdentity = Host + Boot + PID + process_start_ticks`,
@@ -87,7 +190,7 @@ Peer Table은 Host ID 하나당 한 인스턴스를 전제한다. 장치 전체 
 
 ## 3. Network Discovery와 NIC 선택
 
-### 현재 구현
+### NET56-1 당시 구현
 
 `DiscoveryConfig::interface_address` 기본은 `0.0.0.0`이며 OS 경로 선택에 의존할 수 있다.
 명시적 NIC 탐색·DHCP 감시·failover 기능은 아니다. Multicast `239.255.75.67:37651`, TTL=1,
@@ -128,7 +231,7 @@ multicast 차단·복구에서 주소/세대/소켓 정리와 stale 요청 거�
 
 ## 4. Host 공통 Gateway와 Tools
 
-### 현재 구현
+### NET56-1 당시 구현
 
 `ControlNode`는 호출자가 Start/Stop하는 Host 단위 라이브러리다. 별도 Network worker로 Local IPC와 분리되어 있다.
 상시 서비스 실행 파일/자동 운영 계약은 아직 없다. Control TCP와 Metadata UDP는 같은 숫자의 별도 포트를 사용하며
@@ -181,7 +284,7 @@ Action Cancel ACK와 terminal 구분, Topic 명시 재선택, shutdown 자원 �
 
 ## 5. Endpoint 자동 발견과 접근 정책
 
-### 현재 구현
+### NET56-1 당시 구현
 
 `CollectLocalMetadata`는 유효한 Descriptor의 Runtime/Endpoint를 수집하고 Supervisor PID/start_ticks로 Application을 매핑한다.
 `runtime_pids`가 비어 있으면 전체 살아 있는 Local Runtime이 대상이다. 현재 `remote_topics/parameters/services/actions`는
@@ -228,7 +331,7 @@ Metadata 비공개 필터가 새로 적용되면 기존 Graph에서 보이는 �
 
 ## 6. Topic QoS / Rate / Freshness
 
-### 현재 구현
+### NET56-1 당시 구현
 
 `TopicConfig::max_hz=50`은 **송신 route별 최신값 sampling 최대율의 기본값**이다.
 전체 Host 대역폭 상한이나 Local Publish/Callback 주기 또는 최소 전달률이 아니다.
@@ -286,7 +389,7 @@ Generic Client는 INTEREST의 UDP source port로 DATA를 받아 Gateway와 다�
 
 ## 7. 호환성, Wire와 Tools v0.14
 
-### 현재 구현
+### NET56-1 당시 구현
 
 FrameworkVersion은 5.5.0, NetworkProtocol은 1.0, Discovery wire는 v2,
 Control TCP wire는 v1, Topic DATA/INTEREST wire는 v1이다.
@@ -366,7 +469,7 @@ stale Session 거부를 검증하며 자동 동작이 Local API/SHM 동작을 �
 물리 LAN Discovery 지연·재시작 복구 안정성, PREEMPT_RT 실장 미검증은 각 후속 시험과 구별한다.
 일반 LAN 시험 PASS가 hard real-time 또는 전체 장애 복구 보증을 뜻하지 않는다.
 
-## 9. 구현 전 결정이 필요한 사항
+## 9. NET56-1 당시 미확정 사항 (현재 확정 범위는 0절 참조)
 
 | 항목 | 이 문서의 권장 방향 / 남은 결정 |
 | --- | --- |

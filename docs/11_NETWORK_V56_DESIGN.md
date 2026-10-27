@@ -65,7 +65,7 @@ NIC 조회는 1초 간격이며 후보 안정화 조건은 500ms(조회 간격 �
 NIC 부재·주소 부재·모호성은 대기한다. 일시적 시작/Worker 오류는 제한된 backoff 후 최대 5회 실패에서
 ERROR, 정상 10초 유지 후 실패 카운터 초기화다. 설정·권한 오류는 별도로 실패한다.
 
-### 검증 기록의 구분
+### 검증 기록의 구분 (2026-10-27 LAN 보고 이전 기록)
 
 - **구현 완료:** 위 소스와 해당 Gateway/Network/Tools 테스트가 존재한다. 존재만으로 모든 환경 PASS를 주장하지 않는다.
 - **실제 수행 기록 확인:** NET56-6A/B1/B2/B3A의 격리 Loopback Rate/Fresh-start/Watchdog 시험과 기존 회귀 로그,
@@ -489,3 +489,54 @@ stale Session 거부를 검증하며 자동 동작이 Local API/SHM 동작을 �
 `git diff --check`를 확인하는 문서-only 단계이다. 빌드·Network/LAN 시험은 재실행하지 않으며
 새 PASS 기록, v5.6 구현 완료 또는 버전 배포를 주장하지 않는다.
 기존 08/10 문서의 역사적 내용은 수정하지 않는다.
+
+
+<a id="net56-release-lan-20261027"></a>
+## 11. v5.6 릴리스 준비 — 실제 LAN 수동 검증 및 잔여 과제 (2026-10-27)
+
+기존 1~10절은 NET56-1의 설계·검토 이력으로 보존한다. 0절의 과거 물리 LAN 미검증 표기는
+해당 기록 당시 상태이며, 이번 사용자 보고로 확인된 범위는 아래와 같다.
+현재 Framework 버전은 **5.5.0(v5.6 개발 중)**, Tools는 **v0.14.0**으로 유지한다.
+v5.6.0 확정·배포를 선언하는 절이 아니다.
+
+### 사용자 수동 검증과 추가 구현
+
+- Gateway: **Raspberry Pi 5 / `192.168.1.119` / Linux ARM64**.
+- Tools: **Ubuntu VM / `192.168.1.193` / Qt6 / v0.14.0**.
+- 사용자 직접 확인 PASS: 영구 Host ID 유지·자동 NIC 선택, Discovery/Metadata 정상 연결,
+  Remote Application/Element/Graph 표시, Topic Subscribe/Unsubscribe/재구독·Type Descriptor,
+  Publisher 종료 시 STALE 감지·재시작 후 재구독, Parameter Get/Set, Service Call,
+  Action Goal/Feedback/Result/Cancel, 명시적 Host ID `2222...`의 제어 허용.
+- 추가 구현: Gateway 원격 Parameter/Service/Action 노출 및 권한 CLI,
+  Action 예제 Goal/Feedback/Result `TypeDescriptorTraits`.
+- 노출은 `--remote-parameter`, `--remote-service`, `--remote-action`으로 설정한다.
+  `--descriptor-client`, `--parameter-get-client`, `--parameter-set-client`,
+  `--service-call-client`, `--action-goal-client`, `--action-cancel-client`는 독립적인 권한 목록이다.
+  기본 OFF·기존 Topic Observer 계약을 유지하며 노출만으로 Control 권한을 부여하지 않는다.
+
+이는 사용자 보고를 반영한 **정상 연결 기능의 1차 PASS**이며, 이번 문서 작업에서 시험을 재실행하지 않았다.
+재구독 확인은 자동 재구독을 뜻하지 않으며, **장애 복구 안정성 검증 완료와 구분**한다.
+전체 항목·출처·한계는 [2026-10-27 LAN 검증 기록](06_VERIFICATION_AND_LIMITATIONS.md#net56-lan-20261027)에 정리한다.
+
+### 잔여 릴리스 이슈
+
+| 우선순위 | 관측 및 남은 확인 |
+| --- | --- |
+| P0 | Gateway 재시작 또는 Tools Network 설정 재적용 후 Discovery/Metadata 복구가 약 **4~5분** 지연되는 사례. RPi5 송신 정상, VM 멀티캐스트 수신 공백 관측. **원인 미확정** |
+| P1 | 미허용 Host ID `3333...`의 Parameter Get에서 **`ECONNRESET(-104)`** 관측. 명시적 **`EACCES` 응답 검증 미완료** |
+| P2 | Publisher 종료로 Endpoint 목록이 사라진 경우 STALE 구독 핸들 해제 결과 불명확. 일반 Unsubscribe PASS와 별도로 확인 필요 |
+
+`2222...` / `3333...`는 사용자 보고의 Host ID 축약 표기다. 이 결과로 인증·암호화나
+모든 권한 거부 경로를 검증했다고 판단하지 않는다. 과거 Service 선택 `-ENOENT`, Real Smoke 저주파 원인 미확정,
+실제 RT 성능 및 로봇 Fail-safe 미검증 제한도 유지한다.
+
+### 후속 검증 순서와 장치 역할
+
+1. 변경 코드·문서·회귀 테스트 정합화.
+2. Discovery 지연 및 예외 처리 안정화.
+3. **독립된 Orange Pi 5+에서 Gateway systemd 운영 검증** — 아직 수행하지 않았으며 PASS 아님.
+4. 실제 LAN Rate / Freshness / 장애 복구 검증.
+5. 검증 결과를 기준으로 **v5.6.0 버전 확정**.
+
+**Raspberry Pi 5는 매카넘 로봇 전용으로 유지**한다. systemd 운영 시험은 독립 Orange Pi 5+에서
+수행할 계획이며, 이번 RPi5 수동 LAN PASS를 해당 시험의 결과로 재사용하지 않는다.

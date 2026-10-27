@@ -26,6 +26,9 @@ struct Options {
     kcf::network::TopicExposurePolicy topic_policy;
     std::vector<kcf::network::TopicRateLimit> topic_rates;
     std::vector<std::string> remote_topics;
+    std::vector<std::string> remote_parameters, remote_services, remote_actions;
+    std::vector<kcf::network::HostIdentity> descriptor_query_clients, parameter_get_clients,
+        parameter_set_clients, service_call_clients, action_goal_clients, action_cancel_clients;
     std::vector<std::string> fresh_start_topics;
     std::uint16_t discovery{37651},control{39001},topic{37652};
 };
@@ -34,15 +37,55 @@ inline std::uint16_t Port(const std::string& text) {
     auto n=std::stoul(text);if(n==0||n>65535)throw std::invalid_argument("port must be 1..65535");
     return static_cast<std::uint16_t>(n);
 }
+inline kcf::network::HostIdentity ClientHost(const std::string& text) {
+    if(text.size()!=32)throw std::invalid_argument("Host ID must contain 32 hexadecimal digits (no hyphens)");
+    const auto digit=[](char c)->unsigned {
+        if(c>='0'&&c<='9')return c-'0';
+        if(c>='a'&&c<='f')return c-'a'+10;
+        if(c>='A'&&c<='F')return c-'A'+10;
+        throw std::invalid_argument("invalid hexadecimal Host ID");
+    };
+    kcf::network::HostIdentity host;
+    for(std::size_t i=0;i<host.bytes.size();++i)host.bytes[i]=(digit(text[2*i])<<4)|digit(text[2*i+1]);
+    if(std::all_of(host.bytes.begin(),host.bytes.end(),[](auto b){return b==0;}))throw std::invalid_argument("zero Host ID is not allowed");
+    return host;
+}
+inline void ValidateClientHosts(const Options& options,const kcf::network::HostIdentity& local) {
+    for(const auto* hosts:{&options.descriptor_query_clients,&options.parameter_get_clients,
+            &options.parameter_set_clients,&options.service_call_clients,&options.action_goal_clients,&options.action_cancel_clients})
+        if(std::find(hosts->begin(),hosts->end(),local)!=hosts->end())throw std::invalid_argument("Control client Host ID must differ from Gateway Host ID");
+}
 inline Options Parse(int argc,char** argv) {
     Options out;std::set<std::string> seen;
     for(int i=1;i<argc;++i){std::string key=argv[i];
-        const bool prefix=key=="--topic-allow-prefix"||key=="--topic-exclude-prefix"||key=="--topic-rate"||key=="--remote-topic"||key=="--topic-fresh-start";
+        std::vector<std::string>* endpoints=nullptr;
+        if(key=="--remote-parameter")endpoints=&out.remote_parameters;
+        if(key=="--remote-service")endpoints=&out.remote_services;
+        if(key=="--remote-action")endpoints=&out.remote_actions;
+        std::vector<kcf::network::HostIdentity>* clients=nullptr;
+        if(key=="--descriptor-client")clients=&out.descriptor_query_clients;
+        if(key=="--parameter-get-client")clients=&out.parameter_get_clients;
+        if(key=="--parameter-set-client")clients=&out.parameter_set_clients;
+        if(key=="--service-call-client")clients=&out.service_call_clients;
+        if(key=="--action-goal-client")clients=&out.action_goal_clients;
+        if(key=="--action-cancel-client")clients=&out.action_cancel_clients;
+        const bool prefix=endpoints||clients||key=="--topic-allow-prefix"||key=="--topic-exclude-prefix"||key=="--topic-rate"||key=="--remote-topic"||key=="--topic-fresh-start";
         if(!prefix&&!seen.insert(key).second)throw std::invalid_argument("duplicate option");
         if(key=="--allow-loopback"){out.nic.allow_loopback=true;continue;}
         if(!prefix&&key!="--ipc-socket"&&key!="--lock-file"&&key!="--state-dir"&&key!="--interface"&&key!="--discovery-port"&&key!="--control-port"&&key!="--topic-port")throw std::invalid_argument("unknown option");
         if(++i==argc||!*argv[i])throw std::invalid_argument("missing option value");
         std::string value=argv[i];
+        if(clients){
+            const auto host=ClientHost(value);
+            if(std::find(clients->begin(),clients->end(),host)!=clients->end())throw std::invalid_argument(key+": duplicate Host ID");
+            if(clients->size()>=32)throw std::invalid_argument(key+": maximum 32 Hosts");
+            clients->push_back(host);
+        }
+        if(endpoints){
+            if(value.front()!='/'||value.size()>240||std::any_of(value.begin(),value.end(),[](unsigned char c){return c<=32||c==127;}))throw std::invalid_argument(key+": invalid Endpoint name");
+            if(std::find(endpoints->begin(),endpoints->end(),value)!=endpoints->end())throw std::invalid_argument(key+": duplicate Endpoint name");
+            endpoints->push_back(value);
+        }
         if(key=="--topic-allow-prefix")out.topic_policy.allow_prefixes.push_back(value);
         if(key=="--topic-exclude-prefix")out.topic_policy.exclude_prefixes.push_back(value);
         if(key=="--topic-rate") {
@@ -91,6 +134,15 @@ inline kcf::network::ControlConfig Config(const Options& options,const kcf::netw
     config.topics.enabled=options.topic_policy.enabled&&!options.topic_policy.allow_prefixes.empty();
     config.topic_observer_enabled=config.topics.enabled;
     config.metadata.remote_topics=options.remote_topics;
+    config.metadata.remote_parameters=options.remote_parameters;
+    config.metadata.remote_services=options.remote_services;
+    config.metadata.remote_actions=options.remote_actions;
+    config.descriptor_query_clients=options.descriptor_query_clients;
+    config.parameter_get_clients=options.parameter_get_clients;
+    config.parameter_set_clients=options.parameter_set_clients;
+    config.service_call_clients=options.service_call_clients;
+    config.action_goal_clients=options.action_goal_clients;
+    config.action_cancel_clients=options.action_cancel_clients;
     config.topics.rate_limits=options.topic_rates;
     config.topics.fresh_start_topics=options.fresh_start_topics;
     config.topics.enabled=config.topics.enabled||!options.remote_topics.empty();

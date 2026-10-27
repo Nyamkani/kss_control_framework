@@ -18,9 +18,13 @@ int main(int argc,char** argv) {
         std::cout<<"kcf_gateway [--state-dir DIR] [--lock-file PATH] [--ipc-socket PATH] [--interface NAME] [--discovery-port N] [--control-port N] [--topic-port N] [--allow-loopback] [--topic-allow-prefix PREFIX] [--topic-exclude-prefix PREFIX] [--topic-rate TOPIC:HZ] [--topic-fresh-start TOPIC] [--remote-topic TOPIC]\n"
                  <<"State directory must already exist; default /var/lib/kcf. Test loopback requires explicit interface.\n"
                  <<"Account-owned runtime lock: /run/kcf/gateway.lock; parent must exist and be protected. Never unlinked.\n"
-                 <<"Metadata ON; repeatable Topic prefixes opt in Publisher exposure/data plane. Public Topic VALUE schema access follows allow prefixes; Control/Diagnostics grants remain OFF. Trusted LAN only. Network recovery enabled; no Control request replay.\n";
+                 <<"Metadata ON; repeatable Topic prefixes opt in Publisher exposure/data plane. Public Topic VALUE schema access follows allow prefixes; Control grants default OFF; Diagnostics OFF. Trusted LAN only. Network recovery enabled; no Control request replay.\n";
         std::cout<<"Fresh-start waits for a new Local Publish on every new route; it grants no exposure. Topic rates (0.1..1000 Hz) replace the default 50 Hz per exact name; they grant no access.\n"
                  <<"--remote-topic opts into the legacy exact-name REMOTE list (both roles), including reception; requires a local consumer descriptor/bootstrap. Publisher prefixes alone never opt in reception.\n";
+        std::cout<<"--remote-parameter NAME / --remote-service NAME / --remote-action NAME: repeatable exact-name exposure, default empty.\n"
+                 <<"--descriptor-client HOST_ID / --parameter-get-client HOST_ID / --parameter-set-client HOST_ID\n"
+                 <<"--service-call-client HOST_ID / --action-goal-client HOST_ID / --action-cancel-client HOST_ID\n"
+                 <<"Each client option independently grants that permission; repeatable, at most 32 unique nonzero 32-hex-digit Host IDs per option (no hyphens). Default empty. Exposure alone grants no client permission.\n";
         return 0;
     }
     try {
@@ -31,6 +35,7 @@ int main(int argc,char** argv) {
         gateway::Fd lock;int code=gateway::Lock(lock,options.lock_file);if(code)return Error("singleton lock",code);
         n::HostIdentity host,boot;
         code=n::LoadOrCreateHostIdentity(options.state_dir+"/host-id",host);if(code)return Error("persistent Host ID",code);
+        try{gateway::ValidateClientHosts(options,host);}catch(const std::exception& e){std::cerr<<"Arguments: "<<e.what()<<'\n';return 2;}
         code=n::ReadLinuxBootIdentity(boot);if(code)return Error("boot ID",code);
         gateway::local::Server ipc;
         gateway::local::Status local_status;local_status.host=host;local_status.boot=boot;
@@ -49,12 +54,21 @@ int main(int argc,char** argv) {
                 std::cout<<"[Gateway] starting interface="<<nic.name<<" ip="<<nic.ipv4_address
                          <<" index="<<nic.index<<" automatic="<<nic.automatic
                          <<" discovery_udp="<<options.discovery<<" control_tcp/metadata_udp="<<options.control
-                         <<" topic_udp="<<options.topic<<" metadata=ON control_grants=NONE descriptor_grants="<<(config.topic_observer_enabled?"PUBLIC_TOPIC_VALUE":"NONE")<<" diagnostics=OFF topic="<<(config.topics.enabled?"ON":"OFF")
+                         <<" topic_udp="<<options.topic<<" metadata=ON public_topic_descriptor="<<(config.topic_observer_enabled?"PUBLIC_TOPIC_VALUE":"NONE")<<" diagnostics=OFF topic="<<(config.topics.enabled?"ON":"OFF")
                          <<" topic_max_hz="<<config.topics.max_hz<<" allow_prefixes="<<options.topic_policy.allow_prefixes.size()
                          <<" exclude_prefixes="<<options.topic_policy.exclude_prefixes.size()<<'\n';
                 for(const auto& name:config.topics.fresh_start_topics)std::cout<<"[Gateway] topic_fresh_start="<<name<<'\n';
                 for(const auto& rate:config.topics.rate_limits)std::cout<<"[Gateway] topic_rate="<<rate.name<<":"<<rate.max_hz<<'\n';
                 for(const auto& name:config.metadata.remote_topics)std::cout<<"[Gateway] legacy_remote_topic="<<name<<'\n';
+                for(const auto& name:config.metadata.remote_parameters)std::cout<<"[Gateway] remote_parameter="<<name<<'\n';
+                for(const auto& name:config.metadata.remote_services)std::cout<<"[Gateway] remote_service="<<name<<'\n';
+                for(const auto& name:config.metadata.remote_actions)std::cout<<"[Gateway] remote_action="<<name<<'\n';
+                std::cout<<"[Gateway] descriptor_clients="<<config.descriptor_query_clients.size()
+                         <<" parameter_get_clients="<<config.parameter_get_clients.size()
+                         <<" parameter_set_clients="<<config.parameter_set_clients.size()
+                         <<" service_call_clients="<<config.service_call_clients.size()
+                         <<" action_goal_clients="<<config.action_goal_clients.size()
+                         <<" action_cancel_clients="<<config.action_cancel_clients.size()<<'\n';
                 node=std::make_unique<n::ControlNode>();result=node->Start(config);
                 if(result){node->Stop();node.reset();return result;}
                 std::cout<<"[Gateway] session="<<node->GetSessionId()<<'\n';

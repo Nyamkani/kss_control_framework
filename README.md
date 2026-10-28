@@ -319,7 +319,8 @@ Gateway 기본 포트는 Discovery UDP 37651, Control TCP/Metadata UDP 39001, To
 [측정값과 Discovery 장애](docs/06_VERIFICATION_AND_LIMITATIONS.md#net56-lan-20261028)는 전체 안정성 보증과 구분합니다.
 IGMP Report 후 복구됐지만 정확한 장치 원인은 미확정이며 Graph는 이전 Snapshot이 남을 수 있습니다.
 실제 systemd 부팅·자동 재시작, UDP 손실률·p95/p99 지연·장시간 안정성, hard real-time 및 로봇 Fail-safe는 미검증입니다.
-서비스는 비활성 상태를 유지했습니다. 200Hz Publisher는 OPI5+ 로컬 변경이며 기본 1Hz 예제의 지원 보증이 아닙니다.
+서비스는 비활성 상태를 유지했습니다. 당시 200Hz Publisher는 OPI5+ 로컬 시험 코드였습니다. 현재 `kcf_pubsub_publisher`는 기본 1Hz이며
+`--hz N`(1~1000)으로 200Hz도 설정할 수 있습니다. 옵션 반영은 현행 커밋의 물리 LAN 재검증 완료를 뜻하지 않습니다.
 
 ### 별도 KCF Tools와 검증 범위
 

@@ -31,7 +31,7 @@ public:
         }
         return result;
     }
-    
+
     int Loop() override
     {
         if (message_.count == std::numeric_limits<std::int32_t>::max()) return -EOVERFLOW;

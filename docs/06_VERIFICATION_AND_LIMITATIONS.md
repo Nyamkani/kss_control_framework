@@ -13,8 +13,9 @@ Control TCP v1, Topic wire v1 및 기존 IPC 계약은 유지한다. EXACT_FRAME
 - OPI5+: Ethernet `192.168.1.155`, Wi-Fi `192.168.1.147`.
 - Ubuntu VM: `192.168.1.193`, KCF Tools v0.14.0.
 - Local Publisher 약 200Hz, Publish Busy 0 관측.
-  이 Publisher는 **OPI5+ 로컬 시험 변경**이며 저장소의 기본 1Hz 예제가 200Hz를
-  지원·검증했다고 해석하지 않는다.
+  당시 Publisher는 **OPI5+ 로컬 시험 코드**였다. 현재 저장소의 `kcf_pubsub_publisher`도
+  기본 1Hz 및 `--hz N`(1~1000)을 지원하여 `--hz 200` 실행이 가능하다.
+  동일 실행 옵션의 반영과 현행 커밋의 물리 LAN 재검증 완료는 별개이며, 후자는 미검증이다.
 
 | Gateway 설정 | 유선 Tools Receive | Wi-Fi Tools Receive | 판정 |
 | --- | --- | --- | --- |

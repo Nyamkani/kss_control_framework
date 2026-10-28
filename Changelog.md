@@ -17,7 +17,9 @@ v1.0~v4.3은 historical record입니다. 당시 Mecanum 경로·실행 범위를
 - Fresh-start 및 수신 Commit 기반 CommandFreshnessMonitor. 실제 Fail-safe는 Application 책임.
 - 원격 Parameter/Service/Action 노출·독립 Host 권한 CLI, Action 예제 TypeDescriptorTraits.
 - Tools v0.14.0 연동 OPI5+ 사용자 LAN 시험: Local Publish 약 200Hz / Busy 0, 유선 50/100/200Hz 목표 근접,
-  Wi-Fi 각각 48~52 / 99~102 / 199~205Hz로 수신률 1차 PASS. 200Hz Publisher는 장치 로컬 변경이며 기본 1Hz 예제의 지원 선언이 아님.
+  Wi-Fi 각각 48~52 / 99~102 / 199~205Hz로 수신률 1차 PASS. 당시 시험은 장치 로컬 코드에서 수행됨.
+  현재 `kcf_pubsub_publisher`에는 기본 1Hz 및 `--hz N`(1~1000) 옵션이 반영되어 200Hz 설정도 가능하지만,
+  현행 커밋의 물리 LAN 재검증 완료를 의미하지 않음.
 - Wi-Fi Discovery ONLINE/LOST·멀티캐스트 공백 재현. 수동 IGMPv3 Report만으로 복구되나 정확한 원인은 미확정.
   Graph는 자동 갱신되지 않아 이전 Snapshot이 남을 수 있음.
 - UDP 손실률·p95/p99 지연·장시간 안정성·실제 systemd 부팅/자동 재시작·RT·로봇 Fail-safe 미검증. 서비스 비활성 유지.

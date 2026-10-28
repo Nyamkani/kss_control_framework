@@ -548,7 +548,9 @@ v5.6.0 확정·배포를 선언하는 절이 아니다.
 
 사용자 OPI5+ Ethernet 192.168.1.155 / Wi-Fi 192.168.1.147 ↔ Ubuntu VM 192.168.1.193 시험에서
 Local Publish 약 200Hz / Busy 0, 유선 50/100/200Hz 목표 근접, Wi-Fi 각각 48~52 / 99~102 / 199~205Hz를
-관측하여 수신률 1차 PASS로 기록한다. 200Hz Publisher는 OPI5+ 로컬 변경이며 기본 1Hz 예제의 지원 보증이 아니다.
+관측하여 수신률 1차 PASS로 기록한다. 당시 200Hz Publisher는 OPI5+ 로컬 코드였다.
+현재 `kcf_pubsub_publisher`는 기본 1Hz 및 `--hz N`(1~1000)을 지원하여 200Hz 설정도 가능하다.
+동일 옵션 반영은 현행 커밋의 물리 LAN 재검증 완료를 뜻하지 않으며 해당 재검증은 미수행이다.
 
 Wi-Fi ONLINE/LOST 및 멀티캐스트 공백이 재현됐다. Tools NetworkObserver 재시작 후 IGMPv3 Report로
 복구됐고 수동 Report만으로도 Gateway/Tools 재시작 없이 즉시 복구됐다. VM의 5분 IGMP Query/Report

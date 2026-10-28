@@ -196,3 +196,57 @@ Multi-Host 선택 UI 지원은 위 다중 Gateway 물리 시험의 완료를 뜻
 Gateway의 공통 Topic UDP 포트와 Tool RemoteTopicClient의 동적 수신 포트는 구분한다.
 Tool의 동적 UDP 응답이 방화벽에서 무조건 허용된다고 가정하지 않는다.
 영구 Host ID provisioning 및 Debian/systemd 자동 설정은 향후 설계이며 현재 자동 적용되는 기능이 아니다.
+
+<a id="net56-lan-20261028"></a>
+## v5.6.0 정합화 — OPI5+ 물리 LAN 사용자 보고 (2026-10-28)
+
+출처는 **사용자 수동 확인**이며 이번 작업에서 물리 LAN을 재시험한 결과가 아니다.
+Framework 버전을 5.5.0에서 **5.6.0**으로 정합화한다. 시험 당시 개발 표기와 이번 버전 적용을
+구분하며 정식 Release·Tag·배포 완료를 선언하지 않는다. NetworkProtocol 1.0, Discovery v2,
+Control TCP v1, Topic wire v1 및 기존 IPC 계약은 유지한다. EXACT_FRAMEWORK_VERSION 정책에서
+5.5.0과 5.6.0은 불일치하며 정책 자체는 변경하지 않는다.
+
+- OPI5+: Ethernet `192.168.1.155`, Wi-Fi `192.168.1.147`.
+- Ubuntu VM: `192.168.1.193`, KCF Tools v0.14.0.
+- Local Publisher 약 200Hz, Publish Busy 0 관측.
+  이 Publisher는 **OPI5+ 로컬 시험 변경**이며 저장소의 기본 1Hz 예제가 200Hz를
+  지원·검증했다고 해석하지 않는다.
+
+| Gateway 설정 | 유선 Tools Receive | Wi-Fi Tools Receive | 판정 |
+| --- | --- | --- | --- |
+| 50Hz | 목표 주기 근접 (정확한 수치 미제공) | 48~52Hz | 수신률 1차 PASS |
+| 100Hz | 목표 주기 근접 (정확한 수치 미제공) | 99~102Hz | 수신률 1차 PASS |
+| 200Hz | 목표 주기 근접 (정확한 수치 미제공) | 199~205Hz | 수신률 1차 PASS |
+
+Local Publish와 Tools Receive는 별도 지표다. UDP 패킷 손실률, p95/p99 Latency,
+장시간 Topic 안정성은 미검증이다. 샘플 수·최대 수신 공백·정확한 측정 구간은 이 보고에
+제공되지 않았으며 평균 수신률로 hard real-time 도착 보장을 주장하지 않는다.
+
+### Discovery 및 연결 장애 관측
+
+- Wi-Fi Discovery에서 ONLINE/LOST 반복과 멀티캐스트 수신 공백이 재현됐다.
+- Tools의 `Apply Network Settings`는 NetworkObserver를 재시작하며 IGMPv3 Report 후 수신 복구를 확인했다.
+- 별도 수동 IGMPv3 Membership Report만 송신해도 Gateway/Tools 재시작 없이 Discovery가 즉시 복구됐다.
+  이를 제품의 자동 복구 기능으로 해석하지 않는다.
+- VM에서 5분간 IGMP Query/Report가 관측되지 않은 시험이 있었다.
+  IGMP 그룹 관리·멀티캐스트 전달 경로가 의심되지만 **정확한 장치 원인은 미확정**이다.
+- Wi-Fi SSH/Ping 단절 사례가 있으며 유선 연결 시 동일 서브넷의 비대칭 라우팅을 확인했다.
+- 유선을 유지한 상태에서 Wi-Fi 인터페이스를 지정한 5분 Ping은 정상이었다.
+  이는 **Wi-Fi 단독 장시간 안정성 PASS가 아니다**.
+- Graph는 자동 갱신되지 않으며 이전 Snapshot이 남을 수 있다.
+
+### 남은 검증과 릴리스 경계
+
+정상 연결 기능 및 Rate 1차 PASS와 장애 복구 안정성 미검증을 구분한다.
+2026-10-27의 P0 Discovery 지연은 위 관측으로 원인을 확정하거나 해결 처리하지 않는다.
+P1 미허용 Host의 `ECONNRESET(-104)` / 명시적 EACCES 응답 미검증,
+P2 Endpoint 소멸 후 STALE 핸들 해제 결과 불명확 기록도 유지한다.
+과거 Service 선택 -ENOENT 및 Real Smoke 6.4/24.9Hz 원인 미확정 기록은 변경하지 않는다.
+
+실제 systemd 부팅·자동 재시작은 **미수행**이며 Gateway 서비스는 **비활성화** 상태를 유지했다.
+독립 Orange Pi 5+의 systemd 운영 검증, 실제 LAN Freshness·장애 복구·장시간 측정이 남았다.
+Raspberry Pi 5는 매카넘 로봇 전용으로 유지한다. 실제 RT 성능·로봇 Fail-safe도 미검증이다.
+버전 정합화와 정식 v5.6.0 Release 완료는 별개다.
+
+운영 경로 준비는 [서비스 비활성 상태의 수동 실행](../../gateway/systemd/README.md#manual-gateway-with-the-service-disabled)을 참고한다.
+이 기록은 이전 미실행 이력을 소급 변경하지 않는다.

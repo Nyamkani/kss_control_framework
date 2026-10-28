@@ -7,6 +7,22 @@ Phase 2 통신 기능은 v2.0, Phase 3 supervision/recovery는 v3.0에 기록합
 이 문서의 버전 표기는 개발 이력 구분이며 Git tag 또는 배포 생성 여부를 의미하지 않습니다.
 v1.0~v4.3은 historical record입니다. 당시 Mecanum 경로·실행 범위를 현재 Framework 소스 구성으로 해석하지 않습니다.
 
+## v5.6 — Framework-managed Network / LAN Validation
+
+2026-10-28: CMake 및 기본 FrameworkVersion을 **5.6.0**으로 정합화하고 Discovery Framework minor 기대값을 6으로 갱신.
+정식 Release·Tag·배포 완료를 의미하지 않는다. NetworkProtocol 1.0 / Discovery v2 / Control TCP v1 / Topic wire v1 및 IPC 계약 유지.
+
+- 영구 Host Identity, NIC Resolver, 독립 Gateway/systemd 템플릿, Network lifecycle 재바인딩.
+- Topic Exposure/읽기 전용 Observer, Local Gateway IPC, Topic별 Rate 및 절대 주기 스케줄러.
+- Fresh-start 및 수신 Commit 기반 CommandFreshnessMonitor. 실제 Fail-safe는 Application 책임.
+- 원격 Parameter/Service/Action 노출·독립 Host 권한 CLI, Action 예제 TypeDescriptorTraits.
+- Tools v0.14.0 연동 OPI5+ 사용자 LAN 시험: Local Publish 약 200Hz / Busy 0, 유선 50/100/200Hz 목표 근접,
+  Wi-Fi 각각 48~52 / 99~102 / 199~205Hz로 수신률 1차 PASS. 200Hz Publisher는 장치 로컬 변경이며 기본 1Hz 예제의 지원 선언이 아님.
+- Wi-Fi Discovery ONLINE/LOST·멀티캐스트 공백 재현. 수동 IGMPv3 Report만으로 복구되나 정확한 원인은 미확정.
+  Graph는 자동 갱신되지 않아 이전 Snapshot이 남을 수 있음.
+- UDP 손실률·p95/p99 지연·장시간 안정성·실제 systemd 부팅/자동 재시작·RT·로봇 Fail-safe 미검증. 서비스 비활성 유지.
+  [사용자 보고 및 한계](docs/06_VERIFICATION_AND_LIMITATIONS.md#net56-lan-20261028).
+
 ## v5.5 — Supervisor Lifecycle / Registration / Ownership Contract
 
 ### S1 — Lifecycle 및 Error Management

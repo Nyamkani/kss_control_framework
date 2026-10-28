@@ -1,8 +1,8 @@
 # 11. KCF v5.6 — Framework-managed Network Architecture Contract
 
 작성: 2026-10-23 NET56-1. 구현 대조 갱신: 2026-10-25 STAB-3.
-**현재 Framework 버전은 5.5.0, Tools는 0.14.0**이다. 아래 NET56 개발 구현 완료는
-v5.6.0 정식 릴리스·Tag·배포 완료를 의미하지 않는다. 문서 작업에서 빌드·시험은 재실행하지 않았다.
+**현재 Framework 버전은 5.6.0, Tools는 0.14.0**이다 (2026-10-28 버전 정합화). 아래 NET56 개발 구현 완료는
+v5.6.0 정식 릴리스·Tag·배포 완료를 의미하지 않는다. 과거 문서-only 단계의 미실행 기록은 유지하며 이번 제한된 빌드·회귀 결과는 검증 문서에 별도 기록한다.
 
 ## 0. 현재 개발 구현과 검증 범위
 
@@ -540,3 +540,22 @@ v5.6.0 확정·배포를 선언하는 절이 아니다.
 
 **Raspberry Pi 5는 매카넘 로봇 전용으로 유지**한다. systemd 운영 시험은 독립 Orange Pi 5+에서
 수행할 계획이며, 이번 RPi5 수동 LAN PASS를 해당 시험의 결과로 재사용하지 않는다.
+
+## 12. v5.6.0 정합화 및 OPI5+ 후속 검증 (2026-10-28)
+
+1~10절과 11절의 2026-10-27 기록은 당시 이력으로 유지한다. 현재 Framework 5.6.0 / Tools 0.14.0이며
+정식 Release·Tag·배포 완료를 의미하지 않는다. 기존 Network/IPC 버전은 유지한다.
+
+사용자 OPI5+ Ethernet 192.168.1.155 / Wi-Fi 192.168.1.147 ↔ Ubuntu VM 192.168.1.193 시험에서
+Local Publish 약 200Hz / Busy 0, 유선 50/100/200Hz 목표 근접, Wi-Fi 각각 48~52 / 99~102 / 199~205Hz를
+관측하여 수신률 1차 PASS로 기록한다. 200Hz Publisher는 OPI5+ 로컬 변경이며 기본 1Hz 예제의 지원 보증이 아니다.
+
+Wi-Fi ONLINE/LOST 및 멀티캐스트 공백이 재현됐다. Tools NetworkObserver 재시작 후 IGMPv3 Report로
+복구됐고 수동 Report만으로도 Gateway/Tools 재시작 없이 즉시 복구됐다. VM의 5분 IGMP Query/Report
+미관측은 그룹 관리·전달 경로 의심 근거이나 정확한 장치 원인은 미확정이다.
+Wi-Fi SSH/Ping 단절 및 동일 서브넷 비대칭 라우팅도 관측됐다. 유선을 유지한 Wi-Fi 지정 5분 Ping 정상은
+Wi-Fi 단독 장시간 PASS가 아니다. Graph는 자동 갱신되지 않아 이전 Snapshot이 남을 수 있다.
+
+[전체 사용자 보고 및 잔여 이슈](06_VERIFICATION_AND_LIMITATIONS.md#net56-lan-20261028)를 기준으로
+정상 연결과 복구 안정성을 구분한다. UDP 손실률·p95/p99 지연·장시간 Topic, 실제 systemd 부팅/자동 재시작,
+RT·로봇 Fail-safe는 미검증이다. 서비스는 비활성 상태이며 독립 OPI5+ systemd 운영과 LAN Freshness/복구 시험이 남았다.

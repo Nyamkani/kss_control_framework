@@ -1,7 +1,7 @@
 # Gateway service lifecycle (NET56-3B, current NET56 integration)
 
 Deployment template only: this repository does not install, enable or start the unit.
-Framework version remains 5.5.0. No Debian packaging or Application Supervisor dependency.
+Framework version is 5.6.0; this alignment is not a formal release. No Debian packaging or Application Supervisor dependency.
 
 ## Account and rendering
 
@@ -18,7 +18,7 @@ Review the rendered unit with `systemd-analyze verify /path/to/kcf-gateway.servi
 The account and binary must already exist. The deployment administrator may then place the
 reviewed unit under `/etc/systemd/system/`, and optionally copy `gateway.env.example` to
 `/etc/kcf/gateway.env`. These are instructions, not actions performed by this task.
-After administrative deployment, `systemctl enable --now kcf-gateway.service` enables startup;
+Service activation is outside the manual test procedure; keep the service disabled. For an already running service,
 `systemctl stop kcf-gateway.service` performs SIGTERM shutdown. Logs: `journalctl -u kcf-gateway.service`.
 
 systemd creates `/var/lib/kcf` and `/run/kcf` owned by the selected UID, mode 0700.
@@ -82,3 +82,43 @@ It verifies process restart and identity/session behavior, not the systemd resta
 A running systemd instance is required to test actual boot startup, restart limits, cgroup kill,
 journal integration and automatic StateDirectory ownership. Static unit verification is not proof
 of those behaviors. No service installation/enable is performed by the test.
+
+## Manual Gateway with the service disabled
+
+When the service is disabled, its RuntimeDirectory directive does not create /run/kcf.
+An administrator can provision it independently with systemd-tmpfiles. Replace KCF_USER and
+KCF_GROUP with the actual Local Runtime account and primary group. Do not broaden SHM permissions.
+Create /etc/tmpfiles.d/kcf.conf with this content (administrator action, not performed here):
+
+```text
+d /run/kcf 0700 KCF_USER KCF_GROUP -
+```
+
+In an authorized administrative shell, apply only that configuration and inspect the result:
+
+```sh
+systemd-tmpfiles --create /etc/tmpfiles.d/kcf.conf
+stat -c '%U %G %a' /run/kcf
+systemctl is-enabled kcf-gateway.service
+systemctl is-active kcf-gateway.service
+```
+
+Standard boot tmpfiles processing recreates /run/kcf after /run is cleared at reboot; it does not
+start or enable the Gateway. Verify disabled/inactive service state and absence of an existing
+manual Gateway before launching. Review existing ownership first; do not change accounts or
+remove an active lock/socket to bypass a conflict. The '-' age requests no age-based cleanup.
+Preserve the lock inode across manual restarts. If boot tmpfiles processing is unavailable,
+an administrator must apply the configuration after boot.
+
+Run the Gateway as the Local Runtime UID with the existing /var/lib/kcf/host-id, or a persistent
+--state-dir override owned by that UID. The state directory must already exist; do not regenerate
+Host ID. Default lock/socket paths use /run/kcf. This procedure includes no service activation
+or firewall changes and does not validate automatic boot or restart behavior.
+
+### 2026-10-28 physical LAN report is not a systemd test
+
+Framework version alignment is 5.6.0, Tools 0.14.0. The user reported first-stage wired/Wi-Fi
+50/100/200Hz reception on OPI5+. Actual systemd boot and automatic restart were not tested;
+the service remained disabled. Discovery multicast gaps and IGMP Report recovery remain under
+investigation. See [measurements and limits](../../docs/06_VERIFICATION_AND_LIMITATIONS.md#net56-lan-20261028).
+Independent OPI5+ operational testing remains pending; Raspberry Pi 5 remains robot-only.

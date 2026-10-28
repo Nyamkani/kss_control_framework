@@ -1,8 +1,11 @@
 # Mecanum 2D EKF
 
-Standalone KCF v5.1 application; no ROS2, serial access or actuator commands.
+Standalone KCF Core v5.6.0 application; no ROS2, serial access or actuator commands.
 `kcf_mecanum_ekf --help` lists Topic overrides and `--timeout-ms` (1–1000).
 The initial Loop rate is 40 Hz, not a real-time guarantee.
+
+Current migration checks: [V56_MIGRATION.md](../V56_MIGRATION.md). Earlier
+verification reports are historical; the filter model is unchanged.
 
 ## Model and initial reference
 

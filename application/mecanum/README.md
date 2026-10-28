@@ -1,7 +1,10 @@
 # KCF mecanum Motor Element
 
-KCF v5.1 / Linux / C++17 standalone Motor Element. No ROS2/ament dependency.
-Only this application and the root CMake entry are added.
+KCF Core v5.6.0 (`570a233`) / Linux / C++17. No ROS2/ament dependency.
+Motor/IMU/EKF/Keyboard contracts are retained from the existing application.
+Use the common `kcf_gateway`; see [Bringup and Gateway](bringup/README.md) and
+[v5.6 migration verification](V56_MIGRATION.md). Software migration does not
+mean RPi5 hardware revalidation. Earlier validation records remain historical.
 
 ## Build
 

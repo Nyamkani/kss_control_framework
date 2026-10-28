@@ -8,7 +8,7 @@ callback/Loop 동시성 계약을 보여줍니다.
 ## 구조
 
 - `include/pubsub/message.hpp`: flat POD와 R3 stable TypeDescriptor.
-- `src/publisher_main.cpp`: 1 Hz 발행, monotonic microsecond timestamp.
+- `src/publisher_main.cpp`: 기본 1 Hz, `--hz N`으로 1~1000 Hz 설정, monotonic microsecond timestamp.
 - `src/subscriber_main.cpp`: callback에서 mutex 아래 snapshot/generation 갱신,
   10 Hz Loop에서 local copy 후 새 generation만 출력.
 - `src/bringup_main.cpp`: `pubsub_example`의 `publisher`·`subscriber` 실행.
@@ -53,6 +53,21 @@ cmake --build build --target kcf_pubsub_bringup -j4
 ```
 
 Ctrl+C로 종료합니다. Subscriber를 먼저 종료한 뒤 Publisher를 종료하면 됩니다.
+
+## Publisher 주기 설정
+
+기본 실행은 1 Hz이며 `--hz N`에 정수 1~1000을 지정할 수 있습니다.
+기존 Publisher를 종료한 뒤 200 Hz로 실행하는 예:
+
+```sh
+./build/examples/pubsub/kcf_pubsub_publisher --hz 200
+```
+
+기본 실행은 위 Standalone 예시처럼 인자를 생략합니다. 1 Hz에서는 기존 sample 출력을 유지하고,
+그 외 주기에서는 약 1초마다 `target_hz`, `publish_hz`, `attempted`, `published`, `busy`, `seq`를 출력합니다.
+설정값은 Runtime 목표 주기이며 실제 Publish Hz나 Network 수신률 보장이 아닙니다.
+2026-10-28 물리 LAN 시험은 당시 OPI5+ 로컬 코드에서 수행됐습니다. 현재 저장소에도 동일한
+주기 옵션이 반영됐지만, 해당 커밋의 물리 LAN 재검증 완료를 뜻하지 않습니다.
 
 ## Bringup
 

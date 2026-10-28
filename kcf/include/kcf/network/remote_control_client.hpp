@@ -99,7 +99,8 @@ public:
     // DecodeParameterValue/EncodeParameterValue operate on that buffer; use memcpy
     // for native scalar access, not typed casts. Output unchanged on failure.
     // Uses the existing bounded/deadline/Stop path, independent of Action workers.
-    // Requires descriptor_query_clients grant; absent peer capability => -ENOTSUP
+    // Requires descriptor_query_clients or topic_observer_enabled (REMOTE Topic
+    // PROVIDER VALUE only); absent peer capability => -ENOTSUP
     // before connecting. No retries. Existing protocol/storage versions unchanged.
     int QueryTypeDescriptor(const RemoteEndpointIdentity&, std::uint64_t expected_session,
         const std::string& name, DescriptorRole, const TypeIdentity& expected_type,

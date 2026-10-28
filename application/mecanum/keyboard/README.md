@@ -1,14 +1,16 @@
-# Keyboard Standalone와 Framework v5.5
+# Keyboard Standalone — 현재 Framework v5.6.0
+
+현재 마이그레이션·회귀 결과는 [v5.6 검증](../V56_MIGRATION.md)을 참고하세요. 아래 Framework v5.5 반영 방법과 당시 테스트 기록은 Historical 자료입니다. Keyboard 동작 계약은 유지합니다.
 
 ## 실행
 
 `kcf_mecanum_keyboard`는 터미널에서 직접 실행하는 Linux C++17 Standalone입니다. Bringup의 관리 목록에 넣지 않습니다. 감독 실행 환경을 감지하면 시작을 거절합니다. ROS나 새 설정 서비스는 사용하지 않습니다.
 
 ```sh
-cmake -S . -B /tmp/mecanum-v55-debug -DCMAKE_BUILD_TYPE=Debug \
+cmake -S . -B /tmp/mecanum-v56-debug -DCMAKE_BUILD_TYPE=Debug \
   -DMECANUM_BUILD_TESTS=ON -DMECANUM_BUILD_IMU_TESTS=ON -DMECANUM_BUILD_EKF_TESTS=ON
-cmake --build /tmp/mecanum-v55-debug -j4
-/tmp/mecanum-v55-debug/application/mecanum/keyboard/kcf_mecanum_keyboard \
+cmake --build /tmp/mecanum-v56-debug -j4
+/tmp/mecanum-v56-debug/application/mecanum/keyboard/kcf_mecanum_keyboard \
   --linear-speed 0.15 --angular-speed 0.5 --input-timeout-ms 150 --topic-prefix /mecanum
 ```
 
@@ -58,16 +60,16 @@ Keyboard를 새로 시작한 뒤 기존 Motor의 명령 연결도 다시 수립�
 
 ```sh
 c++ -std=c++17 -g -pthread -I kcf/include -I application/mecanum/include \
-  application/mecanum/keyboard/tests/cmd_watch.cpp /tmp/mecanum-v55-debug/kcf/libkcf_core.a -o /tmp/v55-cmd-watch
+  application/mecanum/keyboard/tests/cmd_watch.cpp /tmp/mecanum-v56-debug/kcf/libkcf_core.a -o /tmp/v55-cmd-watch
 # 현재 설치된 Tool에는 network_backend.cpp도 링크해야 합니다. Tool 소스 변경은 없습니다.
 c++ -std=c++17 -g -pthread -I /home/kssvm/workspace/kcf/kcf_tools/include -I kcf/include \
   application/mecanum/tests/integration/tool_probe.cpp \
   /home/kssvm/workspace/kcf/kcf_tools/src/backend/kcf_backend.cpp \
   /home/kssvm/workspace/kcf/kcf_tools/src/backend/value_codec.cpp \
   /home/kssvm/workspace/kcf/kcf_tools/src/backend/network_backend.cpp \
-  /tmp/mecanum-v55-debug/kcf/libkcf_core.a -o /tmp/v55-tool-probe
+  /tmp/mecanum-v56-debug/kcf/libkcf_core.a -o /tmp/v55-tool-probe
 PYTHONDONTWRITEBYTECODE=1 python3 application/mecanum/keyboard/tests/run_keyboard.py \
-  --build-dir /tmp/mecanum-v55-debug --probe /tmp/v55-tool-probe --watch /tmp/v55-cmd-watch \
+  --build-dir /tmp/mecanum-v56-debug --probe /tmp/v55-tool-probe --watch /tmp/v55-cmd-watch \
   --output-dir /tmp/v55-keyboard-results
 ```
 

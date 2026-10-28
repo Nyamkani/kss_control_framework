@@ -4,6 +4,7 @@
 #include "kcf/network/detail/topic_proxy.hpp"
 #include "kcf/dynamic/dynamic_topic_reader.hpp"
 #include "kcf/ipc/detail/storage_identity.hpp"
+#include "kcf/ipc/detail/storage_access.hpp"
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -14,17 +15,47 @@
 #include <optional>
 #include <thread>
 #include <poll.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 #include <sys/eventfd.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <unistd.h>
 namespace kcf::network {
+#ifdef KCF_TOPIC_SCHEDULER_TEST
+void TopicSchedulerTestSample(std::chrono::steady_clock::time_point,std::chrono::steady_clock::time_point);
+#endif
 namespace {
 using Clock=std::chrono::steady_clock;
 using namespace std::chrono_literals;
 bool Topic(const NetworkEndpointMetadata& e,EndpointRole role){return e.kind==EndpointKind::TOPIC&&e.role==role&&e.scope==NetworkScope::REMOTE;}
 bool SameRoute(const TopicPacket& a,const TopicPacket& b){return a.source==b.source&&a.destination==b.destination&&a.source_session==b.source_session&&a.destination_session==b.destination_session&&a.route_id==b.route_id;}
 TopicRouteInfo Info(const TopicPacket& p,bool sending){TopicRouteInfo s;s.source=p.source;s.destination=p.destination;s.name=p.name;s.source_session=p.source_session;s.destination_session=p.destination_session;s.route_id=p.route_id;s.sending=sending;s.state=TopicRouteState::ACTIVE;return s;}
+// EAGAIN from ReadLatest can mean contention, not just absence of a commit.
+// Only a validated atomic zero counter proves the empty initial state.
+int FreshBaseline(const LocalEndpoint& entry,DynamicTopicReader& reader,std::uint64_t& baseline){
+    DynamicPayload value;int code=reader.ReadLatest(value);
+    if(!code){baseline=value.sequence;return 0;}
+    if(code!=-EAGAIN)return code;
+    code=ValidateLocalTopicEndpoint(entry,true);if(code)return code;
+    std::string name="/";for(std::size_t i=1;i<entry.metadata.name.size();++i){char c=entry.metadata.name[i];if(c=='/')name+="%2F";else if(c=='%')name+="%25";else name+=c;}
+    int fd=shm_open(name.c_str(),O_RDONLY|O_CLOEXEC|O_NOFOLLOW,0);if(fd<0)return -errno;
+    struct stat st{};if(fstat(fd,&st)||st.st_size<static_cast<off_t>(sizeof(kcf::detail::ChannelHeader))){close(fd);return -ESTALE;}
+    auto* h=static_cast<kcf::detail::ChannelHeader*>(mmap(nullptr,sizeof(kcf::detail::ChannelHeader),PROT_READ,MAP_SHARED,fd,0));
+    const int map_error=errno;close(fd);if(h==MAP_FAILED)return -map_error;
+    const auto& d=entry.descriptor;
+    const bool valid=h->magic==kcf::detail::TOPIC_MAGIC&&h->format==kcf::detail::TOPIC_STORAGE_FORMAT&&h->initialized==1&&h->owner_pid==entry.metadata.identity.runtime.pid&&h->type_id==d.type_id&&h->size==d.payload_size&&h->layout_id==kcf::detail::LayoutId(d);
+    const auto sequence=valid?h->publish_sequence.load():0;
+    munmap(h,sizeof(*h));if(!valid)return -ESTALE;
+    fd=shm_open(name.c_str(),O_RDONLY|O_CLOEXEC|O_NOFOLLOW,0);if(fd<0)return -ESTALE;
+    struct stat current{};const bool same=!fstat(fd,&current)&&st.st_dev==current.st_dev&&st.st_ino==current.st_ino;close(fd);
+    if(!same)return -ESTALE;
+    code=ValidateLocalTopicEndpoint(entry,true);if(code)return code;
+    if(sequence)return -EAGAIN;
+    baseline=0;return 0;
+}
+
 }
 struct RemoteTopicSubscription::State {
     mutable std::mutex mutex;RemoteTopicSnapshot snapshot;
@@ -35,7 +66,7 @@ RemoteTopicSnapshot RemoteTopicSubscription::Snapshot() const {std::lock_guard<s
 struct TopicDataPlane::Impl {
     struct Proxy {TopicProxyInfo info;TypeDescriptor descriptor;std::unique_ptr<detail::TopicProxy> writer;};
     struct Incoming {std::shared_ptr<RemoteTopicSubscription::State> subscription;TopicPacket packet;LocalEndpoint consumer;std::size_t proxy;Clock::time_point interest{};std::uint64_t trace_sends{0};int trace_result{0};const char* trace_stage{"not-called"};TopicRouteInfo stats;std::optional<TopicPacket> latest;};
-    struct Outgoing {TopicPacket packet;LocalEndpoint publisher;std::unique_ptr<DynamicTopicReader> reader;Clock::time_point expires,next{};std::string address;std::uint16_t port{0};TopicRouteInfo stats;};
+    struct Outgoing {TopicPacket packet;LocalEndpoint publisher;std::unique_ptr<DynamicTopicReader> reader;Clock::time_point expires,next{};bool fresh_start{false};std::uint64_t baseline{0};std::string address;std::uint16_t port{0};TopicRouteInfo stats;};
     TopicConfig config;DiscoveryConfig discovery_config;MetadataConfig metadata;RemoteRuntimeIdentity self;PeerDiscovery* discovery{nullptr};
     int fd{-1},wake{-1};std::atomic<bool> running{false},ready{false};std::atomic<int> error{0};std::thread worker;
     std::uint64_t session{0},next_route{0},next_proxy{0};
@@ -174,7 +205,10 @@ struct TopicDataPlane::Impl {
         }
         auto reader=std::make_unique<DynamicTopicReader>();int code=reader->Open(entry->metadata.name,entry->descriptor);
         if(code){Notice(entry->metadata,code);return;}
-        Outgoing r;r.packet=packet;r.packet.kind=TopicMessage::DATA;r.publisher=*entry;r.reader=std::move(reader);r.address=peer.address;r.port=port;r.expires=Clock::now()+750ms;r.stats=Info(packet,true);outgoing.push_back(std::move(r));
+        Outgoing r;r.packet=packet;r.packet.kind=TopicMessage::DATA;r.publisher=*entry;r.reader=std::move(reader);r.address=peer.address;r.port=port;r.expires=Clock::now()+750ms;r.stats=Info(packet,true);
+        r.fresh_start=std::find(config.fresh_start_topics.begin(),config.fresh_start_topics.end(),packet.name)!=config.fresh_start_topics.end();
+        if(r.fresh_start){code=FreshBaseline(*entry,*r.reader,r.baseline);if(code){Notice(entry->metadata,code);return;}}
+        outgoing.push_back(std::move(r));
     }
     void Data(const TopicPacket& packet,const PeerInfo& peer){
         for(auto& r:incoming)if(SameRoute(r.packet,packet)){
@@ -221,16 +255,29 @@ struct TopicDataPlane::Impl {
             r.interest=now+200ms;
         }
         for(auto& r:outgoing){
-            if(r.stats.state!=TopicRouteState::ACTIVE||now<r.next)continue;
+            const auto due=Clock::now();
+            if(r.stats.state!=TopicRouteState::ACTIVE||due<r.next)continue;
             double hz=config.max_hz;for(const auto& limit:config.rate_limits)if(limit.name==r.packet.name)hz=limit.max_hz;
-            r.next=now+std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(1.0/hz));
+            const auto period=std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(1.0/hz));
+            if(r.next==Clock::time_point{})r.next=due;
+            // Preserve phase, skip missed periods, and never send a catch-up burst.
+            const auto deadline=r.next+((due-r.next)/period)*period;
+            struct Advance {
+                Clock::time_point& next;Clock::time_point deadline;Clock::duration period;
+                ~Advance(){const auto end=Clock::now();next=deadline+((end-deadline)/period+1)*period;}
+            } advance{r.next,deadline,period};
             DynamicPayload value;int code=ValidateLocalTopicEndpoint(r.publisher,true);if(!code)code=r.reader->ReadLatest(value);
             if(code){if(code!=-EAGAIN)r.stats.error=code;continue;}
+            if(r.fresh_start&&value.sequence<=r.baseline)continue;
             if(value.sequence==r.packet.sample_sequence)continue;
             if(value.sequence<r.packet.sample_sequence||r.packet.sequence==UINT64_MAX){r.stats.error=-ESTALE;continue;}
             if(r.packet.sample_sequence)r.stats.local_samples_skipped+=value.sequence-r.packet.sample_sequence-1;
             r.packet.sample_sequence=value.sequence;++r.packet.sequence;
-            code=EncodeParameterValue(r.publisher.descriptor,value,r.packet.payload);if(!code)code=Send(r.packet,r.address,r.port);
+            code=EncodeParameterValue(r.publisher.descriptor,value,r.packet.payload);
+#ifdef KCF_TOPIC_SCHEDULER_TEST
+            if(!code)TopicSchedulerTestSample(deadline,Clock::now());
+#endif
+            if(!code)code=Send(r.packet,r.address,r.port);
             if(code){++r.stats.dropped;r.stats.error=code;}else{++r.stats.packets_sent;r.stats.error=0;}
         }
     }
@@ -275,7 +322,14 @@ struct TopicDataPlane::Impl {
             {std::lock_guard<std::mutex> subscriptions_lock(subscription_mutex);
             if(Clock::now()>=next){peers=discovery->GetPeers();{std::lock_guard<std::mutex> lock(local_mutex);entries=local;}CheckSubscriptions(peers);Refresh(peers,*entries);Export();next=Clock::now()+20ms;}
             Receive(peers,*entries);Deliver();Transmit(peers);TraceLoop(peers);if(error)break;}
-            pollfd fds[2]{{fd,POLLIN,0},{wake,POLLIN,0}};int code=poll(fds,2,2);if(code<0&&errno!=EINTR){error=-errno;break;}if(fds[1].revents){Trace("worker=wake revents=%d",int(fds[1].revents));break;}
+            // Keep the existing 2 ms upper bound for receive/interest work, but
+            // do not round a nearer send deadline up to another whole poll tick.
+            auto wait=Clock::duration(2ms);const auto before_wait=Clock::now();
+            for(const auto& r:outgoing)if(r.stats.state==TopicRouteState::ACTIVE)
+                wait=std::min(wait,std::max(Clock::duration::zero(),r.next-before_wait));
+            const auto ns=std::chrono::duration_cast<std::chrono::nanoseconds>(wait).count();
+            timespec timeout{static_cast<time_t>(ns/1000000000),static_cast<long>(ns%1000000000)};
+            pollfd fds[2]{{fd,POLLIN,0},{wake,POLLIN,0}};int code=ppoll(fds,2,&timeout,nullptr);if(code<0&&errno!=EINTR){error=-errno;break;}if(fds[1].revents){Trace("worker=wake revents=%d",int(fds[1].revents));break;}
         }
         std::lock_guard<std::mutex> subscriptions_lock(subscription_mutex);
         for(const auto& state:subscriptions)CloseSubscription(state,error?RemoteTopicState::ERROR:RemoteTopicState::CLOSED,error?error.load():-ECANCELED);subscriptions.clear();
@@ -288,10 +342,14 @@ TopicDataPlane::TopicDataPlane():impl_(std::make_unique<Impl>()){}TopicDataPlane
 int TopicDataPlane::Start(const TopicConfig& config,const DiscoveryConfig& dc,const MetadataConfig& mc,const RemoteRuntimeIdentity& self,PeerDiscovery& discovery){
     auto& s=*impl_;if(s.worker.joinable())return -EBUSY;
     auto rate=[](double n){return std::isfinite(n)&&n>=0.1&&n<=1000;};
-    if((!config.receive_only&&config.receive_port&&*config.receive_port!=config.port)||!config.enabled||!config.port||!rate(config.max_hz)||!config.max_routes||config.max_routes>64||!config.max_proxies||config.max_proxies>64||config.local_types.size()>64||config.rate_limits.size()>64||mc.remote_topics.size()>64||config.socket_buffer_bytes<4096||config.socket_buffer_bytes>1024*1024)return -EINVAL;
+    if((!config.receive_only&&config.receive_port&&*config.receive_port!=config.port)||!config.enabled||!config.port||!rate(config.max_hz)||!config.max_routes||config.max_routes>64||!config.max_proxies||config.max_proxies>64||config.local_types.size()>64||config.rate_limits.size()>64||config.fresh_start_topics.size()>64||mc.remote_topics.size()>64||config.socket_buffer_bytes<4096||config.socket_buffer_bytes>1024*1024)return -EINVAL;
     for(std::size_t i=0;i<mc.remote_topics.size();++i){
         if(!Text(mc.remote_topics[i],240)||mc.remote_topics[i][0]!='/')return -EINVAL;
         for(std::size_t j=0;j<i;++j)if(mc.remote_topics[i]==mc.remote_topics[j])return -EINVAL;
+    }
+    for(std::size_t i=0;i<config.fresh_start_topics.size();++i){const auto& name=config.fresh_start_topics[i];
+        if(!Text(name,240)||name[0]!='/')return -EINVAL;
+        for(std::size_t j=0;j<i;++j)if(name==config.fresh_start_topics[j])return -EINVAL;
     }
     for(const auto& r:config.rate_limits)if(!Text(r.name,240)||r.name[0]!='/'||!rate(r.max_hz))return -EINVAL;
     for(const auto& t:config.local_types){TypeIdentity wire;if(!Text(t.name,240)||t.name[0]!='/'||ParameterWireType(t.descriptor,wire))return -EINVAL;}

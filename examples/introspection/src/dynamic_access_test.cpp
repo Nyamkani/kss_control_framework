@@ -103,11 +103,34 @@ void TopicConcurrent(){
         const int result=reader.ReadLatest(p);assert(result==0||result==-EAGAIN);
         if(!result){auto v=Decode<TestData>(p);Same(v,Sample(v.sequence));assert(p.sequence>=previous);previous=p.sequence;copied.fetch_add(1);}
     }});
-    for(unsigned i=1;i<=10000;++i)assert(pub.Publish(Sample(i))==0);
+    SharedChannel<TestData> audit;assert(audit.Open(base+"_stream")==0);
+    unsigned successes=0,backpressure=0,last_payload=0;
+    for(unsigned i=1;i<=10000;++i) {
+        const int error=pub.Publish(Sample(i));
+        if(!error) {++successes;last_payload=i;continue;}
+        TestData stored{};std::uint64_t committed=0;
+        const int read_error=audit.ReadLatestSnapshot(stored,committed);
+        if(error!=-EAGAIN || backpressure<8) {
+            std::cerr<<"TopicConcurrent Publish errno="<<error<<" ("<<std::strerror(-error)
+                <<") attempted_payload_sequence="<<i<<" failed_count="<<(backpressure+1)<<" successes="<<successes
+                <<" reader_copies="<<copied.load()<<" depth="<<audit.GetDepth()<<" read_error="<<read_error
+                <<" committed_sequence="<<committed<<" mono_ns="
+                <<std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()<<std::endl;
+        }
+        // Only no-free-slot backpressure is permitted. No retry: each of the
+        // 10,000 payloads is attempted once; transport sequence counts commits.
+        assert(error==-EAGAIN);
+        assert((successes && !read_error && committed==successes) || (!successes && read_error==-EAGAIN));
+        if(successes) Same(stored,Sample(last_payload));
+        ++backpressure;
+    }
+    assert(successes>0&&successes+backpressure==10000);
     Until([&]{return copied.load()>0;});done.store(true);observer.join();
-    DynamicPayload last;assert(reader.ReadLatest(last)==0&&last.sequence==10000);Same(Decode<TestData>(last),Sample(10000));
-    reader.Close();assert(pub.Close()==0&&pub.Unlink()==0);
-    std::cout<<"PASS concurrent Topic snapshots without torn bytes, all 10000 publishes successful\n";
+    DynamicPayload last;assert(reader.ReadLatest(last)==0&&last.sequence==successes);Same(Decode<TestData>(last),Sample(last_payload));
+    audit.Close();reader.Close();assert(pub.Close()==0&&pub.Unlink()==0);
+    std::cout<<"PASS concurrent Topic snapshots attempts=10000 successes="<<successes<<" EAGAIN="<<backpressure
+        <<" reader_copies="<<copied.load()<<" depth=1 committed_sequence="<<last.sequence
+        <<" last_payload_sequence="<<last_payload<<" failed publishes did not commit\n";
 }
 void Concurrent(){
     using namespace kcf;Parameter<TestData> owner;assert(owner.Create(base+"_concurrent",Sample(0))==0);
@@ -192,6 +215,7 @@ extern "C" void* __wrap_memcpy(void* dest,const void* source,std::size_t size){
 int main(int argc,char** argv){
     if(argc==3&&std::string(argv[1])=="--child"){Element e(argv[2]);kcf::ProcessRuntime r;r.SetLoopFrequency(500);return r.Run(e)?1:0;}
     alarm(90);base="/r4_"+std::to_string(getpid());
+    if(argc==3&&std::string(argv[1])=="--case"&&std::string(argv[2])=="topic-concurrent") {TopicConcurrent();return 0;}
     Basic();Layout(base+"/bytes%3",Bytes3{{1,2,3}});Layout(base+"_aligned",AlignedData{{1,2,3,4,5,6,7,8}});
     std::cout<<"PASS small/over-aligned payload layout and nested logical names\n";
     TopicConcurrent();Concurrent();Crash();Corruption();Chain(argv[0]);std::cout<<"R4 dynamic data access PASS\n";

@@ -50,3 +50,7 @@ target_include_directories(kcf_registration_validation_test PRIVATE ../../bringu
 target_link_libraries(kcf_registration_validation_test PRIVATE kcf_core)
 target_compile_options(kcf_registration_validation_test PRIVATE -UNDEBUG)
 add_dependencies(kcf_registration_validation_test kcf_supervisor_runtime_test)
+
+add_executable(kcf_element_name_test src/element_name_test.cpp)
+target_link_libraries(kcf_element_name_test PRIVATE kcf_core)
+target_compile_options(kcf_element_name_test PRIVATE -UNDEBUG -Wall -Wextra -Wpedantic)

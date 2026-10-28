@@ -31,9 +31,13 @@ struct ControlConfig {
     // Independent ENDPOINT Action grants; each max 32 Hosts, default deny.
     std::vector<HostIdentity> action_goal_clients, action_cancel_clients;
     // Read-only schema queries, independent of all Control/Diagnostics grants.
-    // Default empty (capability absent), max 32 observer Hosts. Only REMOTE
+    // Default empty, max 32 observer Hosts. Only REMOTE
     // registered endpoints are visible. Trusted LAN policy, not authentication.
     std::vector<HostIdentity> descriptor_query_clients;
+    // Opt-in trusted-LAN read-only schema access without a Host allowlist.
+    // Only current REMOTE Topic PROVIDER VALUE descriptors; no Control grants.
+    // Advertises TYPE_DESCRIPTOR_QUERY; existing observer resource caps apply.
+    bool topic_observer_enabled{false};
     // Observer (DISCOVERY-only or receive-only Topic profile) connections: at most 8 total (shared with Diagnostics),
     // same Host/Boot/Session must also use the same HELLO Runtime identity.
     // Dedicated Control replay window: 256 IDs, max 192 Hosts, retained until
@@ -101,6 +105,8 @@ public:
     std::future<ActionBatchResult> CancelAction(const std::shared_ptr<RemoteActionSession>&,
         std::chrono::milliseconds timeout=std::chrono::milliseconds(1000));
     std::vector<PeerInfo> GetPeers() const;
+    // Read-only local Discovery generation; Start/Stop retain caller serialization.
+    std::uint64_t GetSessionId() const;
     ControlStats GetStats() const;
     TopicDiagnostics GetTopicDiagnostics() const;
     int GetLastError() const;

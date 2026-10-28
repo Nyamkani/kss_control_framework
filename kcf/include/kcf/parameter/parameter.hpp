@@ -33,8 +33,8 @@ public:
         if (result != 0) return result;
         const int watching = Watch(std::move(callback));
         if (watching != 0) { shared_.Unlink(); shared_.Close(); }
-        else registration_id_ = detail::RegisterEndpoint(EndpointKind::PARAMETER,
-            EndpointRole::PARAMETER_OWNER, name, sizeof(T), detail::DiagnosticTypeName<T>(), detail::RegisterEndpointType<T>());
+        else registration_id_ = detail::RegisterTypedEndpoint<T>(EndpointKind::PARAMETER,
+            EndpointRole::PARAMETER_OWNER, name, detail::DiagnosticTypeName<T>());
         return watching;
     }
 
@@ -45,8 +45,8 @@ public:
         if (result != 0) return result;
         const int watching = Watch(std::move(callback));
         if (watching != 0) shared_.Close();
-        else registration_id_ = detail::RegisterEndpoint(EndpointKind::PARAMETER,
-            EndpointRole::PARAMETER_CLIENT, name, sizeof(T), detail::DiagnosticTypeName<T>(), detail::RegisterEndpointType<T>());
+        else registration_id_ = detail::RegisterTypedEndpoint<T>(EndpointKind::PARAMETER,
+            EndpointRole::PARAMETER_CLIENT, name, detail::DiagnosticTypeName<T>());
         return watching;
     }
 

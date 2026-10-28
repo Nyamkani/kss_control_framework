@@ -19,6 +19,8 @@ struct TopicConfig {
     std::uint32_t socket_buffer_bytes{64*1024};
     bool receive_only{false}; // explicit Client subscriptions, no legacy auto-selection
     std::optional<std::uint16_t> receive_port; // absent => legacy port; 0 => ephemeral
+    // Exact opt-in names: every new send route waits for a commit after its baseline.
+    std::vector<std::string> fresh_start_topics;
 };
 enum class TopicRouteState : std::uint8_t { WAITING_SUBSCRIBER, ACTIVE, REJECTED, CLOSED };
 struct TopicRouteInfo {

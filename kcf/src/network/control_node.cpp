@@ -161,7 +161,7 @@ struct ControlNode::Impl {
     bool DescriptorClientAllowed(const PeerInfo& p) {
         return p.state==PeerState::ONLINE&&
             IsObserverProfile(p.profile)&&
-            std::find(config.descriptor_query_clients.begin(),config.descriptor_query_clients.end(),p.host)!=config.descriptor_query_clients.end()&&
+            (config.topic_observer_enabled||std::find(config.descriptor_query_clients.begin(),config.descriptor_query_clients.end(),p.host)!=config.descriptor_query_clients.end())&&
             CheckPeerCompatibility(config.discovery.profile,p.profile,config.discovery.compatibility_policy).Compatible();
     }
     bool LimitedAllowed(const PeerInfo& p) { return DescriptorClientAllowed(p)||ObserverAllowed(p)||ReadClientAllowed(p)||WriteClientAllowed(p)||ServiceClientAllowed(p)||ActionClientAllowed(p,false)||ActionClientAllowed(p,true); }
@@ -525,6 +525,10 @@ struct ControlNode::Impl {
         else if(!DescriptorClientAllowed(*peer))code=-EACCES;
         else if(entry==entries.end()||entry->metadata.name!=request.name)code=-ENOENT;
         else if(entry->metadata.scope!=NetworkScope::REMOTE)code=-EACCES;
+        else if(std::find(config.descriptor_query_clients.begin(),config.descriptor_query_clients.end(),peer->host)==config.descriptor_query_clients.end() &&
+                !(config.topic_observer_enabled && request.target==TargetScope::ENDPOINT &&
+                  entry->metadata.kind==EndpointKind::TOPIC && entry->metadata.role==EndpointRole::PROVIDER &&
+                  request.descriptor_role==DescriptorRole::VALUE))code=-EACCES;
         else {
             TypeIdentity type;code=DescriptorType(entry->metadata,request.descriptor_role,type);
             if(!code&&!(type==request.type))code=-EPROTOTYPE;
@@ -836,7 +840,7 @@ int ControlNode::Start(const ControlConfig& input) {
     if(input.topics.enabled){code=s.topics.Start(s.config.topics,s.config.discovery,s.config.metadata,s.self,s.discovery);if(code)return fail(code);}
     // Listener and optional Topic plane are ready before discovery advertises opt-in.
     if(input.diagnostics_enabled)s.config.discovery.profile.capabilities|=CapabilityBit(Capability::NETWORK_DIAGNOSTICS);
-    if(!input.descriptor_query_clients.empty())s.config.discovery.profile.capabilities|=CapabilityBit(Capability::TYPE_DESCRIPTOR_QUERY);
+    if(input.topic_observer_enabled||!input.descriptor_query_clients.empty())s.config.discovery.profile.capabilities|=CapabilityBit(Capability::TYPE_DESCRIPTOR_QUERY);
     code=s.discovery.Start(s.config.discovery);if(code)return fail(code);
     s.session=s.discovery.GetSessionId();s.error=0;s.connected=0;s.sent=0;s.ignored=0;s.rejected=0;s.running=true;s.seen.clear();s.client_seen.clear();s.diagnostics_seen.clear();s.observer_diagnostics_seen.clear();s.diagnostics_jobs.clear();s.next_diagnostics=Clock::now();
     try{s.backend=std::thread([&s]{s.Backend();});s.io=std::thread([&s]{s.IO();});}
@@ -873,6 +877,7 @@ std::future<ActionBatchResult> ControlNode::CancelAction(const std::shared_ptr<R
     return impl_->Submit(target,original.name,original.type,{},false,timeout,original.response_type,original.feedback_type,action);
 }
 std::vector<PeerInfo> ControlNode::GetPeers() const{return impl_->discovery.GetPeers();}
+std::uint64_t ControlNode::GetSessionId() const{return impl_->discovery.GetSessionId();}
 ControlStats ControlNode::GetStats() const{return {impl_->connected.load(),impl_->sent.load(),impl_->ignored.load(),impl_->rejected.load()};}
 TopicDiagnostics ControlNode::GetTopicDiagnostics() const{return impl_->TopicSnapshot();}
 int ControlNode::GetLastError() const{return impl_->error.load();}

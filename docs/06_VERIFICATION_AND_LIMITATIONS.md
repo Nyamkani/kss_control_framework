@@ -1,5 +1,77 @@
 # 06. Verification and Limitations
 
+
+<a id="net56-lan-20261028"></a>
+## v5.6.0 정합화 — OPI5+ 물리 LAN 사용자 보고 (2026-10-28)
+
+출처는 **사용자 수동 확인**이며 이번 작업에서 물리 LAN을 재시험한 결과가 아니다.
+Framework 버전을 5.5.0에서 **5.6.0**으로 정합화한다. 시험 당시 개발 표기와 이번 버전 적용을
+구분하며 정식 Release·Tag·배포 완료를 선언하지 않는다. NetworkProtocol 1.0, Discovery v2,
+Control TCP v1, Topic wire v1 및 기존 IPC 계약은 유지한다. EXACT_FRAMEWORK_VERSION 정책에서
+5.5.0과 5.6.0은 불일치하며 정책 자체는 변경하지 않는다.
+
+- OPI5+: Ethernet `192.168.1.155`, Wi-Fi `192.168.1.147`.
+- Ubuntu VM: `192.168.1.193`, KCF Tools v0.14.0.
+- Local Publisher 약 200Hz, Publish Busy 0 관측.
+  당시 Publisher는 **OPI5+ 로컬 시험 코드**였다. 현재 저장소의 `kcf_pubsub_publisher`도
+  기본 1Hz 및 `--hz N`(1~1000)을 지원하여 `--hz 200` 실행이 가능하다.
+  동일 실행 옵션의 반영과 현행 커밋의 물리 LAN 재검증 완료는 별개이며, 후자는 미검증이다.
+
+| Gateway 설정 | 유선 Tools Receive | Wi-Fi Tools Receive | 판정 |
+| --- | --- | --- | --- |
+| 50Hz | 목표 주기 근접 (정확한 수치 미제공) | 48~52Hz | 수신률 1차 PASS |
+| 100Hz | 목표 주기 근접 (정확한 수치 미제공) | 99~102Hz | 수신률 1차 PASS |
+| 200Hz | 목표 주기 근접 (정확한 수치 미제공) | 199~205Hz | 수신률 1차 PASS |
+
+Local Publish와 Tools Receive는 별도 지표다. UDP 패킷 손실률, p95/p99 Latency,
+장시간 Topic 안정성은 미검증이다. 샘플 수·최대 수신 공백·정확한 측정 구간은 이 보고에
+제공되지 않았으며 평균 수신률로 hard real-time 도착 보장을 주장하지 않는다.
+
+### Discovery 및 연결 장애 관측
+
+- Wi-Fi Discovery에서 ONLINE/LOST 반복과 멀티캐스트 수신 공백이 재현됐다.
+- Tools의 `Apply Network Settings`는 NetworkObserver를 재시작하며 IGMPv3 Report 후 수신 복구를 확인했다.
+- 별도 수동 IGMPv3 Membership Report만 송신해도 Gateway/Tools 재시작 없이 Discovery가 즉시 복구됐다.
+  이를 제품의 자동 복구 기능으로 해석하지 않는다.
+- VM에서 5분간 IGMP Query/Report가 관측되지 않은 시험이 있었다.
+  IGMP 그룹 관리·멀티캐스트 전달 경로가 의심되지만 **정확한 장치 원인은 미확정**이다.
+- Wi-Fi SSH/Ping 단절 사례가 있으며 유선 연결 시 동일 서브넷의 비대칭 라우팅을 확인했다.
+- 유선을 유지한 상태에서 Wi-Fi 인터페이스를 지정한 5분 Ping은 정상이었다.
+  이는 **Wi-Fi 단독 장시간 안정성 PASS가 아니다**.
+- Graph는 자동 갱신되지 않으며 이전 Snapshot이 남을 수 있다.
+
+### 남은 검증과 릴리스 경계
+
+정상 연결 기능 및 Rate 1차 PASS와 장애 복구 안정성 미검증을 구분한다.
+2026-10-27의 P0 Discovery 지연은 위 관측으로 원인을 확정하거나 해결 처리하지 않는다.
+P1 미허용 Host의 `ECONNRESET(-104)` / 명시적 EACCES 응답 미검증,
+P2 Endpoint 소멸 후 STALE 핸들 해제 결과 불명확 기록도 유지한다.
+과거 Service 선택 -ENOENT 및 Real Smoke 6.4/24.9Hz 원인 미확정 기록은 변경하지 않는다.
+
+실제 systemd 부팅·자동 재시작은 **미수행**이며 Gateway 서비스는 **비활성화** 상태를 유지했다.
+독립 Orange Pi 5+의 systemd 운영 검증, 실제 LAN Freshness·장애 복구·장시간 측정이 남았다.
+Raspberry Pi 5는 매카넘 로봇 전용으로 유지한다. 실제 RT 성능·로봇 Fail-safe도 미검증이다.
+버전 정합화와 정식 v5.6.0 Release 완료는 별개다.
+
+
+### 이번 버전 정합화의 로컬 검증 (2026-10-28)
+
+별도 `/tmp/kcf-v56-alignment/debug` Debug configure/build에서 다음 7개 타깃 빌드 PASS:
+`kcf_gateway`, `kcf_network_contract_test`, `kcf_network_compatibility_test`,
+`kcf_peer_discovery_test`, `kcf_gateway_test`, `kcf_gateway_lifecycle_test`,
+`kcf_gateway_topic_policy_test`.
+Gateway 실행 파일을 제외한 6개 테스트를 격리 Linux user/network/IPC/mount/PID namespace에서
+직렬로 각각 1회 실행하여 **6/6 PASS**. Gateway 테스트는 기본 인자 실행이며
+추가 `--network` E2E·전체 회귀·실제 LAN·systemd 운영은 이번에 실행하지 않았다.
+Framework 광고 버전의 Discovery minor 기대값은 6이며 Compatibility 정책 회귀도 PASS다.
+로그: `/tmp/kcf-v56-alignment/{configure.log,build.log,tests.json}` 및 테스트별 로그
+(개발 환경 임시 산출물, 배포 artifact 아님).
+
+이번 지정 9개 파일 `git diff --check` 및 문서 로컬 링크 대상 확인은 PASS.
+전체 작업 트리 `git diff --check`는 기존 범위 밖 변경
+`examples/pubsub/src/publisher_main.cpp:34` trailing whitespace로 FAIL이며 해당 변경은 그대로 보존했다.
+이 제한된 회귀 PASS는 위 물리 LAN 사용자 보고나 정식 릴리스 승인과 별개다.
+
 ## 증거 구분
 
 과거 README 통합 작업은 문서·링크·GitHub 상태만 확인했습니다. 각 기능 검증 기록은 해당 시점의 결과이며, 후속 버전 정합성 검증은 별도 절에서 구분합니다.
@@ -17,6 +89,70 @@ These paths were used during development verification and are not part of the re
 수치와 PASS는 아래 실행 출처의 범위에 한정됩니다. 하드웨어·hard real-time·무한 부하 보증이 아닙니다.
 
 <a id="v55-s4-integration"></a>
+
+<a id="net56-lan-20261027"></a>
+## v5.6 개발 — 실제 LAN 사용자 수동 검증 (2026-10-27)
+
+이 절은 **사용자가 직접 확인하여 보고한 결과**다. 문서 갱신 과정에서 Codex가 장치 시험을
+재실행한 결과가 아니다. Framework 개발 버전은 **5.5.0(v5.6 개발 중)**이며,
+v5.6.0 버전 확정·태그·Release 완료를 의미하지 않는다. 아래 과거 버전·자동 회귀 기록은 그대로 보존한다.
+
+### 환경 및 추가 구현
+
+| 항목 | 확인 환경 |
+| --- | --- |
+| Gateway | Raspberry Pi 5, `192.168.1.119`, Linux ARM64 |
+| Tools | Ubuntu VM, `192.168.1.193`, Qt6, Tools **v0.14.0** |
+| Framework | `dev`, 개발 버전 **5.5.0** |
+
+추가 구현에는 Gateway의 원격 Parameter/Service/Action 노출·권한 CLI와
+Action 예제 Goal/Feedback/Result의 `TypeDescriptorTraits`가 포함된다.
+노출 옵션은 `--remote-parameter`, `--remote-service`, `--remote-action`이며,
+권한 옵션은 `--descriptor-client`, `--parameter-get-client`, `--parameter-set-client`,
+`--service-call-client`, `--action-goal-client`, `--action-cancel-client`다.
+노출과 각 Control 권한은 독립이며 기본 OFF다. Host ID 기반 허용은 암호학적 인증이 아니다.
+
+### 정상 연결에서 사용자 확인 PASS
+
+| 검증 항목 | 사용자 보고 결과 |
+| --- | --- |
+| Gateway 영구 Host ID 유지 및 자동 NIC 선택 | PASS |
+| Discovery / Metadata 정상 연결 | PASS |
+| Remote Application / Element / Graph 표시 | PASS |
+| Topic Subscribe / Unsubscribe / 재구독 및 Type Descriptor | PASS |
+| Publisher 종료 시 STALE 감지, 재시작 후 재구독 | PASS — 자동 재구독 보장을 뜻하지 않음 |
+| Parameter Get / Set | PASS |
+| Service Call | PASS |
+| Action Goal / Feedback / Result / Cancel | PASS |
+| 명시적 Host ID `2222...`에 대한 제어 허용 | PASS — 사용자 보고의 축약 표기 |
+
+이 결과는 **정상 연결 기능의 1차 PASS**다. Gateway/Tools 재시작·네트워크 장애 이후의
+Discovery 복구 시간, 예외 응답, 구독 자원 정리 및 전체 장애 복구 안정성까지 검증 완료로 판단하지 않는다.
+특히 Endpoint가 사라진 이후의 STALE 핸들 해제는 일반적인 Unsubscribe PASS와 별개다.
+
+### 잔여 이슈 및 검증 한계
+
+| 우선순위 | 관측 사항 | 상태 |
+| --- | --- | --- |
+| P0 | Gateway 재시작 또는 Tools Network 설정 재적용 시 Discovery / Metadata 복구가 약 **4~5분** 지연되는 사례. RPi5 송신은 정상이고 VM 멀티캐스트 수신 공백 관측 | 원인 미확정. VM·방화벽·Framework 중 특정 원인으로 단정하지 않음 |
+| P1 | 미허용 Host ID `3333...`의 Parameter Get에서 **`ECONNRESET(-104)`** 관측 | 명시적인 **`EACCES` 응답 검증 미완료**. 연결 종료를 정상 권한 오류 응답 PASS로 대체하지 않음 |
+| P2 | Publisher 종료 후 Endpoint 목록이 사라진 상태에서 STALE 구독 핸들 해제 결과 불명확 | 해제 성공·잔존 자원 여부 추가 확인 필요 |
+
+과거 Network Service 선택 `-ENOENT`, Real Smoke 6.4Hz / 24.9Hz의 원인 미확정 기록도 유지한다.
+이번 수동 기능 PASS는 실제 LAN Rate/Freshness·장애 복구, systemd 운영,
+실제 RT 성능·로봇 Fail-safe의 검증을 대체하지 않는다.
+
+### 다음 검증 계획
+
+1. 변경 코드·문서·회귀 테스트 정합화.
+2. Discovery 지연 및 예외 처리 안정화.
+3. **독립된 Orange Pi 5+에서 Gateway systemd 운영 검증**.
+4. 실제 LAN Rate / Freshness / 장애 복구 검증.
+5. v5.6.0 버전 확정.
+
+Raspberry Pi 5는 **매카넘 로봇 전용으로 유지**한다. Orange Pi 5+ systemd 시험은
+아직 수행하지 않았으며 **미검증**이다. RPi5의 수동 Gateway 실행 PASS를 systemd 운영 PASS로 옮겨 기록하지 않는다.
+설계 이력과 후속 계획은 [Network v5.6 설계 11절](11_NETWORK_V56_DESIGN.md#net56-release-lan-20261027)을 참고한다.
 
 ## v5.5 S4 — Supervisor 최종 통합 검증 (2026-10-22)
 

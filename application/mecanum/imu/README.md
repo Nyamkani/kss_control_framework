@@ -1,4 +1,7 @@
-# WT901C IMU Element (KCF v5.1)
+# WT901C IMU Element (KCF Core v5.6.0)
+
+The original v5.1 port and historical tests are preserved; current migration
+verification is in [V56_MIGRATION.md](../V56_MIGRATION.md). No driver changes.
 
 Source: `Nyamkani/kss_mecanum_ros`, branch `v2.0`,
 `mecanum_hardwares/packages/wt901c/wt90c1c/`.

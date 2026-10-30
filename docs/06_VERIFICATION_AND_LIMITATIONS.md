@@ -1,5 +1,77 @@
 # 06. Verification and Limitations
 
+
+<a id="net56-lan-20261028"></a>
+## v5.6.0 정합화 — OPI5+ 물리 LAN 사용자 보고 (2026-10-28)
+
+출처는 **사용자 수동 확인**이며 이번 작업에서 물리 LAN을 재시험한 결과가 아니다.
+Framework 버전을 5.5.0에서 **5.6.0**으로 정합화한다. 시험 당시 개발 표기와 이번 버전 적용을
+구분하며 정식 Release·Tag·배포 완료를 선언하지 않는다. NetworkProtocol 1.0, Discovery v2,
+Control TCP v1, Topic wire v1 및 기존 IPC 계약은 유지한다. EXACT_FRAMEWORK_VERSION 정책에서
+5.5.0과 5.6.0은 불일치하며 정책 자체는 변경하지 않는다.
+
+- OPI5+: Ethernet `192.168.1.155`, Wi-Fi `192.168.1.147`.
+- Ubuntu VM: `192.168.1.193`, KCF Tools v0.14.0.
+- Local Publisher 약 200Hz, Publish Busy 0 관측.
+  당시 Publisher는 **OPI5+ 로컬 시험 코드**였다. 현재 저장소의 `kcf_pubsub_publisher`도
+  기본 1Hz 및 `--hz N`(1~1000)을 지원하여 `--hz 200` 실행이 가능하다.
+  동일 실행 옵션의 반영과 현행 커밋의 물리 LAN 재검증 완료는 별개이며, 후자는 미검증이다.
+
+| Gateway 설정 | 유선 Tools Receive | Wi-Fi Tools Receive | 판정 |
+| --- | --- | --- | --- |
+| 50Hz | 목표 주기 근접 (정확한 수치 미제공) | 48~52Hz | 수신률 1차 PASS |
+| 100Hz | 목표 주기 근접 (정확한 수치 미제공) | 99~102Hz | 수신률 1차 PASS |
+| 200Hz | 목표 주기 근접 (정확한 수치 미제공) | 199~205Hz | 수신률 1차 PASS |
+
+Local Publish와 Tools Receive는 별도 지표다. UDP 패킷 손실률, p95/p99 Latency,
+장시간 Topic 안정성은 미검증이다. 샘플 수·최대 수신 공백·정확한 측정 구간은 이 보고에
+제공되지 않았으며 평균 수신률로 hard real-time 도착 보장을 주장하지 않는다.
+
+### Discovery 및 연결 장애 관측
+
+- Wi-Fi Discovery에서 ONLINE/LOST 반복과 멀티캐스트 수신 공백이 재현됐다.
+- Tools의 `Apply Network Settings`는 NetworkObserver를 재시작하며 IGMPv3 Report 후 수신 복구를 확인했다.
+- 별도 수동 IGMPv3 Membership Report만 송신해도 Gateway/Tools 재시작 없이 Discovery가 즉시 복구됐다.
+  이를 제품의 자동 복구 기능으로 해석하지 않는다.
+- VM에서 5분간 IGMP Query/Report가 관측되지 않은 시험이 있었다.
+  IGMP 그룹 관리·멀티캐스트 전달 경로가 의심되지만 **정확한 장치 원인은 미확정**이다.
+- Wi-Fi SSH/Ping 단절 사례가 있으며 유선 연결 시 동일 서브넷의 비대칭 라우팅을 확인했다.
+- 유선을 유지한 상태에서 Wi-Fi 인터페이스를 지정한 5분 Ping은 정상이었다.
+  이는 **Wi-Fi 단독 장시간 안정성 PASS가 아니다**.
+- Graph는 자동 갱신되지 않으며 이전 Snapshot이 남을 수 있다.
+
+### 남은 검증과 릴리스 경계
+
+정상 연결 기능 및 Rate 1차 PASS와 장애 복구 안정성 미검증을 구분한다.
+2026-10-27의 P0 Discovery 지연은 위 관측으로 원인을 확정하거나 해결 처리하지 않는다.
+P1 미허용 Host의 `ECONNRESET(-104)` / 명시적 EACCES 응답 미검증,
+P2 Endpoint 소멸 후 STALE 핸들 해제 결과 불명확 기록도 유지한다.
+과거 Service 선택 -ENOENT 및 Real Smoke 6.4/24.9Hz 원인 미확정 기록은 변경하지 않는다.
+
+실제 systemd 부팅·자동 재시작은 **미수행**이며 Gateway 서비스는 **비활성화** 상태를 유지했다.
+독립 Orange Pi 5+의 systemd 운영 검증, 실제 LAN Freshness·장애 복구·장시간 측정이 남았다.
+Raspberry Pi 5는 매카넘 로봇 전용으로 유지한다. 실제 RT 성능·로봇 Fail-safe도 미검증이다.
+버전 정합화와 정식 v5.6.0 Release 완료는 별개다.
+
+
+### 이번 버전 정합화의 로컬 검증 (2026-10-28)
+
+별도 `/tmp/kcf-v56-alignment/debug` Debug configure/build에서 다음 7개 타깃 빌드 PASS:
+`kcf_gateway`, `kcf_network_contract_test`, `kcf_network_compatibility_test`,
+`kcf_peer_discovery_test`, `kcf_gateway_test`, `kcf_gateway_lifecycle_test`,
+`kcf_gateway_topic_policy_test`.
+Gateway 실행 파일을 제외한 6개 테스트를 격리 Linux user/network/IPC/mount/PID namespace에서
+직렬로 각각 1회 실행하여 **6/6 PASS**. Gateway 테스트는 기본 인자 실행이며
+추가 `--network` E2E·전체 회귀·실제 LAN·systemd 운영은 이번에 실행하지 않았다.
+Framework 광고 버전의 Discovery minor 기대값은 6이며 Compatibility 정책 회귀도 PASS다.
+로그: `/tmp/kcf-v56-alignment/{configure.log,build.log,tests.json}` 및 테스트별 로그
+(개발 환경 임시 산출물, 배포 artifact 아님).
+
+이번 지정 9개 파일 `git diff --check` 및 문서 로컬 링크 대상 확인은 PASS.
+전체 작업 트리 `git diff --check`는 기존 범위 밖 변경
+`examples/pubsub/src/publisher_main.cpp:34` trailing whitespace로 FAIL이며 해당 변경은 그대로 보존했다.
+이 제한된 회귀 PASS는 위 물리 LAN 사용자 보고나 정식 릴리스 승인과 별개다.
+
 ## 증거 구분
 
 과거 README 통합 작업은 문서·링크·GitHub 상태만 확인했습니다. 각 기능 검증 기록은 해당 시점의 결과이며, 후속 버전 정합성 검증은 별도 절에서 구분합니다.
@@ -15,6 +87,352 @@ These paths were used during development verification and are not part of the re
 기존 v5.0 문서 정리 당시에는 코드/테스트/문서/로그 대조와 `ctest --test-dir build -N` 등록 수 확인을 수행했습니다.
 이전 Topic Queue 문서 반영에서는 아래 구현 완료 보고를 기록했으며 빌드·테스트·CTest 조회를 재실행하지 않았습니다.
 수치와 PASS는 아래 실행 출처의 범위에 한정됩니다. 하드웨어·hard real-time·무한 부하 보증이 아닙니다.
+
+<a id="v55-s4-integration"></a>
+
+<a id="net56-lan-20261027"></a>
+## v5.6 개발 — 실제 LAN 사용자 수동 검증 (2026-10-27)
+
+이 절은 **사용자가 직접 확인하여 보고한 결과**다. 문서 갱신 과정에서 Codex가 장치 시험을
+재실행한 결과가 아니다. Framework 개발 버전은 **5.5.0(v5.6 개발 중)**이며,
+v5.6.0 버전 확정·태그·Release 완료를 의미하지 않는다. 아래 과거 버전·자동 회귀 기록은 그대로 보존한다.
+
+### 환경 및 추가 구현
+
+| 항목 | 확인 환경 |
+| --- | --- |
+| Gateway | Raspberry Pi 5, `192.168.1.119`, Linux ARM64 |
+| Tools | Ubuntu VM, `192.168.1.193`, Qt6, Tools **v0.14.0** |
+| Framework | `dev`, 개발 버전 **5.5.0** |
+
+추가 구현에는 Gateway의 원격 Parameter/Service/Action 노출·권한 CLI와
+Action 예제 Goal/Feedback/Result의 `TypeDescriptorTraits`가 포함된다.
+노출 옵션은 `--remote-parameter`, `--remote-service`, `--remote-action`이며,
+권한 옵션은 `--descriptor-client`, `--parameter-get-client`, `--parameter-set-client`,
+`--service-call-client`, `--action-goal-client`, `--action-cancel-client`다.
+노출과 각 Control 권한은 독립이며 기본 OFF다. Host ID 기반 허용은 암호학적 인증이 아니다.
+
+### 정상 연결에서 사용자 확인 PASS
+
+| 검증 항목 | 사용자 보고 결과 |
+| --- | --- |
+| Gateway 영구 Host ID 유지 및 자동 NIC 선택 | PASS |
+| Discovery / Metadata 정상 연결 | PASS |
+| Remote Application / Element / Graph 표시 | PASS |
+| Topic Subscribe / Unsubscribe / 재구독 및 Type Descriptor | PASS |
+| Publisher 종료 시 STALE 감지, 재시작 후 재구독 | PASS — 자동 재구독 보장을 뜻하지 않음 |
+| Parameter Get / Set | PASS |
+| Service Call | PASS |
+| Action Goal / Feedback / Result / Cancel | PASS |
+| 명시적 Host ID `2222...`에 대한 제어 허용 | PASS — 사용자 보고의 축약 표기 |
+
+이 결과는 **정상 연결 기능의 1차 PASS**다. Gateway/Tools 재시작·네트워크 장애 이후의
+Discovery 복구 시간, 예외 응답, 구독 자원 정리 및 전체 장애 복구 안정성까지 검증 완료로 판단하지 않는다.
+특히 Endpoint가 사라진 이후의 STALE 핸들 해제는 일반적인 Unsubscribe PASS와 별개다.
+
+### 잔여 이슈 및 검증 한계
+
+| 우선순위 | 관측 사항 | 상태 |
+| --- | --- | --- |
+| P0 | Gateway 재시작 또는 Tools Network 설정 재적용 시 Discovery / Metadata 복구가 약 **4~5분** 지연되는 사례. RPi5 송신은 정상이고 VM 멀티캐스트 수신 공백 관측 | 원인 미확정. VM·방화벽·Framework 중 특정 원인으로 단정하지 않음 |
+| P1 | 미허용 Host ID `3333...`의 Parameter Get에서 **`ECONNRESET(-104)`** 관측 | 명시적인 **`EACCES` 응답 검증 미완료**. 연결 종료를 정상 권한 오류 응답 PASS로 대체하지 않음 |
+| P2 | Publisher 종료 후 Endpoint 목록이 사라진 상태에서 STALE 구독 핸들 해제 결과 불명확 | 해제 성공·잔존 자원 여부 추가 확인 필요 |
+
+과거 Network Service 선택 `-ENOENT`, Real Smoke 6.4Hz / 24.9Hz의 원인 미확정 기록도 유지한다.
+이번 수동 기능 PASS는 실제 LAN Rate/Freshness·장애 복구, systemd 운영,
+실제 RT 성능·로봇 Fail-safe의 검증을 대체하지 않는다.
+
+### 다음 검증 계획
+
+1. 변경 코드·문서·회귀 테스트 정합화.
+2. Discovery 지연 및 예외 처리 안정화.
+3. **독립된 Orange Pi 5+에서 Gateway systemd 운영 검증**.
+4. 실제 LAN Rate / Freshness / 장애 복구 검증.
+5. v5.6.0 버전 확정.
+
+Raspberry Pi 5는 **매카넘 로봇 전용으로 유지**한다. Orange Pi 5+ systemd 시험은
+아직 수행하지 않았으며 **미검증**이다. RPi5의 수동 Gateway 실행 PASS를 systemd 운영 PASS로 옮겨 기록하지 않는다.
+설계 이력과 후속 계획은 [Network v5.6 설계 11절](11_NETWORK_V56_DESIGN.md#net56-release-lan-20261027)을 참고한다.
+
+## v5.5 S4 — Supervisor 최종 통합 검증 (2026-10-22)
+
+대상은 dev의 로컬 S1/S2B/S3B 변경을 포함한 working tree입니다. 기존 변경 파일의 SHA-256을
+작업 전후 비교하여 보존을 확인했습니다. 이번 단계에서는 신규 기능을 추가하지 않았습니다.
+CMake project와 기본 FrameworkVersion은 **5.5.0**이며 C++17 Debug 전체 configure/build PASS입니다.
+기본 FrameworkVersion 5.5.0 및 NetworkProtocolVersion 1.0은 별도 compile-time assertion으로 확인했습니다.
+NetworkProtocol 1.0, Discovery v2, Control TCP v1, Topic wire v1 및 기존 IPC/storage 버전은 유지합니다.
+NETWORK_PROTOCOL/EXACT_FRAMEWORK_VERSION 정책도 유지하며 후자는 v5.4↔v5.5를 불일치로 판정합니다.
+
+### 실제 실행 결과
+
+각 항목을 독립 Network/IPC/mount namespace와 private SHM에서 직렬 실행했습니다.
+**최초 28개 실행 항목: 27 PASS / 1 FAIL.** 이는 CTest 등록 수가 아니며 Composition runner가
+내부 재실행한 회귀를 별도 항목으로 더하지 않습니다. 실패 항목 수정 후 단독 재실행은 아래에 구분합니다.
+
+| 범위 | 실제 실행 항목 | 최초 결과 |
+| --- | --- | --- |
+| Supervisor S1/S2B | Failure Contract, Registration Validation | 2 PASS |
+| Runtime / Supervisor | Lifecycle, Runtime Supervision, Application Scope | 3 PASS |
+| Reset | failure, repeat, shutdown, shutdown-new | 4 PASS |
+| Local IPC | Topic queue/recovery, Parameter recovery, incomplete Topic/Parameter, 통합 backend/client, 기존 Service 1000회 | 7 PASS |
+| Application Composition | Standalone/Managed 및 External Observer 명시적 재연결 runner | 2 PASS |
+| Network | contract, compatibility, control_parameter/service/action, topic_data, proxy_recovery, RemoteControlClient, RemoteTopicClient | 9 PASS |
+| Network Discovery | peer_discovery | 1 FAIL: 이전 Framework minor 기대값 |
+
+Discovery 최초 실행은 `peer_discovery_test.cpp`의 codec assertion에서 실패했습니다(exit -6, 0.58초).
+광고 Framework minor의 wire byte 기대값 `bytes[83]==4`가 남아 있었으며 실제 기본값은 5입니다.
+**이 버전 기대값만 4→5로 보정**하고 해당 target을 다시 빌드한 후, 단독 재실행은 PASS(3.37초)였습니다.
+Protocol/Codec 동작 변경이나 Timeout 증가는 없었습니다. 최초 결과를 28/28 무실패로 소급하지 않습니다.
+관련 Network contract/compatibility 및 Remote 제어 시험은 별도 최초 실행에서 PASS했습니다.
+
+### Lifecycle 및 소유권 확인
+
+- 초기 자식 Setup 실패와 startup barrier timeout은 ERROR로 유지; Supervisor 준비 성공 후 Setup은 0을 반환.
+  다른 정상 Managed 자식은 유지합니다.
+- 운전 중 SIGKILL과 추가 장애는 History에 누적되며 최초 Current Error를 보존합니다.
+  Runtime 오류 미관측 시 실제 Setup 오류 코드를 추정하지 않습니다.
+- 명시적 Reset 실패 후 ERROR 대기, 자동 재시도 없음. 후속 수동 Reset 성공 시 Current Error 해제 및 History 유지.
+- 정상 Shutdown은 신규 오류가 아니며 중복 요청, 초기화/Reset 중 Shutdown 우선 처리 및 STOPPED 게시를 확인.
+- 등록 검증의 오류 정보·출력 초기화·반복 호출·Setup 판정 일치 및 자식/FD/SHM/Signal 불변성 확인.
+- Composition의 Managed/External 독립성과 동일 Observer PID 재연결 확인.
+  정상 재시작 Sequence 211→75, 장애 재시작 184→77을 새 세대로 수용했습니다.
+  새 데이터 최대 Age는 각각 19.8606ms/9.65707ms이며 FD/stdin/SHM 정리 검증 PASS입니다.
+- 테스트의 자식 회수·FD·SystemStatus/소유 SHM 정리 검증이 통과했습니다.
+
+### Known Issue 및 검증 한계
+
+이번 RemoteTopicClient는 진단 출력이 포함된 상태에서 **단독 항목 최초 1회 PASS(4.08초)**였습니다.
+기존 v5.4의 최초 Timeout FAIL, 후속 5회 중 2회 재현, 진단 후 10/10 PASS 기록은 아래에 그대로 보존합니다.
+이번 PASS로 Known Intermittent Failure를 해제하지 않습니다. 원인은 미확정이며 진단 출력의 타이밍 영향
+가능성이 남아 있습니다. 이번에도 Timeout 진단 실패 분기는 실행되지 않았습니다. 추후 실패 로그 확보 시 재조사합니다.
+
+물리 LAN Discovery 지연·장애 후 복구 안정성과 PREEMPT_RT 실장 미검증 제한은 유지합니다.
+이번에는 물리 LAN/Virtual 2-Host LAN, Tool GUI, RT Benchmark를 재실행하지 않았습니다.
+Attached, 자동 Reset/Restart, History 외부 IPC/Network 공개 및 Builder 기능은 추가하지 않았습니다.
+
+Supervisor 기능 및 이번 검증 대상은 Discovery 기대값 보정 후 모두 PASS 결과를 확보했지만,
+**전체 최초 실행 무실패 또는 Known Issue 해소 판정은 아닙니다.** README는 요청에 따라 수정하지 않아
+현재 버전/기본 profile을 5.4.0으로 설명하는 문구가 남아 있습니다. 공개 전 별도 문서 정리가 필요합니다.
+S1/S2B/S3B 문서 및 이번 Changelog의 개발 계약은 현재 코드와 대조했습니다.
+
+출처: `/tmp/kcf-v55-s4/`의 `configure.log`, `build.log`, `results.json`, 각 항목 로그,
+`discovery-rebuild.log`, `peer_discovery_recheck.log`, `recheck.json`, `version.log`.
+Composition/Observer 상세 로그도 이 디렉터리 아래 별도 보존했으며 과거 로그는 덮어쓰지 않았습니다.
+이들은 로컬 임시 검증 artifact이며 commit/push/tag/Release는 수행하지 않았습니다.
+
+<a id="v54-local-integration"></a>
+
+## v5.4 로컬 개발 변경 통합 검증 — 2026-10-22
+
+현재 dev working tree의 ExecutionProfile/mlockall, Runtime 주기 복구, Benchmark,
+Application Composition/Observer 명시적 재연결 변경을 대상으로 합니다.
+**미커밋 개발 변경 검증이며 새 commit/tag/Release 기록이 아닙니다.** 기존 v5.4 버전 정합화 및
+아래 v5.3 이하 PASS/FAIL 기록은 당시 사실로 보존합니다. 현재 CMake/FrameworkVersion은 5.4.0입니다.
+
+### 이번 실행과 기존 측정의 구분
+
+- 이번 통합 단계: CMake Debug configure/전체 build, 기존 회귀 및 현재 API 대조.
+- 기존 ExecutionProfile 임시 probe는 현재 Core/Bringup에 다시 링크한 후 실행합니다.
+  제품 소스/테스트를 수정하거나 실패를 우회하지 않습니다.
+- 실행 로그/runner: `/tmp/kcf-v54-integration-final/`. 이는 임시 개발 artifact이며 배포 테스트가 아닙니다.
+- 각 실행 항목은 독립 Network/IPC/SHM namespace에서 직렬 실행합니다. Namespace는 시험 자원 격리이며
+  물리 LAN/PREEMPT_RT 환경을 대신하지 않습니다. Reset fixture 이름 충돌 방지를 위해 host PID를 유지합니다.
+- 아래 1kHz 성능값은 **이전 실제 실행 로그**를 재검토한 것입니다. 이번 통합 단계에서 60초 측정을 재실행하지 않습니다.
+
+### 이번 통합 실행 결과
+
+전체 Debug configure/build PASS. 기존 실행 대상 26개 항목의 **최초 실행은 25 PASS / 1 FAIL**입니다.
+이 수치는 CTest 등록 개수가 아니며 Composition runner 내부에서 중복 실행한 회귀는 별도 항목으로 늘리지 않습니다.
+
+| 기능 | 실제 실행 항목 | 이번 결과 |
+| --- | --- | --- |
+| ExecutionProfile / mlockall | 현재 Core에 재링크한 기존 `/tmp/kcf-profile2-test.cpp` | PASS: 잠금 성공/실패, Setup 전 실패, Setup 실패 후 정리, 내부 env 대체/소비, invalid priority, FIFO EPERM/FD 정리 |
+| Runtime lifecycle / 주기 복구 | `kcf_runtime_lifecycle_test` | PASS: 기존 11개 lifecycle case와 초과 Loop 2회. 초과 후 대기 20.344ms / 20.269ms |
+| Supervision | `kcf_runtime_supervision_test` + `kcf_supervisor_runtime_test` | PASS: protocol/state/heartbeat/FD |
+| Reset | `kcf_reset_test` repeat / failure, 현재 Core에 재링크한 기존 `/tmp/kcf-profile2-reset.cpp` repeat | 3개 항목 PASS: 기본 Reset, 실패 경로, OTHER/단일 affinity/mlock 재적용 |
+| Supervisor scope | `kcf_application_scope_test` | PASS: 다른/동일 Application 이름의 상태·Reset·종료 격리 |
+| Topic | `kcf_topic_queue_test`, `kcf_topic_recovery_test` | 2개 항목 PASS |
+| Parameter / incomplete SHM | `kcf_parameter_recovery_test`, `kcf_incomplete_recovery_test topic/parameter` | 3개 항목 PASS |
+| Local Service / IPC 통합 | 기존 Service server/client 1000회, Integration backend/client | 2개 항목 PASS: Topic/Timer, Parameter Get/Set, Service multi-ID, Action Success/Cancel 및 동시 동작 |
+| Composition / Observer | 기존 `/tmp/kcf-composition-verify.py`, `/tmp/kcf-observer-r-test.py` | 2개 항목 PASS: Standalone/Managed, ERROR, 이름 충돌/연결 순서/타임아웃, 동일 PID 재연결, SHM 부재, cleanup |
+| Network | contract, compatibility, peer_discovery, control_parameter/service/action, topic_data, proxy_recovery, remote_control_client | 9개 항목 PASS |
+| Network Remote Topic Client | `kcf_remote_topic_client_test` | **최초 FAIL**, 동일 조건 단독 1회 재실행 **PASS**. 원인 미확정 |
+
+Observer 재연결에서는 정상 재시작 시 원본 Sequence 211→77, 장애 재시작 시 194→77을 새 세대로 수용했습니다.
+동일 Observer PID 유지, 새 Timestamp 증가, 중복/역순 0, 최대 Age 3.86245ms / 13.3175ms,
+FD/매핑 수 유지, stdin 플래그 복원 및 자식/SHM 회수를 확인했습니다.
+재연결 대상 부재 시 이전 Snapshot을 출력하지 않고 DISCONNECTED로 유지하며 사용자 `r` 전 자동 연결하지 않았습니다.
+
+#### 이번 최초 실패와 재실행 기록
+
+`remote_topic_client.log`의 최초 실패는 `remote_topic_client_test.cpp`의 `peer(host)` lambda가
+8초 안에 `ONLINE && metadata_ready && 충분한 endpoint 수` 조건을 만족하지 못한 Until assertion입니다.
+로그에는 어느 Host/어느 호출 단계인지 식별할 정보가 없으며, 이후 Owner의 recv assertion도 기록됐습니다.
+`results.json`: exit -6, 8.48초. 코드·테스트 변경 없이 동일 namespace 조건의 단독 재실행은
+`remote_topic_client-recheck.log` / `recheck.json`: exit 0, 4.43초입니다.
+
+재실행 PASS를 최초 26/26 PASS로 소급하지 않습니다. 원인은 미확정이며 기존 간헐적 timeout과
+동일 원인인지, 현재 변경에 의한 회귀인지 또는 실행 환경 영향인지 단정하지 않습니다.
+따라서 기능별 검증과 문서 정합성 확인은 완료했지만 **완전 무실패 통합 PASS 판정은 보류**합니다.
+
+
+#### 후속 조사 — Known Intermittent Failure (2026-10-22)
+
+RemoteTopicClient Peer 준비 Timeout은 **Known Intermittent Failure / 원인 미확정**으로 유지합니다.
+최초 통합 FAIL 및 단독 재실행 PASS는 위 기록 그대로이며, 후속 실행을 별도로 구분합니다.
+
+| 검증 단계 | 결과 | 관측 |
+| --- | --- | --- |
+| 진단 추가 전 동일 테스트 5회 | 3 PASS / 2 FAIL | 3번째 8.54초, 5번째 8.60초에 최초와 동일한 Peer 대기 assertion 재현 |
+| 테스트 진단 출력 추가 후 Debug 빌드 및 10회 | 빌드 PASS, 10/10 PASS | 각 실행 4.08~4.39초; 이번 반복에서 Timeout 미재현 |
+
+두 단계 모두 해당 테스트만 독립 Network/SHM namespace에서 직렬 실행했습니다.
+진단 추가 전 FAIL 로그는 최초 FAIL과 동일하며, 이전 시험의 소켓·SHM 잔재가 원인이라는 근거는 없습니다.
+Announce 수신·ONLINE·Metadata 준비 중 실제로 막힌 단계는 당시 로그로 구분하지 못했습니다.
+
+후속 테스트 진단은 단계별 Monotonic 시각, PID·실제 소켓 포트, Host별 Peer 상태,
+공개 Stats/오류를 출력하며 조회 API가 없는 항목은 `unavailable`로 표시합니다.
+기존 8초 제한, 대기 조건, 시작 순서 및 PASS/FAIL 판정은 유지했습니다.
+진단 추가 후에는 Host 10/20 모두 ONLINE 및 `metadata_ready=true`, Metadata revision 2,
+Endpoint 수 각각 5/5·4/4를 관측했습니다. 초기 Host 10 대기는 약 95~171ms였습니다.
+잔존 테스트 PID는 없었으며 기존 FD/Proxy 정리 검증과 격리 Network/SHM 자원 회수를 확인했습니다.
+
+**10/10 PASS는 원인 해결 또는 간헐적 실패 해소를 의미하지 않습니다.**
+진단 출력이 실행 타이밍에 영향을 주었을 가능성을 배제하지 않으며, 원인으로 확정하지도 않습니다.
+Timeout이 재현되지 않아 **Timeout 진단 실패 분기는 아직 실행 검증되지 않았습니다.**
+추후 실패 로그에서 Host 존재 여부, ONLINE, Metadata 준비·revision·Endpoint 수 및 오류를 확보한 뒤 재조사합니다.
+현재 근거로 Timeout 증가나 제품 기능 수정안을 확정하지 않습니다.
+
+v5.4의 요청된 기능 개발 완료와 **전체 회귀 무실패 판정은 별개**입니다.
+기능 개발 완료 상태를 유지하되, 이 Known Intermittent Failure가 미해결이므로 전체 회귀 무실패 판정은 계속 보류합니다.
+이번 최종 문서 반영에서는 빌드·Benchmark·Network 테스트를 추가 실행하지 않았습니다.
+
+근거 로그: `/tmp/kcf-remote-topic-timeout-investigation/` (5회),
+`/tmp/kcf-peer-readiness-diagnostics/` (진단 후 10회 및 `summary.json`).
+기존 `/tmp/kcf-v54-integration-final/`의 최초 검증 기록은 보존합니다.
+이 경로들은 로컬 임시 검증 artifact이며 저장소에 배포되는 로그가 아닙니다.
+
+### 기존 1kHz VM Benchmark 기록 — 이번 단계 재실행 아님
+
+환경: Ubuntu 24.04.5 LTS / VMware 4 vCPU / kernel 6.8.0-147-generic,
+PREEMPT_DYNAMIC, CPU affinity 0–3, RT Priority limit 99, MEMLOCK unlimited.
+**PREEMPT_RT 커널 또는 실제 Linux 장치 검증이 아닙니다.** FIFO/10 적용 성공과 PREEMPT_RT 지원은 별개입니다.
+3A는 Process::Start/Supervision으로 자식을 관리하고 Runtime 1000Hz를 측정합니다.
+`--trace-outliers`는 기본 OFF이며 ON일 때 사전 할당 버퍼에 시각/간격/CPU를 기록하고
+종료 후 측정 구간 상위 20개와 전후 5개를 출력합니다. >2/5/10/100ms 집계는 Warm-up을 제외합니다.
+Trace ON 자체의 CPU 조회/기록 오버헤드는 별도로 정량화하지 않았습니다.
+
+Release, 매회 60초/최초 5초 제외. 변경 전은 Trace ON A/B/C 각 3회 범위,
+변경 후는 주기 복구 수정 후 Trace ON 각 1회입니다. 최대 주기의 변경 전 값은 3회 중 최댓값입니다.
+
+| 조건 | 평균 Hz 변경 전 → 후 | p99 µs 변경 전 → 후 | 최대 µs 변경 전 → 후 | >1500µs 비율 변경 전 → 후 |
+| --- | --- | --- | --- | --- |
+| A OTHER/0, CPU 0–3 | 975.441–981.964 → 933.874 | 2226.930–2423.909 → 2357.776 | 10045.185 → 7212.194 | 6.890–8.252% → 8.049% |
+| B OTHER/0, CPU 0 | 969.620–976.255 → 919.557 | 2504.279–2676.519 → 2697.902 | 8872.466 → 8726.541 | 7.053–8.626% → 9.279% |
+| C FIFO/10, CPU 0 | 997.427–998.711 → 991.590 | 1613.476–1623.367 → 1616.784 | 10918.668 → 5369.624 | 2.661–2.731% → 2.538% |
+
+변경 후 >2/5/10ms 횟수는 A 1007/4/0, B 1336/7/0, C 70/1/0입니다.
+각 상위 20개 지연 직후 간격 최솟값은 A 1.167ms / B 1.182ms / C 1.180ms로,
+확인한 60개 사례에서 이전 15–20µs 즉시 재실행은 없었습니다. 모든 짧은 주기가 제거됐다는 뜻은 아닙니다.
+지연 후 한 주기를 대기하는 정책은 평균 Hz를 낮출 수 있습니다. FIFO에서 p99가 더 작더라도
+최대 1ms 상한, hard real-time 또는 실행 환경의 지연 원인을 입증하지 않습니다.
+
+초기 Trace OFF B에서 최대 680.441ms를 관측했으나 당시에는 개별 시각/전후 샘플이 없어 원인을 확정하지 못했습니다.
+후속 Trace ON 9회(A→B→C, C→A→B, B→C→A)에서는 100ms 초과가 0회여서 해당 지연은 재현되지 않았습니다.
+가상화/CPU 경합 등을 원인으로 단정하지 않으며 별도 커널 추적은 수행하지 않았습니다.
+출처: `/tmp/kcf-release-results/`, `/tmp/kcf-rt-trace-results/`, `/tmp/kcf-post-recovery-results/`.
+
+3B SHM Topic은 실제 Publisher/Subscriber 두 프로세스와 Runtime 1000Hz를 사용합니다.
+Release 기본 OTHER/0, CPU 0–3, 55초 측정에서 주기 복구 변경 전 → 후:
+
+| 지표 | 변경 전 | 변경 후 |
+| --- | --- | --- |
+| Publish 성공 / 수신 수 | 53,501 / 49,665 | 50,600 / 49,315 |
+| 수신 Hz | 903.000 | 896.636 |
+| Publish→Callback mean / p99 / max µs | 184.092 / 918.290 / 3065.867 | 190.587 / 992.982 / 3711.794 |
+| 원본 Sequence gap | 3,836 | 1,285 |
+
+두 실행 모두 Publish 실패/EAGAIN/중복/역순은 0이며, gap은 latest-value 건너뛰기로 분리했습니다.
+Subscriber Loop 관측 지연과 Callback 도착 지연은 다릅니다. 3B CLI의 RT 설정은 제공하지 않으므로
+RT Topic 성능으로 해석하지 않습니다. 이전 Debug 결과 역시 다른 시점/조건의 관측값이므로
+Release 최적화나 주기 수정의 효과만으로 차이를 단정하지 않습니다.
+
+### 남은 제한 및 미검증
+
+- PREEMPT_RT **실장 검증 미수행**. 접근 가능한 환경은 기존 VM뿐이며 실제 장치의 커널/권한/빌드 가능 여부는 미확인.
+- 물리 LAN Discovery 지연은 **미해결 사항으로 유지**합니다. 이번 Local/격리 Network 회귀 PASS로
+  물리 LAN 지연 원인·재발견 시간·장애 후 자동 복구 안정성을 해결했다고 판단하지 않습니다.
+- 기존 Network Service/Topic/Action의 간헐적 timeout 및 재실행 PASS 이력은 아래/Network 문서에 보존합니다.
+- RT 권한/MEMLOCK은 OS 조건이며 자동 권한 상승·커널 변경을 제공하지 않습니다.
+  테스트에서 실패 조건을 만들기 위한 한도/권한 하향은 해당 테스트 자식에만 적용됩니다.
+- Composition은 일반 실행 예제입니다. External Observer는 자동 재연결하지 않으며 stdin EOF 시
+  기존 관측만 계속합니다. SIGKILL 이후 owner SHM 회수에는 기존 소유권/세대 계약과 명시적 재실행이 필요합니다.
+- `/tmp`의 Profile probe·Composition runner 및 측정 로그는 영구 CI/배포 artifact가 아닙니다.
+  실제 실행 항목과 내부 assertion 수, CTest 등록 수를 혼동하지 않습니다.
+
+## v5.3 Network Diagnostics 검증
+
+F-ND1~F-ND5A 적용 dev working tree와 별도 Tool 저장소의 기존 실행 로그를 대조한 기록입니다.
+**F-ND5B에서는 build/test를 재실행하지 않았습니다.** 아래 PASS는 각 실행 출처에 한정되며,
+새 공개 commit/Release 또는 물리 LAN/데스크톱 수동 검증으로 해석하지 않습니다.
+
+| 실행 / 출처 | 결과 | 범위 |
+| --- | --- | --- |
+| F-ND5A `/tmp/kcf-fnd5a/configure.log`, `build.log` | PASS | 전체 Debug C++17 build, Framework/CMake 5.3.0 |
+| F-ND5A `/tmp/kcf-fnd5a/results.json` | 8/8 PASS | contract, compatibility, Discovery, Parameter, Service, Action, Topic, proxy recovery |
+| F-ND5A `control_parameter.log` | PASS | opt-in/disabled, public client, replay 회수/상한, timeout/partial IO/identity gates |
+| F-ND5A `topic_data.log` | Diagnostics Loopback E2E PASS | 두 실제 DataPlane, proxy Subscriber, public client, route/counter 상관관계, Control 동시 부하 |
+| F-ND5A `/tmp/kcf-fnd5a/virtual/results.json` | Framework Virtual LAN PASS | peer/NIC 장애, netem, proxy recovery, cleanup |
+| KT-ND2 `/tmp/kt-nd2-virtual-final/results.json` | Tool 독립 Virtual LAN Diagnostics E2E PASS | 별도 kcf_tools 저장소의 독립 Observer + Qt offscreen; Framework 자체 시험과 구분 |
+| KT-ND3 `/tmp/kt-nd3/virtual/results.json` | 후속 Tool Virtual LAN PASS | 별도 실행이며 KT-ND2의 측정값과 혼합하지 않음 |
+
+F-ND5A 최초 sandbox 실행은 netlink `Operation not permitted`로 테스트 시작 전에 막혔습니다.
+`/tmp/kcf-fnd5a/sandbox-preflight.log`와 `sandbox-preflight-results.json`을 보존했고,
+격리 namespace 실행이 허용된 환경에서 위 8/8을 확인했습니다. 문서 작업에서 이 검사를 재실행하지 않았습니다.
+F-ND5A의 임시 version-check는 CMake와 FrameworkVersion 일치, 기본 Diagnostics OFF,
+5.2↔5.3 NETWORK_PROTOCOL 호환 및 EXACT mismatch를 확인했습니다. 기존 wire/storage 상수는 유지됐습니다.
+
+### 측정값의 출처와 의미
+
+아래는 **KT-ND2 별도 Tool Virtual LAN**의 `real_backend_rates_graph` 관측값을 반올림한 것입니다.
+출처는 `/tmp/kt-nd2-virtual-final/results.json`이며 F-ND5A Loopback 수치가 아닙니다.
+
+| 관측 | 값 |
+| --- | --- |
+| Source Local Publisher | 200.22 Hz |
+| Network Send | 46.67 Hz |
+| Network Receive | 47.07 Hz |
+| Gateway Proxy Publish | 47.07 Hz |
+| Local samples skipped | 152.58/s |
+
+Source Publisher rate는 fixture의 실제 발행 횟수/관측 시간으로 측정했습니다.
+다른 rate는 Gateway counter의 차이와 Tool 관측 시간을 이용합니다. 관측 창이 다르므로 Send/Receive 수치가
+정확히 같을 필요는 없습니다. Framework는 Hz 자체가 아닌 counter를 제공합니다.
+약 200 Hz Local 발행과 약 50 Hz Network sampling은 서로 다른 경로이며 skipped는 Network packet loss와 다릅니다.
+Proxy Publish는 Local SHM 쓰기율이지 Application Subscriber의 처리율이 아닙니다.
+이 값들은 해당 실행의 관측치이며 성능 보장·고정 테스트 기대값이 아닙니다.
+
+### 간헐적 timeout 이력 보존
+
+- F-ND4B 최초 `/tmp/kcf-fnd4b-regression.log`: Topic `Conflict()`의 `Until` assertion 실패.
+  후속 Topic 단독 실행은 PASS (`/tmp/kcf-fnd4b-final-topic.log`). 최초 전체 실행을 PASS로 바꾸지 않습니다.
+- F-ND4B `/tmp/kcf-fnd4b-regression-recheck.log`: Action `Integration()`의 `Until` assertion 실패.
+  `/tmp/kcf-fnd4b-action-recheck.log` 단독 재실행 PASS. 원인은 확정하지 않았습니다.
+- KT-ND3 `/tmp/kt-nd3/review.md`: Framework Network 최초 7/8 PASS, Topic `Integration()` timeout.
+  `framework-topic_data.log`는 어떤 Integration lambda인지 확정할 정보를 제공하지 않습니다.
+  `framework-topic_data-retry.log` 단독 재실행 PASS. CPU 부하·Discovery·namespace 충돌 등을 원인으로 단정하지 않습니다.
+- F-ND5A의 별도 8/8 PASS는 위 실패 이력을 지우거나 간헐적 문제 해결을 입증하지 않습니다.
+  v5.2 proxy recovery 당시 최초 대기 실패·재실행 이력도 기존 Network 문서에 그대로 남깁니다.
+
+### 범위 및 남은 제한
+
+- 실제 물리 LAN, 이기종 NIC/CPU, 데스크톱 GUI 수동 검증은 미실행입니다. Virtual LAN과 Qt offscreen으로 대체 판정하지 않습니다.
+- Tool 수동 Refresh / Graph freshness 10초는 Tool 정책입니다. Framework Query deadline이나 route TTL이 아닙니다.
+- Snapshot 16 KiB 잘림은 성공 응답일 수 있으며 전체 route inventory/모든 counter 이력을 보장하지 않습니다.
+- read-only route 관측 API를 추가했지만 인증·암호화·권한 기능, 자동 retry, Reliable Topic, Action re-attach는 추가하지 않았습니다.
+- Tool v0.12의 외부 Diagnostics 미지원 기록은 당시 사실입니다. v5.3 공개 API와 별도 Tool 개발 연동으로 관측 경로가 마련됐으며,
+  이 문서가 Tool v0.13의 공개·배포를 선언하지는 않습니다. Remote Set/Call/Goal/Cancel UI도 추가하지 않았습니다.
+- `/tmp/` 로그는 임시 개발 artifact입니다. 이전 SHA 기반 검증 및 v5.2·Tool v0.12 기록을 새 실행 결과로 소급하지 않습니다.
 
 ## v5.2 공개 후 버전 정합성 검증
 

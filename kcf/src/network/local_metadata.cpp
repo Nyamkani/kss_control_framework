@@ -2,12 +2,58 @@
 #include "kcf/network/discovery_protocol.hpp"
 #include "kcf/introspection/introspection_client.hpp"
 #include <algorithm>
+#include <string_view>
 #include <cerrno>
 #include "kcf/ipc/detail/storage_layout.hpp"
 #include <sys/mman.h>
 #include <fcntl.h>
 #include <unistd.h>
 namespace kcf::network {
+namespace {
+std::string_view CanonicalPrefix(const std::string& p) {
+    std::string_view view(p);if(view.size()>1&&view.back()=='/')view.remove_suffix(1);return view;
+}
+bool PrefixValid(const std::string& p) {
+    if(!Text(p,240)||p[0]!='/'||p.find("//")!=std::string::npos||p.find_first_of(" *?[]\\")!=std::string::npos)return false;
+    auto view=CanonicalPrefix(p);if(view=="/")return true;
+    std::size_t start=1;
+    while(start<view.size()) {
+        auto end=view.find('/',start);auto part=view.substr(start,end==std::string_view::npos?end:end-start);
+        if(part.empty()||part=="."||part=="..")return false;
+        if(end==std::string_view::npos)return true;
+        start=end+1;
+    }
+    return false;
+}
+bool Matches(const std::string& name,const std::string& prefix) {
+    auto p=CanonicalPrefix(prefix);
+    return p=="/" || (name.compare(0,p.size(),p)==0 &&
+           (name.size()==p.size() || name[p.size()]=='/'));
+}
+NetworkScope TopicScope(const MetadataConfig& c,const std::string& name,EndpointRole role) {
+    bool allowed=std::find(c.remote_topics.begin(),c.remote_topics.end(),name)!=c.remote_topics.end();
+    if(c.topic_exposure.enabled && role==EndpointRole::PROVIDER) {
+        for(const auto& p:c.topic_exposure.exclude_prefixes)if(Matches(name,p))return NetworkScope::LOCAL;
+        for(const auto& p:c.topic_exposure.allow_prefixes)if(Matches(name,p))allowed=true;
+    }
+    return allowed?NetworkScope::REMOTE:NetworkScope::LOCAL;
+}
+}
+int ValidateTopicExposurePolicy(const TopicExposurePolicy& policy) {
+    for(const auto* list:{&policy.allow_prefixes,&policy.exclude_prefixes}) {
+        if(list->size()>64)return -E2BIG;
+        for(std::size_t i=0;i<list->size();++i) {
+            if(!PrefixValid((*list)[i]))return -EINVAL;
+            for(std::size_t j=0;j<i;++j)if(CanonicalPrefix((*list)[i])==CanonicalPrefix((*list)[j]))return -EEXIST;
+        }
+    }
+    return 0;
+}
+int EvaluateTopicExposure(const MetadataConfig& config,const std::string& name,EndpointRole role,NetworkScope& output) {
+    int code=ValidateTopicExposurePolicy(config.topic_exposure);if(code)return code;
+    if(!Text(name,240)||name[0]!='/'||(role!=EndpointRole::PROVIDER&&role!=EndpointRole::CONSUMER))return -EINVAL;
+    output=TopicScope(config,name,role);return 0;
+}
 int ValidateLocalTopicEndpoint(const LocalEndpoint& entry,bool publisher) {
     RuntimeInfo runtime;runtime.pid=entry.metadata.identity.runtime.pid;runtime.process_start_ticks=entry.metadata.identity.runtime.process_start_ticks;
     IntrospectionClient client;std::vector<EndpointInfo> endpoints;int code=client.ListEndpoints(runtime,endpoints);if(code)return code;
@@ -68,6 +114,7 @@ int ValidateLocalActionEndpoint(const LocalEndpoint& entry) {
 }
 int CollectLocalMetadata(const MetadataConfig& config,std::vector<LocalEndpoint>& output) {
     if(!Valid(config.host)||!Valid(config.boot_id))return -EINVAL;
+    const int policy_error=ValidateTopicExposurePolicy(config.topic_exposure);if(policy_error)return policy_error;
     IntrospectionClient client;std::vector<RuntimeInfo> runtimes;std::vector<SupervisorInfo> supervisors;
     int result=client.ListRuntimes(runtimes);if(result)return result;
     result=client.ListSupervisors(supervisors);if(result)return result;
@@ -93,7 +140,7 @@ int CollectLocalMetadata(const MetadataConfig& config,std::vector<LocalEndpoint>
             }
             if(m.kind==EndpointKind::PARAMETER && m.role==EndpointRole::PROVIDER &&
                 std::find(config.remote_parameters.begin(),config.remote_parameters.end(),m.name)!=config.remote_parameters.end())m.scope=NetworkScope::REMOTE;
-            if(m.kind==EndpointKind::TOPIC&&std::find(config.remote_topics.begin(),config.remote_topics.end(),m.name)!=config.remote_topics.end())m.scope=NetworkScope::REMOTE;
+            if(m.kind==EndpointKind::TOPIC)m.scope=TopicScope(config,m.name,m.role);
             if(!Valid(m))return -EINVAL;
             found.push_back(std::move(entry));if(found.size()>DISCOVERY_MAX_ENDPOINTS)return -E2BIG;
         }

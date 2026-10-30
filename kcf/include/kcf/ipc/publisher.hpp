@@ -14,8 +14,8 @@ public:
     int Create(const std::string& name, std::uint32_t depth = 1)
     {
         const int result = channel_.Create(name, depth);
-        if (result == 0) registration_id_ = detail::RegisterEndpoint(EndpointKind::TOPIC,
-            EndpointRole::PUBLISHER, name, sizeof(T), detail::DiagnosticTypeName<T>(), detail::RegisterEndpointType<T>());
+        if (result == 0) registration_id_ = detail::RegisterTypedEndpoint<T>(EndpointKind::TOPIC,
+            EndpointRole::PUBLISHER, name, detail::DiagnosticTypeName<T>());
         return result;
     }
     int Publish(const T& value) { return channel_.Publish(value); }

@@ -10,6 +10,7 @@
 | Application | [service_app](../examples/service_app/README.md) | 명시적 port와 Service Call |
 | Application | [timer_app](../examples/timer_app/README.md) | local callback와 Stop |
 | Application | [action_app](../examples/action_app/README.md) | Success/Cancel와 idle/RUNNING |
+| Application | [application_composition](../examples/application_composition/README.md) | 100/50/10Hz 조합, Managed/External 경계 및 명시적 Observer 재연결 |
 
 [USER REQUIREMENT / DECISION] 기존 low-level 예제를 보존하고 Application 예제를 별도로 둡니다.
 
@@ -33,6 +34,129 @@ Loop nonzero는 fatal입니다. 계속 운전할 수 있는 transient 오류만 
 Standalone은 executable 직접 실행입니다. Supervised는 Bringup의 ElementSpec이 같은 executable/arguments를 spawn합니다.
 Mode에 따라 executable을 복제하지 않습니다. 현재 app Bringup은 `/proc/self/exe`로 sibling binary 위치를 찾습니다.
 Setup 성공과 Application RUNNING barrier 완료는 구분합니다.
+
+<a id="element-registration-validation"></a>
+
+## Element 등록 사전 검증 — v5.5 S2B
+
+기존 `ElementSpec`과 `Bringup::Setup()`을 유지합니다. 선택적으로 실행할 Element만
+Application에서 `std::vector<ElementSpec>`에 넣어 전달합니다. 실행 중 등록 변경이나 자동 재시작은 지원하지 않습니다.
+
+`Bringup::ValidateElements(const std::vector<ElementSpec>&, RegistrationError* = nullptr)`는
+인스턴스 없이 호출하는 static API입니다. fork, signal 설치, SHM 생성 및 Supervisor 상태 변경 없이
+등록 규칙만 검사하며, 성공은 0, 최초 등록 오류는 `-EINVAL`을 반환합니다.
+
+| 검사 | error.field | error.reason |
+| --- | --- | --- |
+| 빈 Element 목록 | `elements` | `empty` |
+| 빈 이름 / 실행 경로 | `name` / `executable` | `empty` |
+| startup / health / shutdown Timeout 0 | `startup_timeout_ms` / `health_timeout_ms` / `shutdown_timeout_ms` | `zero` |
+| 앞 Element와 같은 이름 | `name` | `duplicate` |
+
+Element 순서대로 검사하며 각 Element에서는 빈 이름·경로, Timeout, 중복 이름 순으로 검사합니다.
+`RegistrationError.element_index`는 0부터 시작하는 `std::optional<std::size_t>`입니다.
+빈 목록은 index가 없고 `element_name`도 비어 있습니다. 다른 오류는 해당 index/name을 제공합니다.
+오류 출력은 생략할 수 있으며 매 호출 초기화하므로 성공 후 이전 오류 정보가 남지 않습니다.
+
+```cpp
+std::vector<bringup::ElementSpec> elements{
+    {"source", "/opt/my_app/bin/source", {"demo"}},
+    {"processor", "/opt/my_app/bin/processor", {"demo"}}
+};
+bringup::RegistrationError error;
+int code = bringup::Bringup::ValidateElements(elements, &error);
+if (code != 0) {
+    // error.element_index, element_name, field, reason으로 설정 오류 표시
+    return code;
+}
+
+bringup::Bringup supervisor;
+code = supervisor.Setup("my_application", elements);
+if (code != 0) return code;
+return supervisor.Run();
+```
+
+`Setup()`도 같은 검증 함수를 사용하며, 검증 실패 시 기존 등록·상태·자원을 변경하지 않습니다.
+다만 Setup의 lifecycle 검사(`-EBUSY`)가 먼저 적용됩니다. 실행 중에도 static 검증은 가능하지만
+이를 통해 실행 구성이 변경되지는 않습니다.
+
+사전 검증은 실행 파일 존재·exec 성공, 실제 RT 권한·Affinity 적용, Element Setup 성공을 보장하지 않습니다.
+길이·개수 제한이나 Builder 표시용 경고를 새 등록 오류로 추가하지 않습니다.
+경로 해석, 선택적 포함, 인자 생성은 Application/구성 도구의 책임입니다.
+
+S1 계약에 따라 Supervisor 준비 완료 후 자식 실행·초기화 실패가 발생하면 `Setup()`은 0을 반환하고
+Application은 ERROR로 유지될 수 있습니다. 따라서 `Setup()==0`을 RUNNING 보장으로 해석하지 않습니다.
+Supervisor 자체 준비 실패는 오류를 반환하며, 초기화 중 명시적 종료는 정리 후 `-ECANCELED`를 반환합니다.
+사용자 `RequestReset()`만 ERROR에서 Reset을 수행하고, `RequestShutdown()` 또는 SIGINT/SIGTERM은
+자식 회수 후 STOPPED로 종료합니다. 등록 검증은 이 정책을 변경하지 않습니다.
+
+## Application Composition — Managed / External
+
+[예제 README](../examples/application_composition/README.md)의 실행·실패 계약을 사용합니다.
+Source(100Hz)는 원본 sequence/CLOCK_MONOTONIC timestamp를 Publish하고,
+Processor(50Hz)는 최신 Snapshot을 가공하면서 원본 sequence/timestamp를 보존합니다.
+Observer(10Hz)는 읽기 전용이며 Age/상태를 출력합니다. Topic depth=1의 중간 Sequence 건너뛰기는 정상입니다.
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build --target kcf_composition_bringup kcf_composition_observer -j4
+# 터미널 1: Source/Processor만 관리
+./build/examples/application_composition/kcf_composition_bringup demo_01
+# 터미널 2: RUNNING 확인 후 독립 Observer
+./build/examples/application_composition/kcf_composition_observer demo_01
+```
+
+Source/Processor/Observer executable 각각에 같은 INSTANCE를 전달해 Standalone으로도 실행할 수 있습니다.
+실행마다 고유 INSTANCE를 사용하고 다른 실행의 Topic을 지우지 않습니다. 최초 입력 연결은 최대 3초입니다.
+Bringup의 ElementSpec에는 Source/Processor만 있으며 ExecutionProfile은 기본값입니다.
+Observer 종료는 Supervisor 상태를 바꾸지 않습니다. Managed 장애는 기존 ERROR latch로 남고 자동 재시작하지 않습니다.
+Bringup 종료는 관리 자식만 회수하며, 외부 Observer의 PID나 종료를 소유하지 않습니다.
+명시적 Profile 적용 방법과 권한 실패는 [Runtime 문서](02_RUNTIME_AND_SUPERVISION.md)에 설명합니다.
+
+### Managed / External 책임과 Builder 경계
+
+Managed 목록만 `ValidateElements()`와 `Bringup::Setup()`에 전달합니다. Supervisor는 이 목록의
+실행·감시·종료·회수 및 명시적 Reset을 소유합니다. Standalone/External은 별도로 실행하며,
+Supervisor 등록이 Topic/Parameter 등 Framework 기능 사용의 전제는 아닙니다.
+External 종료·장애는 Application ERROR로 자동 전파하지 않습니다. 필수 외부 입력의 장애 판단은
+해당 데이터를 사용하는 Application이 담당합니다.
+
+Supervisor 종료·Reset은 External PID의 직접 종료를 의미하지 않습니다. 다만 Managed Publisher/Owner의
+종료로 IPC 공급이 중단되거나 재생성된 SHM의 세대가 달라질 수 있습니다. External의 데이터 상태·재연결
+처리는 별도 책임이며, Observer 예제는 STALE 표시 및 사용자 `r` 명령을 사용합니다.
+Attached API는 현재 미구현이고 구현 보류입니다. 상태 관측과 외부 프로세스 관리 소유권을 혼동하지 않습니다.
+
+향후 Builder의 Managed 목록은 실행 구성 생성에, External 목록은 구성 표시·참조에 사용합니다.
+정적 목록에 존재한다는 사실을 실제 프로세스의 RUNNING 상태로 표시하면 안 됩니다.
+실제 상태는 별도의 Runtime/Introspection 관측으로 확인해야 합니다.
+Builder/Tools 연동, GUI, 설정 파서는 이번 단계에서 구현하지 않았으며 Core에 의존성을 추가하지 않습니다.
+Supervisor는 프로세스 lifecycle을 관리하며 Topic 데이터 중계자가 아닙니다.
+
+S1의 초기 ERROR 유지, 최초 Current Error, 최근 64건 History, 수동 Reset 및 Shutdown 우선순위는
+[Supervisor lifecycle 계약](02_RUNTIME_AND_SUPERVISION.md#supervisor-states-and-reset)을 따릅니다.
+Reset 성공은 Current Error만 해제하고 History를 유지하며, Shutdown은 자식 회수 후 STOPPED를 게시합니다.
+종료 후 SHM이 제거되므로 STOPPED를 영구 조회할 수 있다고 가정하지 않습니다.
+
+### External Observer의 명시적 SHM 재연결
+
+Application 재시작으로 같은 이름의 SHM이 재생성돼도 기존 Subscriber는 이전 매핑을 유지합니다.
+Observer는 마지막 원본 Timestamp의 Age로 STALE을 표시하며 자동으로 새 세대에 붙지 않습니다.
+Observer 터미널에서 **`r` + Enter**를 입력하면 정상 Loop에서 다음을 수행합니다.
+
+1. 기존 Subscriber Close.
+2. 예제 Input의 Snapshot, Transport Sequence, 원본 Sequence/Timestamp 비교 기준 및 통계 초기화.
+3. 동일 이름으로 Subscriber Create를 한 번 시도.
+4. 새 세대의 첫 유효 데이터부터 기준 설정. 낮아진 Sequence를 이전 세대와 비교하지 않음.
+
+Observer PID는 유지됩니다. Create 실패 시 이전 Snapshot은 폐기되고 DISCONNECTED/error를 표시하며
+다음 사용자 `r`을 기다립니다. 새 SHM이 생겨도 자동 retry하지 않습니다. 연결 성공과 Freshness는 별개로,
+데이터가 없으면 WAITING, 오래된 데이터면 STALE입니다. 최초 Setup의 3초 대기와 재연결 1회 시도를 구분합니다.
+비차단 stdin 확인만 사용하며 별도 Thread/서버를 만들지 않습니다. EOF이면 명령 입력만 중지하고
+기존 관측은 계속합니다. 정상 종료 시 stdin 플래그를 복원합니다.
+
+Close/Create는 Core API이고 비교 기준 초기화는 Application 책임입니다. Source/Processor의 소유 Topic만
+정상 Shutdown에서 Unlink하며 Observer는 Unlink하지 않습니다. SIGKILL로 남은 SHM은 기존 Core의
+owner 검증을 통한 수동 재실행 시 회수 대상이며 임의 삭제나 자동 재시작 정책을 추가하지 않습니다.
 
 ## 기능 사용의 시작점
 
@@ -111,7 +235,7 @@ Parameter Format 3은 유지합니다. [전체 계약](03_IPC_AND_FEATURES.md#to
 2. 작은 fixed-size payload를 정의합니다. Tool dynamic access가 필요하면 stable descriptor를 추가합니다.
 3. Standalone에서 정상·오류·종료를 확인합니다. callback state lifetime과 partial Setup cleanup을 확인합니다.
 4. 같은 executable을 Bringup으로 실행하고 RUNNING barrier, failure, restart를 확인합니다.
-5. Tool은 수동 Refresh 후 새 identity를 선택합니다. Action/Timer 전용 UI는 기대하지 않습니다.
+5. Tool은 수동 Refresh 후 새 identity를 선택합니다. 지원 기능은 [현재 README](../README.md)의 Tool 연동 범위를 확인합니다.
 6. 기존 회귀는 fixed-name fixture와 충돌하지 않는 환경에서 순차 실행합니다. [검증 목록](06_VERIFICATION_AND_LIMITATIONS.md) 참조.
 
 [FUTURE OPTION] 외부 Application에 대한 설치/export/package workflow는 이 예제의 CMake 사용법에서

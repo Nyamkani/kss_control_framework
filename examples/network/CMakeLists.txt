@@ -43,3 +43,35 @@ target_compile_options(kcf_virtual_host_fixture PRIVATE -Wall -Wextra -Wpedantic
 add_executable(kcf_proxy_recovery_test src/proxy_recovery_test.cpp)
 target_link_libraries(kcf_proxy_recovery_test PRIVATE kcf_core)
 target_compile_options(kcf_proxy_recovery_test PRIVATE -UNDEBUG -Wall -Wextra -Wpedantic)
+
+add_executable(kcf_lan_action src/lan_action_main.cpp)
+target_link_libraries(kcf_lan_action PRIVATE kcf_core)
+target_compile_options(kcf_lan_action PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(kcf_lan_topic src/lan_topic_main.cpp)
+target_link_libraries(kcf_lan_topic PRIVATE kcf_core)
+target_compile_options(kcf_lan_topic PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(kcf_remote_control_client_test src/remote_control_client_test.cpp)
+target_link_libraries(kcf_remote_control_client_test PRIVATE kcf_core)
+target_compile_options(kcf_remote_control_client_test PRIVATE -UNDEBUG -Wall -Wextra -Wpedantic)
+
+add_executable(kcf_remote_topic_client_test src/remote_topic_client_test.cpp)
+target_link_libraries(kcf_remote_topic_client_test PRIVATE kcf_core ${CMAKE_DL_LIBS})
+target_compile_options(kcf_remote_topic_client_test PRIVATE -UNDEBUG -Wall -Wextra -Wpedantic)
+
+add_executable(kcf_lan_recovery src/lan_recovery_main.cpp)
+target_link_libraries(kcf_lan_recovery PRIVATE kcf_core)
+target_compile_options(kcf_lan_recovery PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(kcf_host_identity_test src/host_identity_test.cpp)
+target_link_libraries(kcf_host_identity_test PRIVATE kcf_core)
+target_compile_options(kcf_host_identity_test PRIVATE -UNDEBUG -Wall -Wextra -Wpedantic)
+
+add_executable(kcf_network_interface_test src/network_interface_test.cpp)
+target_link_libraries(kcf_network_interface_test PRIVATE kcf_core)
+target_compile_options(kcf_network_interface_test PRIVATE -UNDEBUG -Wall -Wextra -Wpedantic)
+
+add_executable(kcf_topic_exposure_test src/topic_exposure_test.cpp)
+target_link_libraries(kcf_topic_exposure_test PRIVATE kcf_core)
+target_compile_options(kcf_topic_exposure_test PRIVATE -UNDEBUG -Wall -Wextra -Wpedantic)

@@ -161,7 +161,10 @@ int main(int argc,char** argv)
             {
                 if(scenario=="shutdown-new") Until([&]{return bpid()!=pid;});
                 assert(kill(getpid(),SIGTERM)==0);
-                state(State::SHUTTING_DOWN);
+                // Latest-value SystemStatus may skip the transient SHUTTING_DOWN
+                // now that v5.5 publishes STOPPED after reaping.
+                Until([&]{auto value=snapshot();return value.state==State::SHUTTING_DOWN ||
+                                                       value.state==State::STOPPED;});
                 app.RequestReset();
                 status.Close();return;
             }
@@ -220,7 +223,8 @@ int main(int argc,char** argv)
     });
     const int result=app.Run();controller.join();
     assert(result==(scenario.find("shutdown")==0?1:0));
-    assert(app.GetApplicationState()==State::SHUTTING_DOWN);
+    // v5.5: Shutdown now publishes its completed state before unlink.
+    assert(app.GetApplicationState()==State::STOPPED);
     assert(app.GetApplicationError().valid==(scenario.find("shutdown")==0));
     for(const auto& e:app.GetElementStatuses())assert(!e.running);
     int status;assert(waitpid(-1,&status,WNOHANG)==-1 && errno==ECHILD);

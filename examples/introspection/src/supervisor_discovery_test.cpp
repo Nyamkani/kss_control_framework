@@ -13,11 +13,31 @@
 #include <iostream>
 #include <thread>
 #include <fcntl.h>
+#include <dirent.h>
+#include <atomic>
 #include <poll.h>
 #include <sys/file.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
 #include <unistd.h>
+// Test-only linker interception: force real directory flock contention for the
+// Supervisor's TryCreate, without changing product code or blocking child startup.
+static bool inject_directory_contention=false;
+static unsigned injected_attempts=0;
+extern "C" int __real_flock(int,int);
+extern "C" int __wrap_flock(int fd,int operation){
+    struct stat actual{},directory{};
+    if(inject_directory_contention && operation==(LOCK_EX|LOCK_NB) &&
+       fstat(fd,&actual)==0 && stat("/dev/shm",&directory)==0 &&
+       actual.st_dev==directory.st_dev && actual.st_ino==directory.st_ino){
+        int held=open("/dev/shm",O_RDONLY|O_DIRECTORY);assert(held>=0);
+        assert(__real_flock(held,LOCK_EX)==0);
+        const int result=__real_flock(fd,operation);const int error=errno;
+        assert(result==-1 && error==EAGAIN);++injected_attempts;
+        assert(__real_flock(held,LOCK_UN)==0);close(held);errno=error;return result;
+    }
+    return __real_flock(fd,operation);
+}
 using namespace std::chrono_literals;
 namespace {
 void Send(int fd,int n) { assert(write(fd,&n,sizeof(n))==sizeof(n)); }
@@ -52,6 +72,91 @@ void CleanupCrash(const kcf::SupervisorInfo& snapshot) {
 using Storage = kcf::detail::ChannelHeader;
 using Slot = kcf::detail::ChannelSlot<kcf::SupervisorInfo>;
 void Missing(const std::string& name){int fd=shm_open(name.c_str(),O_RDONLY,0);assert(fd<0 && errno==ENOENT);}
+unsigned FdCount(){
+    auto* d=opendir("/proc/self/fd");assert(d);unsigned count=0;
+    while(auto* entry=readdir(d))if(entry->d_name[0]!='.')++count;
+    closedir(d);return count;
+}
+void CreationRecoveryContracts(){
+    using Registry=kcf::detail::SupervisorRegistry;using State=Registry::CreationState;
+    std::uint64_t ticks=0;assert(kcf::detail::ReadProcessIdentity(getpid(),ticks));
+    const auto name=kcf::detail::SupervisorRegistryName(getpid(),ticks);
+    const unsigned before=FdCount();
+    kcf::SupervisorInfo s{};s.application_state=kcf::ApplicationState::INITIALIZING;
+    std::strcpy(s.application_name,"recovery_contract");
+    Registry registry;registry.End();
+    int fd=open("/dev/shm",O_RDONLY|O_DIRECTORY);assert(fd>=0 && flock(fd,LOCK_EX)==0);
+    registry.Begin();assert(registry.GetCreationState()==State::RETRY_PENDING);
+    assert(registry.GetCreateAttempts()==1 && registry.GetCreateError()==-EAGAIN);
+    registry.Update(s);assert(registry.GetCreateAttempts()==2);Missing(name);
+    s.application_state=kcf::ApplicationState::RUNNING;registry.Update(s);
+    assert(registry.GetCreateAttempts()==3);Missing(name);
+    assert(flock(fd,LOCK_UN)==0);close(fd);
+    registry.Update(s);assert(registry.GetCreationState()==State::ACTIVE && registry.GetCreateAttempts()==4);
+    kcf::SupervisorInfo found{};assert(FindSupervisor(getpid(),found));
+    assert(found.pid==getpid() && found.process_start_ticks==ticks && found.revision==2);
+    assert(found.application_state==kcf::ApplicationState::RUNNING);
+    registry.Update(s);assert(FindSupervisor(getpid(),found) && found.revision==2);
+    registry.End();registry.End();Missing(name);assert(FdCount()==before);
+    // Exhaustion is sticky, including repeated Begin. No new creation after release.
+    fd=open("/dev/shm",O_RDONLY|O_DIRECTORY);assert(fd>=0 && flock(fd,LOCK_EX)==0);
+    registry.Begin();
+    for(unsigned attempt=2;attempt<=Registry::MAX_CREATE_ATTEMPTS;++attempt){
+        registry.Update(s);assert(registry.GetCreateAttempts()==attempt);
+    }
+    assert(registry.GetCreationState()==State::EXHAUSTED && registry.GetCreateError()==-EAGAIN);
+    assert(flock(fd,LOCK_UN)==0);close(fd);
+    registry.Begin();registry.Update(s);Missing(name);
+    assert(registry.GetCreateAttempts()==Registry::MAX_CREATE_ATTEMPTS);
+    registry.End();assert(FdCount()==before);
+    // Cleanup while still pending; End permits an explicit new lifecycle.
+    fd=open("/dev/shm",O_RDONLY|O_DIRECTORY);assert(fd>=0 && flock(fd,LOCK_EX)==0);
+    registry.Begin();registry.End();assert(flock(fd,LOCK_UN)==0);close(fd);Missing(name);
+    registry.Begin();registry.Update(s);assert(FindSupervisor(getpid(),found) && found.revision==1);
+    registry.End();Missing(name);assert(FdCount()==before);
+    // Permanent collision does not consume repeated attempts or unlink its owner.
+    kcf::SharedChannel<kcf::SupervisorInfo> owner;assert(owner.Create(name)==0);
+    registry.Begin();assert(registry.GetCreationState()==State::FAILED && registry.GetCreateError()==-EEXIST);
+    for(int i=0;i<100;++i)registry.Update(s);
+    assert(registry.GetCreateAttempts()==1);registry.End();
+    int check=shm_open(name.c_str(),O_RDONLY,0);assert(check>=0);close(check);
+    assert(owner.Close()==0 && owner.Unlink()==0);assert(FdCount()==before);
+    std::cout<<"PASS creation EAGAIN recovery, latest snapshot/revision, bounded attempts, permanent errors, cleanup/FDs\n";
+}
+void BringupCreationRecovery(const char* executable){
+    const unsigned before=FdCount();
+    int command[2],reply[2];assert(pipe(command)==0 && pipe(reply)==0);
+    const pid_t supervisor=fork();assert(supervisor>=0);
+    if(!supervisor){
+        close(command[1]);close(reply[0]);
+        inject_directory_contention=true;
+        bringup::Bringup app;
+        assert(app.Setup("recovery_app",{{"member",executable,{"--child"}}})==0);
+        assert(app.GetApplicationState()==kcf::ApplicationState::RUNNING);
+        assert(injected_attempts>=2 && injected_attempts<kcf::detail::SupervisorRegistry::MAX_CREATE_ATTEMPTS);
+        Send(reply[1],app.GetElementStatuses().front().pid);
+        // Parent checks absence and live Runtime before allowing the existing Run loop.
+        assert(Receive(command[0])==1);inject_directory_contention=false;
+        _exit(app.Run());
+    }
+    close(command[0]);close(reply[1]);const auto member=Receive(reply[0]);
+    kcf::SupervisorInfo info{};assert(!FindSupervisor(supervisor,info));
+    const auto runtime=Runtime(member);assert(runtime.execution_mode==kcf::ExecutionMode::SUPERVISED);
+    kcf::SystemStatusSubscriber status;std::uint64_t ticks=0;
+    assert(kcf::detail::ReadProcessIdentity(supervisor,ticks));assert(status.OpenForApplication(supervisor,ticks)==0);
+    kcf::SystemStatus system{};assert(status.ReadCurrent(system)==0 && system.state==kcf::ApplicationState::RUNNING);
+    Send(command[1],1);
+    Until([&]{return FindSupervisor(supervisor,info) && info.application_state==kcf::ApplicationState::RUNNING;});
+    assert(info.pid==supervisor && info.process_start_ticks==ticks && info.element_count==1);
+    assert(info.elements[0].pid==member && info.elements[0].process_start_ticks==runtime.process_start_ticks);
+    const auto revision=info.revision;
+    for(int i=0;i<20;++i)assert(FindSupervisor(supervisor,info) && info.revision==revision);
+    assert(kill(supervisor,SIGTERM)==0);int code;assert(waitpid(supervisor,&code,0)==supervisor && WIFEXITED(code) && WEXITSTATUS(code)==0);
+    assert(status.Close()==0);close(command[1]);close(reply[0]);
+    Missing(kcf::detail::SupervisorRegistryName(supervisor,ticks));assert(FdCount()==before);
+    std::cout<<"PASS actual Bringup/Runtime RUNNING while absent, Run Update recovery and membership identity\n";
+}
+
 }
 int main(int argc,char** argv) {
     if(argc>=2 && std::string(argv[1])=="--child") {
@@ -70,6 +175,8 @@ int main(int argc,char** argv) {
         assert(waitpid(cli,&status,0)==cli && WIFEXITED(status) && WEXITSTATUS(status)==0);
         std::cout<<"PASS leading --application-name CLI\n";return 0;
     }
+    CreationRecoveryContracts();
+    BringupCreationRecovery(executable);
     const std::string topic="/r2b_topic_"+std::to_string(getpid());
     pid_t standalone=fork();assert(standalone>=0);
     if(!standalone){unsetenv(kcf::SUPERVISION_FD_ENV);execl(executable,executable,"--child",nullptr);_exit(127);}

@@ -56,6 +56,10 @@ public:
     PeerDiscovery& operator=(const PeerDiscovery&) = delete;
     int Start(const DiscoveryConfig&, const std::vector<NetworkEndpointMetadata>& endpoints = {});
     int UpdateMetadata(const std::vector<NetworkEndpointMetadata>&);
+    // Additive consumer contributions survive UpdateMetadata(base). Exact session
+    // required; caller unregisters only its own identities. No session recreation.
+    int RegisterConsumer(std::uint64_t session,const NetworkEndpointMetadata&);
+    int UnregisterConsumer(std::uint64_t session,const RemoteEndpointIdentity&);
     void Stop(); // wakes poll, joins worker, closes all sockets; idempotent
     std::vector<PeerInfo> GetPeers() const;
     DiscoveryStats GetStats() const;

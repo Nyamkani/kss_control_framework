@@ -2,6 +2,8 @@
 #include "kcf/introspection/detail/runtime_registry.hpp"
 #include <cstring>
 #include <limits>
+#include <new>
+#include <cerrno>
 #include <unistd.h>
 namespace kcf::detail
 {
@@ -9,22 +11,35 @@ std::string SupervisorRegistryName(std::int32_t pid, std::uint64_t ticks)
 {
     return std::string("/") + SUPERVISOR_REGISTRY_PREFIX + std::to_string(pid) + "_" + std::to_string(ticks);
 }
+void SupervisorRegistry::TryCreate() noexcept
+{
+    if (creation_state_ != CreationState::RETRY_PENDING) return;
+    ++create_attempts_;
+    try { create_error_ = channel_.TryCreate(SupervisorRegistryName(current_.pid, current_.process_start_ticks)); }
+    catch (const std::bad_alloc&) { create_error_ = -ENOMEM; }
+    catch (...) { create_error_ = -EIO; }
+    if (create_error_ == 0) creation_state_ = CreationState::ACTIVE;
+    else if (create_error_ != -EAGAIN) creation_state_ = CreationState::FAILED;
+    else if (create_attempts_ >= MAX_CREATE_ATTEMPTS) creation_state_ = CreationState::EXHAUSTED;
+}
 void SupervisorRegistry::Begin() noexcept
 {
-    try
-    {
-        if (active_) return;
-        current_ = {};
-        current_.pid = getpid();
-        if (!ReadProcessIdentity(current_.pid, current_.process_start_ticks)) return;
-        active_ = channel_.TryCreate(SupervisorRegistryName(current_.pid, current_.process_start_ticks)) == 0;
-        initialized_ = false; dirty_ = active_;
+    // Only End starts a new lifecycle; repeated Begin must not reset the budget.
+    if (creation_state_ != CreationState::IDLE) return;
+    current_ = {};
+    current_.pid = getpid();
+    try {
+        if (!ReadProcessIdentity(current_.pid, current_.process_start_ticks)) create_error_ = -ESRCH;
     }
-    catch (...) {}
+    catch (const std::bad_alloc&) { create_error_ = -ENOMEM; }
+    catch (...) { create_error_ = -EIO; }
+    if (create_error_) { creation_state_ = CreationState::FAILED; return; }
+    creation_state_ = CreationState::RETRY_PENDING;
+    TryCreate();
 }
 void SupervisorRegistry::Update(SupervisorInfo snapshot) noexcept
 {
-    if (!active_) return;
+    if (creation_state_ == CreationState::IDLE) return;
     snapshot.pid = current_.pid;
     snapshot.process_start_ticks = current_.process_start_ticks;
     snapshot.revision = current_.revision;
@@ -36,12 +51,18 @@ void SupervisorRegistry::Update(SupervisorInfo snapshot) noexcept
         snapshot.revision++;
         current_ = snapshot; dirty_ = true; initialized_ = true;
     }
-    if (dirty_ && channel_.TryPublishSnapshot(current_) == 0) dirty_ = false;
+    // Cache the latest state before attempting recovery. One nonblocking attempt
+    // per Update; publication retries do not consume the creation budget.
+    TryCreate();
+    if (creation_state_ == CreationState::ACTIVE && dirty_ &&
+        channel_.TryPublishSnapshot(current_) == 0) dirty_ = false;
 }
 void SupervisorRegistry::End() noexcept
 {
-    if (!active_) return;
-    (void)channel_.Close(); (void)channel_.Unlink();
-    active_ = false; dirty_ = false; initialized_ = false;
+    (void)channel_.Close();
+    if (creation_state_ == CreationState::ACTIVE) (void)channel_.Unlink();
+    creation_state_ = CreationState::IDLE;
+    create_attempts_ = 0; create_error_ = 0;
+    current_ = {}; dirty_ = false; initialized_ = false;
 }
 }

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(kss_control_framework VERSION 5.2.0 LANGUAGES C CXX)
+project(kss_control_framework VERSION 5.6.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -32,3 +32,7 @@ add_subdirectory(examples/timer_app)
 add_subdirectory(examples/action_app)
 
 add_subdirectory(examples/network)
+
+add_subdirectory(examples/application_composition)
+
+add_subdirectory(gateway)

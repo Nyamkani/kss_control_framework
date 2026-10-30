@@ -198,10 +198,12 @@ void ServiceServer::PublishServices() noexcept {
                 const auto name="service@"+std::to_string(port_)+":"+std::to_string(item.first);
                 std::memcpy(h.info.name,name.data(),name.size());
             }
-            const auto request=h.register_request();const auto response=h.register_response();
-            h.info.request_type_id=request==h.request_identity.type_id?request:0;
-            h.info.response_type_id=response==h.response_identity.type_id?response:0;
-            h.info.registration_id=detail::RegisterService(h.info);
+            TypeDescriptor request{},response{};
+            const bool has_request=h.register_request(request),has_response=h.register_response(response);
+            if(has_request&&request.type_id!=h.request_identity.type_id)request={};
+            if(has_response&&response.type_id!=h.response_identity.type_id)response={};
+            h.info.registration_id=detail::RegisterTypedService(h.info,
+                has_request?&request:nullptr,has_response?&response:nullptr);
         }
     } catch (...) {}
 }

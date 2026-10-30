@@ -46,8 +46,8 @@ public:
         handler.request_size = sizeof(Request); handler.response_size = sizeof(Response);
         handler.request_identity = detail::DeclaredStorageIdentity<Request>();
         handler.response_identity = detail::DeclaredStorageIdentity<Response>();
-        handler.register_request = &detail::RegisterEndpointType<Request>;
-        handler.register_response = &detail::RegisterEndpointType<Response>;
+        handler.register_request = &DescribeType<Request>;
+        handler.register_response = &DescribeType<Response>;
         handler.info.service_id = service_id;
         handler.info.request_size = sizeof(Request); handler.info.response_size = sizeof(Response);
         // Display metadata failures must never change registration/communication.
@@ -72,13 +72,23 @@ public:
     void Stop(); // poll <=50ms, then join current callback and close socket
 
 private:
+    template<class T> static bool DescribeType(TypeDescriptor& output) noexcept {
+        if constexpr (TypeDescriptorTraits<T>::defined && std::is_standard_layout_v<T> &&
+                      std::is_trivially_copyable_v<T> && !std::is_union_v<T>) {
+            try {
+                output=TypeDescriptorTraits<T>::Get();
+                if(output.payload_size!=sizeof(T)||output.payload_alignment!=alignof(T))output={};
+            } catch(...) { output={}; }
+            return true; // Invalid traits are distinct from intentional legacy zero.
+        } else return false;
+    }
     struct Handler
     {
         std::size_t request_size, response_size;
         detail::StorageIdentity request_identity, response_identity;
         ServiceInfo info{};
-        std::uint64_t (*register_request)() noexcept;
-        std::uint64_t (*register_response)() noexcept;
+        bool (*register_request)(TypeDescriptor&) noexcept;
+        bool (*register_response)(TypeDescriptor&) noexcept;
         std::function<void(const unsigned char*, unsigned char*)> invoke;
     };
     struct Cached

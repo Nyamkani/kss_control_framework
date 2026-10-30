@@ -28,3 +28,29 @@ add_executable(kcf_application_scope_test src/application_scope_test.cpp ../../b
 target_include_directories(kcf_application_scope_test PRIVATE ../../bringup/include)
 target_link_libraries(kcf_application_scope_test PRIVATE kcf_core)
 target_compile_options(kcf_application_scope_test PRIVATE -UNDEBUG)
+
+add_executable(kcf_runtime_1khz_benchmark src/runtime_1khz_benchmark.cpp)
+target_link_libraries(kcf_runtime_1khz_benchmark PRIVATE kcf_core)
+target_compile_options(kcf_runtime_1khz_benchmark PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(kcf_topic_1khz_benchmark src/topic_1khz_benchmark.cpp)
+target_link_libraries(kcf_topic_1khz_benchmark PRIVATE kcf_core rt)
+target_compile_options(kcf_topic_1khz_benchmark PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(kcf_supervisor_failure_contract_test
+    src/supervisor_failure_contract_test.cpp ../../bringup/src/bringup.cpp)
+target_include_directories(kcf_supervisor_failure_contract_test PRIVATE ../../bringup/include)
+target_link_libraries(kcf_supervisor_failure_contract_test PRIVATE kcf_core)
+target_compile_options(kcf_supervisor_failure_contract_test PRIVATE -UNDEBUG)
+add_dependencies(kcf_supervisor_failure_contract_test kcf_supervisor_runtime_test)
+
+add_executable(kcf_registration_validation_test
+    src/registration_validation_test.cpp ../../bringup/src/bringup.cpp)
+target_include_directories(kcf_registration_validation_test PRIVATE ../../bringup/include)
+target_link_libraries(kcf_registration_validation_test PRIVATE kcf_core)
+target_compile_options(kcf_registration_validation_test PRIVATE -UNDEBUG)
+add_dependencies(kcf_registration_validation_test kcf_supervisor_runtime_test)
+
+add_executable(kcf_element_name_test src/element_name_test.cpp)
+target_link_libraries(kcf_element_name_test PRIVATE kcf_core)
+target_compile_options(kcf_element_name_test PRIVATE -UNDEBUG -Wall -Wextra -Wpedantic)

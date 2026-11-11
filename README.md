@@ -47,7 +47,8 @@ cmake --build build --target kcf_pubsub_bringup -j4
 ```
 
 `kcf_pubsub_bringup` target은 두 child executable도 함께 빌드합니다.
-현재 저장소는 명시적 `add_subdirectory` 구성이며 설치된 SDK의 `find_package(KCF)` workflow를 가정하지 않습니다.
+기존 소스 빌드는 명시적 `add_subdirectory` 구성을 유지합니다. 설치 SDK의
+`find_package(KCF)` 및 DEB 생성은 [Debian 패키징 가이드](docs/12_DEBIAN_PACKAGING.md)를 참고합니다.
 새 Application의 CMake 구성은 [실제 Pub/Sub CMake](examples/pubsub/CMakeLists.txt)를 시작점으로 사용합니다.
 
 ### 첫 실행과 정상 종료

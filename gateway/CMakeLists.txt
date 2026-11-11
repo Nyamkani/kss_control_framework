@@ -1,6 +1,7 @@
 add_executable(kcf_gateway src/main.cpp)
 target_link_libraries(kcf_gateway PRIVATE kcf_core)
 target_compile_options(kcf_gateway PRIVATE -Wall -Wextra -Wpedantic)
+install(TARGETS kcf_gateway RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 add_executable(kcf_gateway_test src/gateway_test.cpp)
 target_link_libraries(kcf_gateway_test PRIVATE kcf_core)

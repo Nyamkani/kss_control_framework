@@ -25,17 +25,31 @@ inline std::string Hex(const kcf::network::HostIdentity& id){std::string s;for(a
 inline std::string Number(std::uint64_t v){return Quote(std::to_string(v));}
 inline std::string Runtime(const kcf::network::RemoteRuntimeIdentity& r){return "{\"host\":"+Quote(Hex(r.host))+",\"boot\":"+Quote(Hex(r.boot_id))+",\"pid\":"+std::to_string(r.pid)+",\"start_ticks\":"+Number(r.process_start_ticks)+"}";}
 inline std::string Type(const kcf::network::TypeIdentity& t){return "{\"type_id\":"+Number(t.type_id)+",\"schema_id\":"+Number(t.schema_id)+",\"encoding_id\":"+std::to_string(t.encoding_id)+",\"payload_size\":"+std::to_string(t.payload_size)+"}";}
+// Both arrays use the same endpoint schema; this helper only serializes data.
+inline void Endpoints(std::string& out,const std::vector<kcf::network::NetworkEndpointMetadata>& endpoints) {
+    out+='[';
+    bool endpoint_first=true;for(const auto& e:endpoints){if(!endpoint_first)out+=',';endpoint_first=false;
+        out+="{\"runtime\":"+Runtime(e.identity.runtime)+",\"registration_id\":"+Number(e.identity.registration_id)+",\"application\":"+Runtime(e.application)+",\"host_name\":"+Quote(e.host_name)+",\"application_name\":"+Quote(e.application_name)+",\"element_name\":"+Quote(e.element_name)+",\"name\":"+Quote(e.name)+",\"kind\":"+std::to_string(int(e.kind))+",\"role\":"+std::to_string(int(e.role))+",\"scope\":"+std::to_string(int(e.scope))+",\"value_type\":"+Type(e.value_type)+",\"request_type\":"+Type(e.request_type)+",\"response_type\":"+Type(e.response_type)+",\"feedback_type\":"+Type(e.feedback_type)+",\"groups\":[";
+        bool group_first=true;for(const auto& g:e.groups){if(!group_first)out+=',';group_first=false;out+=Quote(g);}out+="]}";
+        if(out.size()>MAX_BODY)throw std::length_error("Local peer snapshot too large");
+    }
+    out+=']';
+    if(out.size()>MAX_BODY)throw std::length_error("Local peer snapshot too large");
+}
 inline std::string Peers(const std::vector<kcf::network::PeerInfo>& peers) {
     std::string out="{\"peers\":[";bool first=true;
     for(const auto& p:peers){if(!first)out+=',';first=false;
-        out+="{\"host\":"+Quote(Hex(p.host))+",\"boot\":"+Quote(Hex(p.boot_id))+",\"session\":"+Number(p.session_id)+",\"state\":"+Quote(p.state==kcf::network::PeerState::ONLINE?"ONLINE":"LOST")+",\"address\":"+Quote(p.address)+",\"metadata_port\":"+std::to_string(p.port)+",\"metadata_revision\":"+Number(p.metadata_revision)+",\"metadata_ready\":"+(p.metadata_ready?"true":"false")+",\"endpoints\":[";
-        bool endpoint_first=true;for(const auto& e:p.endpoints){if(!endpoint_first)out+=',';endpoint_first=false;
-            out+="{\"runtime\":"+Runtime(e.identity.runtime)+",\"registration_id\":"+Number(e.identity.registration_id)+",\"application\":"+Runtime(e.application)+",\"host_name\":"+Quote(e.host_name)+",\"application_name\":"+Quote(e.application_name)+",\"element_name\":"+Quote(e.element_name)+",\"name\":"+Quote(e.name)+",\"kind\":"+std::to_string(int(e.kind))+",\"role\":"+std::to_string(int(e.role))+",\"scope\":"+std::to_string(int(e.scope))+",\"value_type\":"+Type(e.value_type)+",\"request_type\":"+Type(e.request_type)+",\"response_type\":"+Type(e.response_type)+",\"feedback_type\":"+Type(e.feedback_type)+",\"groups\":[";
-            bool group_first=true;for(const auto& g:e.groups){if(!group_first)out+=',';group_first=false;out+=Quote(g);}out+="]}";
-            if(out.size()>MAX_BODY)throw std::length_error("Local peer snapshot too large");
-        }out+="]}";
+        out+="{\"host\":"+Quote(Hex(p.host))+",\"boot\":"+Quote(Hex(p.boot_id))+",\"session\":"+Number(p.session_id)+",\"state\":"+Quote(p.state==kcf::network::PeerState::ONLINE?"ONLINE":"LOST")+",\"address\":"+Quote(p.address)+",\"metadata_port\":"+std::to_string(p.port)+",\"metadata_revision\":"+Number(p.metadata_revision)+",\"metadata_ready\":"+(p.metadata_ready?"true":"false")+",\"endpoints\":";
+        Endpoints(out,p.endpoints);
+        // Display only. Never substitute this array for current metadata or use
+        // it for authorization, subscription or routing. Reflect Core flags as-is.
+        const auto& snapshot=p.last_complete_snapshot;
+        out+=",\"last_complete_snapshot\":{\"valid\":"+std::string(snapshot.valid?"true":"false")+
+             ",\"stale\":"+(snapshot.stale?"true":"false")+",\"revision\":"+Number(snapshot.revision)+",\"endpoints\":";
+        Endpoints(out,snapshot.endpoints);out+="}}";
     }out+="]}";if(out.size()>MAX_BODY)throw std::length_error("Local peer snapshot too large");return out;
 }
+
 struct Status {
     NetworkState state{NetworkState::WAITING_NETWORK};
     kcf::network::HostIdentity host,boot;

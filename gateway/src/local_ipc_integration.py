@@ -12,6 +12,41 @@ import tempfile
 import time
 
 build = Path(sys.argv[1]).resolve()
+# Pure JSON/schema checks are also usable without a namespace or network access.
+def snapshot_json_check():
+    body = json.loads(sp.check_output([str(build/'kcf_gateway_local_ipc_test'), '--snapshot-json'], text=True))
+    fresh, stale, empty, stale_empty, lost, new_generation = body['peers']
+    legacy_keys = {'host', 'boot', 'session', 'state', 'address', 'metadata_port',
+                   'metadata_revision', 'metadata_ready', 'endpoints'}
+    for peer in body['peers']:
+        assert set(peer) == legacy_keys | {'last_complete_snapshot'}
+        snapshot = peer['last_complete_snapshot']
+        assert set(snapshot) == {'valid', 'stale', 'revision', 'endpoints'}
+        assert isinstance(snapshot['revision'], str) and isinstance(snapshot['valid'], bool)
+        assert isinstance(snapshot['stale'], bool) and isinstance(snapshot['endpoints'], list)
+        # Old clients can continue using only these original fields.
+        legacy = {key: peer[key] for key in legacy_keys}
+        if not legacy['metadata_ready']:
+            assert legacy['endpoints'] == []
+    snapshot = fresh['last_complete_snapshot']
+    assert snapshot['valid'] and not snapshot['stale']
+    assert snapshot['revision'] == fresh['metadata_revision'] == str(2**64-2)
+    assert snapshot['endpoints'] == fresh['endpoints']
+    assert fresh['endpoints'][0]['name'] == '/quote"\\\n'
+    assert stale['metadata_revision'] == str(2**64-1) and not stale['metadata_ready']
+    assert stale['last_complete_snapshot'] == dict(snapshot, stale=True)
+    assert empty['metadata_ready'] and empty['endpoints'] == []
+    assert empty['last_complete_snapshot'] == dict(valid=True, stale=False, revision=str(2**64-1), endpoints=[])
+    assert stale_empty['last_complete_snapshot'] == dict(valid=True, stale=True, revision='4', endpoints=[])
+    assert lost['state'] == 'LOST'
+    for peer in (lost, new_generation):
+        assert peer['last_complete_snapshot'] == dict(valid=False, stale=False, revision='0', endpoints=[])
+    assert new_generation['boot'] != lost['boot'] and new_generation['session'] != lost['session']
+    print('Snapshot JSON schema/legacy fields/uint64/escaping/fresh/stale/empty/invalidation PASS', flush=True)
+
+snapshot_json_check()
+if len(sys.argv) == 3 and sys.argv[2] == '--snapshot-json-only':
+    sys.exit(0)
 root = Path(tempfile.mkdtemp(prefix='kcf-local-ipc-live-'))
 path = str(root / 'gateway.sock')
 children = []
@@ -82,11 +117,12 @@ try:
         return next((p for p in query(2)['peers'] if p['metadata_ready'] and p['endpoints']), None)
     observed = until(ready_peer)
     assert observed['endpoints'][0]['name'] == '/ipc/peer'
+    assert observed['last_complete_snapshot'] == dict(valid=True, stale=False, revision=observed['metadata_revision'], endpoints=observed['endpoints'])
     peer.stdin.write('remove\n');peer.stdin.flush()
     assert peer.stdout.readline().strip() == 'ok'
-    until(lambda: any(p['metadata_revision'] != observed['metadata_revision'] and p['metadata_ready'] and not p['endpoints'] for p in query(2)['peers']))
+    until(lambda: any(p['metadata_revision'] != observed['metadata_revision'] and p['metadata_ready'] and not p['endpoints'] and p['last_complete_snapshot'] == dict(valid=True, stale=False, revision=p['metadata_revision'], endpoints=[]) for p in query(2)['peers']))
     peer.stdin.write('quit\n');peer.stdin.flush();peer.wait(timeout=5)
-    until(lambda: any(p['state'] == 'LOST' for p in query(2)['peers']))
+    until(lambda: any(p['state'] == 'LOST' and not p['metadata_ready'] and not p['endpoints'] and p['last_complete_snapshot'] == dict(valid=False, stale=False, revision='0', endpoints=[]) for p in query(2)['peers']))
     fd_count = len(list(Path(f'/proc/{gateway.pid}/fd').iterdir()))
     threads = len(list(Path(f'/proc/{gateway.pid}/task').iterdir()))
     ip('link','set','ipc0','down')

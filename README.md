@@ -1,4 +1,4 @@
-# KSS Control Framework (KCF) v5.6.0 — 개발자 사용 매뉴얼
+# KSS Control Framework (KCF) v5.6.1 — 개발자 사용 매뉴얼
 
 KCF는 Linux C++17 Application의 프로세스 실행·주기·감시와 IPC를 제공합니다.
 이 문서는 저장소 루트에서 예제를 실행하고, 같은 구조로 ProcessElement와 Bringup을 작성하는 순서로 읽습니다.
@@ -6,10 +6,11 @@ KCF는 Linux C++17 Application의 프로세스 실행·주기·감시와 IPC를 
 
 ## 버전과 사용 범위
 
-현재 로컬 `dev`의 버전은 **Framework v5.6.0**이며, Supervisor S1~S4와 NET56 개발 구현을 포함합니다.
-NET56 개발 완료 범위는 v5.6.0 정식 릴리스 완료를 의미하지 않습니다.
+현재 로컬 `dev`의 버전은 **Framework v5.6.1**이며 Release 준비 중입니다.
+기존 [v5.6.0 Pre-release](https://github.com/Nyamkani/kss_control_framework/releases/tag/v5.6.0)의
+배포·검증 이력과 이번 미커밋 변경의 검증 범위는 구분합니다.
 루트 [CMakeLists.txt](CMakeLists.txt)의 project version과
-[FrameworkVersion](kcf/include/kcf/network/compatibility.hpp)의 기본값은 모두 **5.6.0**입니다.
+[FrameworkVersion](kcf/include/kcf/network/compatibility.hpp)의 기본값은 모두 **5.6.1**입니다.
 `NETWORK_PROTOCOL` 정책은 Network major와 capability를 검사하고,
 `EXACT_FRAMEWORK_VERSION`은 Framework 버전까지 일치해야 합니다.
 NetworkProtocol 1.0 / Discovery v2 / Control TCP v1 / Topic wire v1은 별도 버전입니다.
@@ -18,6 +19,36 @@ v5.5 이하 변경·커밋 이력은 [Changelog](Changelog.md), 당시 검증·K
 [검증 및 제한](docs/06_VERIFICATION_AND_LIMITATIONS.md)을 참조합니다.
 Framework와 별도 KCF Tools의 버전은 독립적입니다. 과거 Tool 연동 PASS를 v5.6 재검증으로 해석하지 않습니다.
 이 README 정리는 새 tag/Release나 새 회귀·Benchmark 결과를 선언하지 않습니다.
+
+## v5.6.1 변경 및 검증 범위
+
+- Gateway 배포 템플릿·환경 예제와 `kcf-gateway-setup`을 설치합니다. 명시한 일반 로그인
+  계정의 UID로 Host 공통 시스템 서비스를 구성하며, 패키지 설치만으로 활성화하지 않습니다.
+- `--update`는 확인된 과거 템플릿만 백업 후 갱신합니다. reload 실패 후 동일 Unit으로
+  재실행하면 검증을 거쳐 `daemon-reload`만 재시도하며 서비스 재시작을 추가하지 않습니다.
+- `PeerInfo.last_complete_snapshot`은 마지막 검증 완료 Endpoint 목록과
+  `valid/stale/revision`을 제공합니다. 같은 세대의 Revision 수집 중 표시용으로 보존하지만
+  현재 `endpoints`와 `metadata_ready` 의미는 유지합니다. stale로 신규 구독·제어·Route를 허용하지 않습니다.
+- Gateway `GET_PEERS`에 같은 Snapshot을 추가했습니다. 기존 필드는 유지하며, 새 필드를
+  무시하는 Client와 호환됩니다. NetworkProtocol 1.0 / Discovery v2 / Control TCP v1 /
+  Topic wire v1 / Local Gateway IPC v1 및 Local SHM 형식은 변경하지 않았습니다.
+
+`PeerInfo` 공개 구조의 레이아웃이 바뀌었으므로 SDK 소비자는 새 헤더와 라이브러리로
+**재컴파일·재링크**해야 합니다. 정적 링크된 Application/Tools는 Core 패키지만 교체해도 갱신되지 않습니다.
+기존 5.6.0과의 Network 연결은 기본 정책으로 판단하지만 `EXACT_FRAMEWORK_VERSION`에서는 버전 불일치입니다.
+
+최종 Core v5.6.1 Debug 회귀는 **54/54 PASS**입니다. Core CTest는 등록 0개로 **SKIP**이며,
+개별 회귀 결과와 구분합니다. Virtual LAN 전체(링크 복구 15초 조건 유지), systemd 설정 도구
+mock 25/25, SDK 소비자 2종 모두 PASS입니다.
+Ubuntu 24.04 amd64의 별도 **Release** 빌드로 DEB 생성·추출 실행·SDK 검증도 PASS했습니다.
+산출물 크기·SHA256 및 검증 기록은 [패키징 결과](docs/12_DEBIAN_PACKAGING.md#v561-final-results)를 참고하세요.
+54/54는 Debug 결과이며 Release 전체 회귀 결과를 의미하지 않습니다.
+실제 설치·업그레이드·제거, systemd 운영 복구·부팅, 실제 Wi-Fi/Core #6,
+ARM64/OPI5+ 및 UGV02 재빌드·실물 동작은 미검증입니다. 이번 문서 갱신에서는 재실행하지 않았습니다.
+
+[패키징·설치·업그레이드](docs/12_DEBIAN_PACKAGING.md),
+[Gateway 설정/업데이트](gateway/systemd/README.md),
+[Snapshot JSON 계약](gateway/LOCAL_IPC.md), [systemd 시험 범위](tests/systemd/README.md)를 참고하세요.
 
 ## 1. 개발 환경과 빌드
 
@@ -29,21 +60,23 @@ sudo apt update
 sudo apt install build-essential cmake git
 ```
 
-저장소 루트에서 Debug와 Release는 서로 다른 디렉터리에 빌드합니다.
+저장소 루트에서 **`build-main`을 표준 개발 빌드 디렉터리**로 사용합니다.
+현재 Core v5.6.1의 Debug·정적 Core 구성으로 Gateway, Bringup, 예제와 테스트를 함께 빌드합니다.
 
 ```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
-cmake --build build -j4
-cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release
-cmake --build build-release -j4
+cmake -S . -B build-main \
+  -DCMAKE_BUILD_TYPE=Debug \
+  -DBUILD_SHARED_LIBS=OFF \
+  -DKCF_ENABLE_PACKAGING=OFF
+cmake --build build-main -j2
 ```
 
-실행 파일은 `build/examples/<예제>/<target>`에 생성됩니다. Release는 앞 경로를
-`build-release`로 바꿉니다. 특정 Target만 빌드하려면:
+실행 파일은 `build-main/gateway/kcf_gateway`, `build-main/bringup/kcf_bringup`,
+`build-main/examples/<예제>/<target>`에 생성됩니다. 특정 Target만 빌드하려면:
 
 ```sh
-cmake --build build --target kcf_dummy -j4
-cmake --build build --target kcf_pubsub_bringup -j4
+cmake --build build-main --target kcf_dummy -j2
+cmake --build build-main --target kcf_pubsub_bringup -j2
 ```
 
 `kcf_pubsub_bringup` target은 두 child executable도 함께 빌드합니다.
@@ -54,7 +87,7 @@ cmake --build build --target kcf_pubsub_bringup -j4
 ### 첫 실행과 정상 종료
 
 ```sh
-./build/examples/dummy/kcf_dummy
+./build-main/examples/dummy/kcf_dummy
 ```
 
 Setup → 약 2 Hz Loop 출력을 확인하고 Ctrl+C로 종료하면 Shutdown을 수행합니다.
@@ -62,9 +95,9 @@ Setup → 약 2 Hz Loop 출력을 확인하고 Ctrl+C로 종료하면 Shutdown�
 
 ```sh
 # 터미널 1
-./build/examples/pubsub/kcf_pubsub_publisher
+./build-main/examples/pubsub/kcf_pubsub_publisher
 # 터미널 2
-./build/examples/pubsub/kcf_pubsub_subscriber
+./build-main/examples/pubsub/kcf_pubsub_subscriber
 ```
 
 약 1초마다 같은 sample의 sequence/count/value가 출력됩니다.
@@ -72,11 +105,73 @@ Subscriber, Publisher 순으로 각각 Ctrl+C로 종료한 **뒤** Supervised �
 같은 `/example/chatter`에 Publisher 둘을 동시에 실행하지 않습니다.
 
 ```sh
-./build/examples/pubsub/kcf_pubsub_bringup
+./build-main/examples/pubsub/kcf_pubsub_bringup
 ```
 
 Supervisor 터미널에서 Ctrl+C 또는 해당 프로세스에 SIGTERM을 보내면 관리 child를 종료·회수합니다.
 같은 디렉터리의 세 binary를 함께 유지합니다. 상세 출력·동시성은 [Pub/Sub README](examples/pubsub/README.md)를 참고합니다.
+
+### 범용 Bringup 실행
+
+예제 전용 Bringup 대신 범용 CLI로 같은 Element를 관리할 수도 있습니다.
+앞서 실행한 동일 예제는 정상 종료한 뒤 다음을 실행합니다.
+
+```sh
+./build-main/bringup/kcf_bringup --application-name pubsub_example \
+  ./build-main/examples/pubsub/kcf_pubsub_publisher --element-name publisher \
+  --next ./build-main/examples/pubsub/kcf_pubsub_subscriber --element-name subscriber
+```
+
+Ctrl+C로 관리 child를 종료·회수합니다. `kcf_bringup`에는 `--help` 옵션이 없으며,
+인자 없이 실행하면 Runtime을 만들지 않고 Usage를 출력한 뒤 종료 코드 1을 반환합니다.
+
+### Gateway: systemd 운영과 수동 실행
+
+Gateway는 같은 UID의 Application이 공유하는 Host당 단일 프로세스입니다.
+Standalone/Bringup이 Gateway를 자동 생성하거나 종료하지 않습니다. Local IPC만 사용하는
+위 예제에는 Gateway가 필수는 아니며, Network 연결에는 별도 Gateway 운영이 필요합니다.
+
+이미 systemd Gateway가 동작하면 이를 공통으로 이용하고 수동 Gateway를 추가 실행하지 않습니다.
+서비스는 Application의 시작·종료·Reset과 독립적인 수명을 가지며, 최초 승인 후 부팅 시
+로그인 없이 시작합니다. 실행 계정은 실제 KCF Application과 동일한 일반 Linux UID여야 합니다.
+
+```sh
+# 읽기 전용 상태 확인 및 소스 빌드 CLI 확인
+systemctl status kcf-gateway.service --no-pager
+./build-main/gateway/kcf_gateway --help
+
+# 수동 운영 전용: 기존 서비스/수동 Gateway가 없고, 아래 경로의 소유권과 권한을
+# 관리자가 확인한 환경에서 KCF 사용자로 실행합니다. sudo로 Gateway를 실행하지 않습니다.
+./build-main/gateway/kcf_gateway \
+  --state-dir /var/lib/kcf --lock-file /run/kcf/gateway.lock
+```
+
+수동 실행은 Ctrl+C로 종료하며 부팅 자동 실행·systemd 재시작 정책을 제공하지 않습니다.
+기존 Host ID, Lock, Socket을 삭제하거나 경로를 바꿔 중복 실행을 우회하지 않습니다.
+Singleton Lock 충돌은 종료 코드 2입니다. Topic/Control 기본 노출 거부는 유지되므로
+필요한 원격 접근만 명시적으로 허용합니다. NIC·권한·허용 정책은
+[Gateway 운영 가이드](gateway/systemd/README.md)를 따릅니다.
+
+### Debian 패키지 설치 후 실행
+
+위 `build-main` 명령은 소스 개발용이며 시스템 설치를 수행하지 않습니다.
+관리자가 호환되는 DEB를 설치한 환경에서는 `/usr/bin/kcf_gateway`,
+`/usr/bin/kcf_bringup`, `/usr/sbin/kcf-gateway-setup`을 사용합니다.
+예제·테스트 실행 파일은 Core DEB에 포함되지 않으므로 Application은 별도로 빌드·배포합니다.
+
+```sh
+/usr/bin/kcf_gateway --help
+# 실제 Application 실행 파일의 절대경로로 바꿉니다.
+/usr/bin/kcf_bringup --application-name my_application /absolute/path/to/my_element
+# 최초 설정 내용 확인만 수행 (KCF_USER는 실제 사용 계정으로 교체)
+sudo /usr/sbin/kcf-gateway-setup --user KCF_USER --dry-run
+```
+
+패키지 설치만으로 서비스가 활성화되지 않습니다. 최초 설정·`--enable` 명시 승인과
+기존 Unit의 `--update` 절차는 [systemd 설정 문서](gateway/systemd/README.md),
+DEB 설치·업그레이드는 [패키징 가이드](docs/12_DEBIAN_PACKAGING.md)를 참고합니다.
+소스 바이너리를 다시 빌드해도 실행 중인 설치 서비스가 교체되지는 않습니다.
+과거 검증 문서의 빌드 경로는 당시 기록으로 보존합니다.
 
 ## 2. Framework와 Application 구조
 
@@ -166,8 +261,8 @@ Application에서 모드를 표시할 필요가 있으면 `DetectLaunchExecution
 
 int main() {
     std::vector<bringup::ElementSpec> elements{
-        {"publisher", "./build/examples/pubsub/kcf_pubsub_publisher", {}},
-        {"subscriber", "./build/examples/pubsub/kcf_pubsub_subscriber", {}}
+        {"publisher", "./build-main/examples/pubsub/kcf_pubsub_publisher", {}},
+        {"subscriber", "./build-main/examples/pubsub/kcf_pubsub_subscriber", {}}
     };
     // 기본 Profile(INHERIT/0/빈 affinity/lock_memory=false) 대신 명시적 OTHER 예
     kcf::ExecutionProfile profile;
@@ -326,7 +421,7 @@ IGMP Report 후 복구됐지만 정확한 장치 원인은 미확정이며 Graph
 ### 별도 KCF Tools와 검증 범위
 
 [kcf_tools](https://github.com/Nyamkani/kcf_tools)는 별도 repository입니다.
-**현재 NET56 연동 대상은 Framework 5.6.0 작업 트리 / KCF Tools 0.14.0**이며 RemoteControlClient,
+**기존 NET56 연동 기록은 Framework 5.6.0 작업 트리 / KCF Tools 0.14.0 기준**이며 RemoteControlClient,
 RemoteTopicClient 및 TypeDescriptor Query를 사용합니다.
 
 - Multi-Host 선택: Local/Remote Host와 정확한 Endpoint를 선택하며, 동일 이름도 Host/Boot/Runtime/등록 ID/Session으로 구분합니다.
@@ -420,4 +515,5 @@ Composition Observer의 `r` + Enter는 해당 예제에 구현된 명시적 재�
 
 현재 Remote 기능과 향후 배포 자동화는 별개입니다.
 [Deployment Policy](docs/10_NETWORK_DEPLOYMENT_POLICY.md)의 당시 미구현 기록은 보존합니다. 영구 ID API와 Gateway/systemd 템플릿은 현재 구현됐고,
-network.conf 로더·Debian 패키징·실제 systemd 운영 검증은 아직 완료되지 않았습니다.
+Debian 패키징 기반은 v5.6.0에 배포됐고 v5.6.1은 명시적 Gateway 설정·업데이트 도구를 추가합니다.
+network.conf 로더, 신규 버전 패키지 및 실제 systemd 운영 검증은 별도 과제로 남아 있습니다.

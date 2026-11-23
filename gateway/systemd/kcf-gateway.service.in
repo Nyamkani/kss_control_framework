@@ -10,6 +10,7 @@ Type=exec
 # Render both placeholders before deployment. Use the SAME UID as Local Runtimes.
 User=@KCF_GATEWAY_USER@
 ExecStart=@KCF_GATEWAY_EXECUTABLE@ --state-dir /var/lib/kcf --lock-file /run/kcf/gateway.lock $KCF_GATEWAY_ARGS
+Environment="KCF_GATEWAY_ARGS="
 EnvironmentFile=-/etc/kcf/gateway.env
 StateDirectory=kcf
 StateDirectoryMode=0700

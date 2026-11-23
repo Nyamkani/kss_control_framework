@@ -32,7 +32,8 @@ int main(int argc,char** argv) {
         try{options=gateway::Parse(argc,argv);}catch(const std::exception& e){std::cerr<<"Arguments: "<<e.what()<<'\n';return 2;}
         struct sigaction action{};action.sa_handler=Signal;sigemptyset(&action.sa_mask);
         if(sigaction(SIGINT,&action,nullptr)||sigaction(SIGTERM,&action,nullptr))return Error("signal",-errno);
-        gateway::Fd lock;int code=gateway::Lock(lock,options.lock_file);if(code)return Error("singleton lock",code);
+        gateway::Fd lock;int code=gateway::Lock(lock,options.lock_file);
+        if(code){Error("singleton lock",code);return code==-EBUSY?2:1;}
         n::HostIdentity host,boot;
         code=n::LoadOrCreateHostIdentity(options.state_dir+"/host-id",host);if(code)return Error("persistent Host ID",code);
         try{gateway::ValidateClientHosts(options,host);}catch(const std::exception& e){std::cerr<<"Arguments: "<<e.what()<<'\n';return 2;}

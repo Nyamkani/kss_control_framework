@@ -1,7 +1,11 @@
 # Gateway service lifecycle (NET56-3B, current NET56 integration)
 
-Deployment template only: this repository does not install, enable or start the unit.
-Framework version is 5.6.0; this alignment is not a formal release. No Debian packaging or Application Supervisor dependency.
+The Core Debian package includes the `kcf-gateway-setup` command and deployment data: `/usr/share/kcf/systemd/kcf-gateway.service.in`
+and `/usr/share/kcf/systemd/gateway.env.example`. CMake installs these unchanged under
+`${CMAKE_INSTALL_DATADIR}/kcf/systemd`; account and executable placeholders remain unresolved.
+Package installation alone does not install an active unit or `/etc/kcf/gateway.env`,
+and does not enable or start a service.
+Framework version is 5.6.1 (release preparation; no new release declared). No Application Supervisor dependency.
 
 ## Account and rendering
 
@@ -12,19 +16,113 @@ merely to bypass this boundary. Multiple Application UIDs need a separate permis
 Use the same `/dev/shm` and PID visibility as the applications; containers/PrivateUsers or
 private SHM mounts are not equivalent to same-UID host execution.
 
-Render `kcf-gateway.service.in` by replacing `@KCF_GATEWAY_USER@` with that account name and
-`@KCF_GATEWAY_EXECUTABLE@` with the absolute installed executable path. No implicit root default.
-Review the rendered unit with `systemd-analyze verify /path/to/kcf-gateway.service`.
-The account and binary must already exist. The deployment administrator may then place the
-reviewed unit under `/etc/systemd/system/`, and optionally copy `gateway.env.example` to
-`/etc/kcf/gateway.env`. These are instructions, not actions performed by this task.
-Service activation is outside the manual test procedure; keep the service disabled. For an already running service,
-`systemctl stop kcf-gateway.service` performs SIGTERM shutdown. Logs: `journalctl -u kcf-gateway.service`.
+### First account setup (#5-2)
+
+The package installs `/usr/sbin/kcf-gateway-setup` (Python 3 standard library; `python3`
+is an explicit DEB dependency). Run it on a host with systemd and the installed Gateway:
+
+```sh
+# Inspect only: no service, configuration or Host ID changes.
+sudo /usr/sbin/kcf-gateway-setup --user KCF_USER --dry-run
+# Install the verified unit, without enabling or starting it.
+sudo /usr/sbin/kcf-gateway-setup --user KCF_USER
+# Explicit approval to enable and start the host service.
+sudo /usr/sbin/kcf-gateway-setup --user KCF_USER --enable
+```
+
+Replace `KCF_USER` with the existing ordinary Linux login account used by the Local Application
+Runtimes. In a terminal, omitting `--user` proposes `SUDO_USER`; the tool displays the account/UID
+and requires typing `yes` before proceeding. It never infers an account from the build PC or root.
+Interactive `--user` also requires confirmation. Without a terminal, `--user` is mandatory and
+constitutes explicit account confirmation; `--enable` separately constitutes activation approval.
+Numeric UIDs, root, unknown accounts, duplicate UID aliases, accounts below `UID_MIN`, and accounts
+without a login shell listed in `/etc/shells` are rejected. The administrator must verify the
+selected UID actually matches the intended Local Application Runtimes.
+
+A non-root user may run `--dry-run` if all relevant state is readable. Inaccessible state or an
+unavailable systemd bus is an error, never evidence that no service exists. Real setup requires
+root. `--dry-run` renders the candidate in a temporary directory, runs `systemd-analyze verify`,
+and prints the rendered unit; even with `--enable`, it performs no daemon reload or activation.
+Temporary validation files are removed afterwards.
+
+The tool checks `/var/lib/kcf` (including `host-id`) and `/run/kcf` recursively before changing
+anything. Existing entries must have the selected UID and primary GID and owner-only permissions;
+symlinks, hard-linked files and unsafe parent directories are rejected. Conflicts stop setup:
+there is no chown, Host ID regeneration, lock/socket deletion or process termination.
+An existing non-default `/etc/kcf/gateway.env` requires manual deployment review and is preserved;
+the tool never sources it or copies the example over it. This conservative setup path does not
+change CLI options, default-deny Topic policy, default lock or Local IPC paths.
+
+The unit is rendered from the packaged template with the confirmed account and installed
+`kcf_gateway` absolute path, then verified with `systemd-analyze verify`. A new unit is published
+atomically as root:root mode 0644 at `/etc/systemd/system/kcf-gateway.service` without overwriting
+an existing file. An identical existing unit is reused. Only an exact known older template can
+be updated with `--update`; unknown units, drop-ins, masked or transitional service states,
+and unmanaged running Gateways require manual review. A running
+Gateway is reused only when it matches the active service's MainPID, selected UID and executable.
+The tool checks the existing singleton lock without creating or deleting it. Concurrent invocations
+of this setup tool are serialized; other administrative service/account changes must not run during
+setup. Local applications must not start a manual Gateway during first setup.
+
+Only `--enable` permits `systemctl enable --now kcf-gateway.service`; terminal use additionally
+requires typing `yes` at the activation prompt before any service changes. An already enabled,
+active service with an identical unit and no pending reload needs no reload or activation.
+Failures are reported without automatic rollback or stopping services. A verified identical unit
+left after a reload failure can be reused on retry, as described below. No package maintainer script invokes this tool.
+
+Operate one common **system service** per host, with `User=` set to the KCF login account, shared by
+Standalone and Supervised Applications with the same UID. Boot activation uses `multi-user.target`
+and does not require that user to log in. It is not a per-user or per-Application service and has
+no Supervisor lifetime dependency. Actual activation, boot and recovery tests are deferred to #5-3;
+no enable/start is performed during repository validation. Logs: `journalctl -u kcf-gateway.service`.
 
 systemd creates `/var/lib/kcf` and `/run/kcf` owned by the selected UID, mode 0700.
-Existing persistent identity must be reviewed before changing service account; do not overwrite
-or regenerate it. StateDirectory ownership management can adjust existing ownership: account
-migration requires stopping the service and checking the complete directory first.
+Existing persistent identity and complete directory ownership must be reviewed before the first
+service start as well as any account change; do not overwrite or regenerate identity.
+StateDirectory ownership management can adjust existing ownership, so a conflicting directory
+must block setup before systemd starts the unit. Account migration requires a separate reviewed
+procedure; it is not an automatic first-setup operation.
+
+## Updating a deployed unit and recovering reload failure
+
+After installing the new package, use the **existing** KCF account and installed binary path.
+The following are administrator procedures, not commands executed during documentation validation:
+
+```sh
+sudo /usr/sbin/kcf-gateway-setup --user KCF_USER --dry-run
+sudo /usr/sbin/kcf-gateway-setup --user KCF_USER --update
+```
+
+Dry-run shows the diff and runs `systemd-analyze verify` without writing a unit/backup or reloading.
+`--update` explicitly approves replacement; interactive use also asks for confirmation. Recognition
+uses exact historical template hashes after normalizing the selected account and executable path,
+not a filename/comment heuristic. A recognized update must preserve User/Group, ExecStart (including
+state/lock defaults), State/RuntimeDirectory and their modes, and EnvironmentFile. Administrator edits
+and different accounts/paths are rejected rather than migrated.
+
+Before replacement the verified old unit is backed up as
+`/etc/systemd/system/kcf-gateway.service.backup-<SHA256-of-old-unit>`, root:root 0644.
+The tool verifies the candidate, checks state again, publishes the unit atomically and calls
+`systemctl daemon-reload`. An identical unit is not rewritten and no redundant backup is created.
+
+If daemon-reload fails after replacement, the new unit and old backup remain on disk; systemd may
+still have the old definition loaded (`NeedDaemonReload=yes`). Resolve the reported reload failure,
+then run the same dry-run/update commands again. Recovery requires the disk unit to match the current
+rendered template exactly and all account, path, ownership, drop-in, running-process and lock checks
+to pass. It verifies the candidate again and retries **only daemon-reload**, without rewriting the
+unit, backup, environment, Host ID or runtime files. Repeated failure is reported and leaves those
+files intact. A successful retry followed by another invocation makes no redundant changes.
+A unit not yet loaded (`LoadState=not-found`) also retains the existing initial-install retry path.
+Unknown units or non-default `gateway.env` still require manual review; recovery does not bypass them.
+
+Updating/reloading does not restart the running Gateway or load a new executable into that process.
+An administrator must separately approve and schedule `sudo systemctl restart kcf-gateway.service`
+when needed, then inspect `systemctl status kcf-gateway.service` and `journalctl -u kcf-gateway.service`.
+Restart changes the Network Session and may interrupt remote operations; Host ID must remain unchanged.
+`--enable` remains a separate approval for enable/start, not a request to restart an active service.
+
+The template provides `Environment="KCF_GATEWAY_ARGS="` before the optional EnvironmentFile;
+values in `/etc/kcf/gateway.env` take precedence. The setup tool does not create or overwrite that file.
 
 ## Lock and restart
 
@@ -47,7 +145,7 @@ runtime=$(mktemp -d)
 ```
 
 The unit restarts abnormal exits after 3 seconds, at most 5 starts in 60 seconds.
-Exit 2 (invalid arguments) is not restarted. Other process startup failures are retried only within that bound. NIC absence/ambiguity now stays
+Exit 2 (invalid arguments or singleton lock conflict `-EBUSY`) is not restarted. Other lock/runtime errors retain exit 1. Other process startup failures are retried only within that bound. NIC absence/ambiguity now stays
 WAITING_NETWORK inside the Gateway; it does not itself exhaust systemd restart limits.
 Permission/configuration or exhausted Network recovery errors can still leave the service failed.
 Normal SIGTERM/SIGINT shutdown returns 0 and does not trigger Restart=on-failure. Explicit
@@ -74,6 +172,15 @@ See the [current contract and verification boundary](../../docs/11_NETWORK_V56_D
 No Gateway failure automatically injects Local Runtime ERROR.
 
 ## Verification boundary
+
+VM preparation records: setup regression **25/25 PASS** using mocked systemctl and temporary files,
+with real `systemd-analyze verify`. Account tests exercise the actual selection function with mocked
+OS account/config data (explicit user, SUDO_USER confirmation, root/system/unknown/numeric/duplicate
+UID rejection). Update/reload failure, retry failure/success, dry-run and active-service preservation
+are covered. These tests never enable/start/restart the development VM service.
+Actual systemd reload recovery, boot/restart behavior, OPI5+ ARM64 and UGV02 rebuild/device operation
+for **5.6.1** remain unverified. Earlier 5.6.0 package/device results are separate evidence.
+
 
 `kcf_gateway_test` covers configuration and secure lock validation. Optional
 `bash gateway/src/gateway_network_test.sh /absolute/build/gateway` uses unprivileged Linux user,

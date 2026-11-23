@@ -1,6 +1,69 @@
 # 06. Verification and Limitations
 
 
+<a id="v561-discovery-recovery"></a>
+## v5.6.1 — PeerDiscovery 일시적 Network 오류 복구 (2026-11-23 기록)
+
+현재 미커밋 소스의 개발 VM Debug 검증이다. 아래 최초 FAIL, 진단 재현, 수정 후 PASS는
+서로 다른 실행이며, 기존 v5.6.0·사용자 물리 LAN 결과를 대체하지 않는다.
+이번 문서 작업에서는 빌드·테스트를 재실행하지 않고 구현과 기존 로그를 대조했다.
+
+### 최초 실패와 진단
+
+- 최종 회귀의 Virtual LAN은 링크 UP 후 양쪽 Host가 ONLINE·Metadata READY·Compatible로
+  복귀해야 하는 기존 **15초** 조건에서 `link up rediscovery`로 FAIL했다.
+  DOWN 시 B의 LOST/Route 제거 및 원격 요청 거부는 통과했지만, UP 이후 B만 복구하고
+  A는 LOST/Metadata 미준비를 유지했다. 이후 손실·지연·SHM 복구 단계는 당시 미실행이다.
+- 별도 격리 진단에서 A의 Discovery 송신 `ENETUNREACH`를 확인했다. UP 후 양방향
+  announce와 Metadata 요청·응답 및 실제 소켓 수신이 복구됐고, 인터페이스 UP·멀티캐스트
+  멤버십도 확인했다. A의 `last_seen`은 갱신되는데 조회 결과는 LOST였다.
+- 원인은 일시적 송신 오류가 성공 후에도 잔류하고 `GetPeers()`가 그 오류를 근거로
+  반환 Peer를 LOST/Metadata 무효 상태로 만드는 경로였다. Fixture의 `error=0`은
+  ControlNode 오류이며 Discovery 내부 오류가 없다는 뜻이 아니다. 내부 오류 값은
+  공개 ControlNode API로 직접 읽지 않았고 syscall 추적과 구현을 대조했다.
+- Fixture의 `gateway` 모드는 **ControlNode 직접 실행**이다. 실제 `kcf_gateway`의
+  NetworkLifecycle·systemd 운영 복구 검증으로 해석하지 않는다.
+
+### 복구 정책과 수정 후 결과
+
+송신, 멀티캐스트 수신, 유니캐스트 수신의 일시적 오류를 각각 추적한다.
+해당 방향의 실제 송신 성공 또는 유효한 원격 Discovery 수신으로만 해제하며,
+조회·시간 경과·반대 방향 성공은 해제 근거가 아니다. 치명적 내부/소켓 오류는
+Worker를 종료하고 유지한다. 오류 해제 자체가 Peer를 ONLINE/READY로 강제 승격하지 않으며,
+기존 Peer timeout, Metadata 전체 검증, Session/Revision 및 Snapshot 무효화 계약을 유지한다.
+
+| 검증 | 수정 후 결과 |
+| --- | --- |
+| `build-main` 관련 Debug 타깃 빌드 | PASS |
+| PeerDiscovery | PASS — 송수신 방향별 복구, 조회/시간/반대 방향 해제 금지, 치명적 오류 유지, Snapshot·세대·Stop 회귀 |
+| Network 계약 / Compatibility | 각각 PASS |
+| Virtual LAN 링크 DOWN/UP | 동일 **15초** 조건에서 PASS |
+| 후속 Virtual LAN 시나리오 | 손실·재정렬·지연/timeout·SHM 자동 복구·정상 재시작 및 cleanup까지 전체 PASS |
+| `git diff --check` | PASS |
+
+Linux user/network/IPC/mount/PID namespace와 별도 SHM에서 직렬 실행했다.
+Timeout 증가나 실패 조건 완화는 없으며, 기존 systemd 서비스와 실제 Host Network는 변경하지 않았다.
+Virtual LAN 결과 파일은 overall/cleanup을 포함해 **19 PASS, physical_lan 1 LIMITATION**이다.
+이는 19개의 독립 테스트 실행 수를 뜻하지 않는다.
+
+### 증거 및 미검증 범위
+
+다음은 개발 VM의 임시 증거 경로이며 저장소 또는 Release 산출물이 아니다.
+최초 FAIL 로그는 삭제·덮어쓰거나 수정 후 PASS로 바꾸지 않았다.
+
+- 최초 FAIL: `/tmp/kcf-final-561-015/RESULT.md`, `virtual-framework/results.json`,
+  `virtual-framework/events.jsonl` (모두 같은 결과 루트 아래).
+- 진단: `/tmp/kcf-link-diagnostics-xjNVEw/analysis-summary.json`, `host-*.pcap`,
+  `host-*.strace`, `failure.txt`. 이전 진단 경로 `pfpx6L`, `WwNfOT` 접미사의
+  `/tmp/kcf-link-diagnostics-*` 결과도 보존했다. tcpdump 종료 권한 제한은 별도 LIMITATION으로
+  기록했고 PID namespace 종료 후 잔여 관측 프로세스가 없음을 확인했다.
+- 수정 후: `/tmp/kcf-transient-recovery-Nn5e6i/status.txt`, `peer_discovery-final.log`,
+  `network_contract.log`, `network_compatibility.log`, `virtual-lan/results.json`.
+
+**실제 Wi-Fi/Core #6, ARM64 및 systemd 운영 복구는 미검증**이다. 이번 오류 잔류 수정만으로
+Core #6의 Wi-Fi/AP/IGMP/VM Bridged 문제를 동일 원인 또는 해결 완료로 판단하지 않는다.
+물리 LAN·장시간 안정성·최종 DEB 설치 검증 역시 이 결과에 포함되지 않는다.
+
 <a id="net56-lan-20261028"></a>
 ## v5.6.0 정합화 — OPI5+ 물리 LAN 사용자 보고 (2026-10-28)
 

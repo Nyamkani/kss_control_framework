@@ -7,6 +7,52 @@ Phase 2 통신 기능은 v2.0, Phase 3 supervision/recovery는 v3.0에 기록합
 이 문서의 버전 표기는 개발 이력 구분이며 Git tag 또는 배포 생성 여부를 의미하지 않습니다.
 v1.0~v4.3은 historical record입니다. 당시 Mecanum 경로·실행 범위를 현재 Framework 소스 구성으로 해석하지 않습니다.
 
+## v5.6.1 — Gateway 배포 준비 / Metadata Snapshot
+
+최종 Debug 회귀와 Ubuntu 24.04 amd64 Release DEB 검증을 완료한 작업 트리 기록입니다.
+신규 tag/Release 업로드 및 실제 시스템 설치 완료를 의미하지 않습니다.
+
+- 프로젝트 버전 및 `FrameworkVersion`을 5.6.1로 정합화하고 SDK 소비자의 EXACT/static 검사를 갱신.
+  Discovery 호환성 테스트는 patch 고정값 대신 실제 상대 설정값을 비교.
+- Gateway 템플릿·환경 예제와 `kcf-gateway-setup` 설치. 동일 UID 계정 확인, Dry-run,
+  Unit 검증, 명시적 `--enable`, 알려진 이전 Unit의 `--update` 및 백업 제공.
+- Unit 교체 후 daemon-reload 실패 시, 현재 렌더링 결과와 동일한 Unit에 한해 재검증 후 reload 재시도.
+  Unit/백업/Host ID/설정 보존, 자동 enable/start/restart 없음.
+- Singleton Lock 충돌 종료 코드 2와 `RestartPreventExitStatus=2` 정합화.
+  기본 빈 `KCF_GATEWAY_ARGS` 제공; `/etc/kcf/gateway.env` 설정이 우선.
+- `PeerInfo.last_complete_snapshot` 추가: Revision 수집 중 표시용 보존, 전체 검증 후 교체,
+  정상 빈 목록과 무효 상태 구분. LOST/Boot/Session/이동/Discovery 실패 시 무효화.
+- Local IPC `GET_PEERS.last_complete_snapshot` 추가. 기존 필드 의미, decimal string 및 1MiB/-E2BIG 유지.
+- PeerDiscovery 링크 DOWN 중 `ENETUNREACH`가 발생한 뒤 통신이 복구돼도 오류가 잔류하여
+  `GetPeers()`가 LOST/Metadata 무효 상태를 반환하던 문제 수정.
+  송신·멀티캐스트 수신·유니캐스트 수신 오류를 분리하고, 해당 방향의 실제 송신 성공 또는
+  유효한 원격 Discovery 패킷 수신으로만 해제. 조회·시간 경과·반대 방향 성공으로는 해제하지 않음.
+  치명적 오류는 Worker 종료와 함께 유지하며 기존 ONLINE/LOST, Metadata READY,
+  Session/Revision 및 `last_complete_snapshot` 무효화 계약 보존.
+- 복구 수정 후 관련 Debug 빌드, PeerDiscovery·Network 계약/호환성 및 동일 15초 링크 복구 조건의
+  전체 Virtual LAN E2E PASS. 최초 FAIL은 보존하며 실제 Wi-Fi/Core #6, ARM64,
+  systemd 운영 복구의 해결을 의미하지 않음.
+  [최초 실패·진단·수정 후 검증](docs/06_VERIFICATION_AND_LIMITATIONS.md#v561-discovery-recovery).
+- NetworkProtocol 1.0, Discovery v2, Control TCP v1, Topic wire v1, Local IPC/SHM 형식 유지.
+  `PeerInfo` 레이아웃 변경으로 SDK 소비자 재컴파일·재링크 필요.
+- 최종 Core Debug 회귀 **54/54 PASS**. Core CTest 등록 0개는 **SKIP**으로 별도 기록.
+  Virtual LAN 전체 PASS(링크 복구 15초 조건 유지), systemd 설정 도구 mock 25/25 PASS,
+  SDK 소비자 2종 configure/build/link/run PASS.
+- Ubuntu 24.04 amd64 **Release** DEB 생성·추출 실행·SDK 검증 PASS.
+  `kcf-core_5.6.1-1+ubuntu24.04_amd64.deb`, **1,131,794 bytes**.
+  SHA256 및 실제 Depends는 [최종 패키징 결과](docs/12_DEBIAN_PACKAGING.md#v561-final-results)에 기록.
+  Debug 54/54와 Release 패키지 검증은 별도이며 Release 전체 회귀는 수행하지 않음.
+- 실제 설치·업그레이드·제거, systemd 운영 복구·부팅, 실제 Wi-Fi/Core #6,
+  ARM64/OPI5+ 및 UGV02 재빌드·실물 시험은 미검증.
+
+## v5.6.0 — 공개 Pre-release 이력
+
+[v5.6.0 Release](https://github.com/Nyamkani/kss_control_framework/releases/tag/v5.6.0)는 Ubuntu별 DEB,
+정적 SDK 및 `KCF::core`/`KCF::bringup`을 제공한다. Release 기록에는 Ubuntu 24.04 amd64 패키징/SDK,
+24.04 arm64 및 26.04 arm64 Native Build·설치·SDK 검증 PASS가 있다.
+이는 당시 패키지 기록이며 v5.6.1 신규 변경의 ARM64/운영 PASS로 승계하지 않는다.
+자동 systemd 배포·시작은 해당 Release에 포함되지 않았다. 아래 v5.6 개발 당시 기록은 그대로 보존한다.
+
 ## v5.6 — Framework-managed Network / LAN Validation
 
 2026-10-28: CMake 및 기본 FrameworkVersion을 **5.6.0**으로 정합화하고 Discovery Framework minor 기대값을 6으로 갱신.

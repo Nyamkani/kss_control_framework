@@ -89,10 +89,10 @@ static void Network(const std::string& executable) {
     Child first(args,root/"first.log");assert(Until([&]{return Read(root/"first.log").find("[Gateway] ready")!=std::string::npos;}));
     n::HostIdentity host;assert(n::LoadHostIdentity((root/"host-id").string(),host)==0);
     const auto stored=Read(root/"host-id");
-    Child duplicate(args,root/"duplicate.log");assert(duplicate.Wait()==1);
+    Child duplicate(args,root/"duplicate.log");assert(duplicate.Wait()==2);
     assert(Read(root/"duplicate.log").find("singleton lock error=-16")!=std::string::npos);
     fs::create_directory(root/"alternate");auto alternate=args;alternate[2]=(root/"alternate").string();alternate[9]="49002";
-    Child duplicate_other_state(alternate,root/"duplicate-other.log");assert(duplicate_other_state.Wait()==1);
+    Child duplicate_other_state(alternate,root/"duplicate-other.log");assert(duplicate_other_state.Wait()==2);
     assert(Read(root/"duplicate-other.log").find("singleton lock error=-16")!=std::string::npos);
     assert(!fs::exists(root/"alternate"/"host-id"));
     // Keep a separate Local Runtime and Parameter alive through Gateway restarts.

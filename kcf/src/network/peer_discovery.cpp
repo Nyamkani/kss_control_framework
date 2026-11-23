@@ -42,6 +42,7 @@ struct PeerDiscovery::Impl
     sockaddr_in group{};
     std::atomic<bool> running{false};
     std::atomic<int> error{0};
+    int send_error{0}, multicast_error{0}, unicast_error{0}; // Worker-owned, direction-specific recovery.
     bool dirty{true};
     Clock::time_point next_announce{};
     std::thread worker;
@@ -59,18 +60,41 @@ struct PeerDiscovery::Impl
     DiscoveryPacket Packet(DiscoveryMessage kind) {
         DiscoveryPacket p;p.kind=kind;p.host=config.host;p.boot_id=config.boot_id;p.session_id=session;return p;
     }
+    static bool TransientNetworkError(int code) {
+        return code==ENETDOWN || code==ENETUNREACH || code==EHOSTDOWN ||
+               code==EHOSTUNREACH || code==ENETRESET || code==ECONNRESET ||
+               code==ECONNREFUSED || code==ETIMEDOUT || code==ENOBUFS;
+    }
+    void RefreshError() {
+        if(running) error=send_error ? send_error : (multicast_error ? multicast_error : unicast_error);
+    }
+    void IOFailure(int code,int& direction) {
+        if(!running) return; // Never replace a fatal error with a transient one.
+        if(TransientNetworkError(code)) {direction=-code;RefreshError();}
+        else {error=-code;running=false;}
+    }
+    void IOSuccess(int& direction) {
+        // A successful send cannot conceal an outstanding receive failure (or vice versa).
+        // Queries and elapsed time never clear errors. Peer/metadata state is not modified.
+        if(running && direction) {direction=0;RefreshError();}
+    }
     bool Send(const DiscoveryPacket& p, const sockaddr_in& address) {
         std::vector<std::uint8_t> bytes;const int code=EncodeDiscoveryPacket(p,bytes);
-        if(code) {error=code;return false;}
+        if(code) {error=code;running=false;return false;}
         const auto n=sendto(unicast_fd,bytes.data(),bytes.size(),MSG_DONTWAIT,
                             reinterpret_cast<const sockaddr*>(&address),sizeof(address));
-        if(n<0) {if(errno!=EAGAIN && errno!=EWOULDBLOCK) error=-errno;return false;}
-        return static_cast<std::size_t>(n)==bytes.size();
+        if(n<0) {if(errno!=EAGAIN && errno!=EWOULDBLOCK && errno!=EINTR) IOFailure(errno,send_error);return false;}
+        if(static_cast<std::size_t>(n)!=bytes.size()) {error=-EIO;running=false;return false;}
+        IOSuccess(send_error);return true;
     }
     void BeginMetadata(Entry& e) {
         e.info.metadata_ready=false;e.info.endpoints.clear();e.staging.clear();
+        e.info.last_complete_snapshot.stale=e.info.last_complete_snapshot.valid;
         if(request_counter==std::numeric_limits<std::uint64_t>::max()) {error=-EOVERFLOW;running=false;return;}
         e.request_id=++request_counter;e.next_request={};
+    }
+    static void InvalidateMetadata(PeerInfo& info) {
+        info.metadata_ready=false;info.endpoints.clear();info.last_complete_snapshot={};
     }
     void Tick(Clock::time_point now) {
         if(dirty || now>=next_announce) {
@@ -82,7 +106,7 @@ struct PeerDiscovery::Impl
         }
         for(auto& e:peers) {
             if(e.info.state==PeerState::ONLINE && now-e.info.last_seen>=config.peer_timeout) {
-                e.info.state=PeerState::LOST;e.info.metadata_ready=false;e.info.endpoints.clear();e.staging.clear();
+                e.info.state=PeerState::LOST;InvalidateMetadata(e.info);e.staging.clear();
             }
             if(e.info.state==PeerState::ONLINE && !e.info.metadata_ready && now>=e.next_request) {
                 auto p=Packet(DiscoveryMessage::METADATA_REQUEST);p.request_id=e.request_id;
@@ -123,7 +147,10 @@ struct PeerDiscovery::Impl
         if(e.sequence && p.revision==e.info.metadata_revision && (e.size!=p.metadata_size || e.count!=p.endpoint_count)) return;
         const bool moved=e.sequence && !SameAddress(e.address,address);
         if(moved && now-e.info.last_seen<config.peer_timeout) return;
-        const bool refresh=!e.info.session_id || changed || moved || e.info.state==PeerState::LOST || p.revision!=e.info.metadata_revision;
+        const bool expired=e.info.session_id && now-e.info.last_seen>=config.peer_timeout;
+        const bool invalidated=changed || moved || expired || e.info.state==PeerState::LOST;
+        const bool refresh=!e.info.session_id || invalidated || p.revision!=e.info.metadata_revision;
+        if(invalidated) InvalidateMetadata(e.info);
         e.info.profile=p.profile;
         e.info.compatibility=CheckPeerCompatibility(config.profile,p.profile,config.compatibility_policy);
         e.info.host=p.host;e.info.boot_id=p.boot_id;e.info.session_id=p.session_id;
@@ -156,28 +183,42 @@ struct PeerDiscovery::Impl
                 if(result || decoded.size()!=e.count || !ValidDiscoveryMetadata(decoded,p.host,p.boot_id)) {
                     ++stats.rejected_datagrams;BeginMetadata(e);e.next_request=now+config.metadata_retry;return;
                 }
-                e.info.endpoints=std::move(decoded);e.info.metadata_ready=true;e.staging.clear();
+                // Allocate both copies before publishing any completed state. GetPeers
+                // observes the entire replacement under the same mutex, even on OOM.
+                auto display=decoded;
+                e.info.endpoints=std::move(decoded);
+                e.info.last_complete_snapshot.endpoints=std::move(display);
+                e.info.last_complete_snapshot.revision=e.info.metadata_revision;
+                e.info.last_complete_snapshot.valid=true;e.info.last_complete_snapshot.stale=false;
+                e.info.metadata_ready=true;e.staging.clear();
             } else e.next_request={};
         } else ++stats.rejected_datagrams;
     }
     void Drain(int fd,bool multicast) {
+        int& receive_error=multicast ? multicast_error : unicast_error;
         for(unsigned i=0;i<32 && running;++i) {
             std::array<std::uint8_t,DISCOVERY_MAX_DATAGRAM> buffer{};sockaddr_in address{};socklen_t length=sizeof(address);
             const auto n=recvfrom(fd,buffer.data(),buffer.size(),MSG_DONTWAIT|MSG_TRUNC,reinterpret_cast<sockaddr*>(&address),&length);
-            if(n<0) {if(errno!=EAGAIN && errno!=EWOULDBLOCK && errno!=EINTR) error=-errno;return;}
+            if(n<0) {if(errno!=EAGAIN && errno!=EWOULDBLOCK && errno!=EINTR) IOFailure(errno,receive_error);return;}
             DiscoveryPacket p;
             const bool bad=static_cast<std::size_t>(n)>buffer.size() || address.sin_family!=AF_INET || !address.sin_port ||
                 address.sin_addr.s_addr==INADDR_ANY || IN_MULTICAST(ntohl(address.sin_addr.s_addr)) ||
                 DecodeDiscoveryPacket(buffer.data(),n,p)!=0;
             std::lock_guard<std::mutex> lock(mutex);
             if(bad) ++stats.rejected_datagrams;
-            else Receive(p,address,multicast,Clock::now());
+            else {
+                if(p.host!=config.host && (multicast ? p.kind==DiscoveryMessage::ANNOUNCE :
+                   (p.kind==DiscoveryMessage::METADATA_REQUEST || p.kind==DiscoveryMessage::METADATA_RESPONSE)))
+                    IOSuccess(receive_error);
+                Receive(p,address,multicast,Clock::now());
+            }
         }
     }
     void Run() noexcept {
         try {
             while(running) {
                 {std::lock_guard<std::mutex> lock(mutex);Tick(Clock::now());}
+                if(!running) break;
                 pollfd fds[]{{multicast_fd,POLLIN,0},{unicast_fd,POLLIN,0},{wake_fd,POLLIN,0}};
                 const int n=poll(fds,3,20);
                 if(n<0) {if(errno==EINTR) continue;error=-errno;break;}
@@ -190,7 +231,8 @@ struct PeerDiscovery::Impl
                 if((fds[0].revents|fds[1].revents)&(POLLNVAL|POLLHUP)) {error=-EBADF;break;}
                 for(unsigned i=0;i<2;++i) if(fds[i].revents&POLLERR) {
                     int socket_error=0;socklen_t size=sizeof(socket_error);
-                    if(getsockopt(fds[i].fd,SOL_SOCKET,SO_ERROR,&socket_error,&size)==0 && socket_error) error=-socket_error;
+                    if(getsockopt(fds[i].fd,SOL_SOCKET,SO_ERROR,&socket_error,&size)!=0) {error=-errno;running=false;break;}
+                    if(socket_error) IOFailure(socket_error,i==0 ? multicast_error : unicast_error);
                 }
                 if(fds[0].revents&POLLIN) Drain(multicast_fd,true);
                 if(fds[1].revents&POLLIN) Drain(unicast_fd,false);
@@ -240,7 +282,7 @@ int PeerDiscovery::Start(const DiscoveryConfig& config,const std::vector<Network
         do {got=getrandom(&session,sizeof(session),GRND_NONBLOCK);} while(got<0 && errno==EINTR);
         if(got!=sizeof(session) || !session) return got<0?-errno:-EIO;
         s.config=config;s.base_metadata=endpoints;s.consumers.clear();s.metadata=std::move(bytes);s.endpoint_count=endpoints.size();s.session=session;
-        s.revision=1;s.sequence=0;s.request_counter=0;s.peers.clear();s.stats={};s.error=0;s.dirty=true;
+        s.revision=1;s.sequence=0;s.request_counter=0;s.peers.clear();s.stats={};s.error=0;s.send_error=s.multicast_error=s.unicast_error=0;s.dirty=true;
         const auto fail=[&] {const int e=errno;s.CloseSockets();return -e;};
         s.multicast_fd=socket(AF_INET,SOCK_DGRAM|SOCK_NONBLOCK|SOCK_CLOEXEC,0);if(s.multicast_fd<0) return fail();
         int one=1,zero=0;
@@ -307,7 +349,13 @@ void PeerDiscovery::Stop()
 std::vector<PeerInfo> PeerDiscovery::GetPeers() const
 {
     auto& s=*impl_;std::lock_guard<std::mutex> lock(s.mutex);std::vector<PeerInfo> result;
-    result.reserve(s.peers.size());for(const auto& e:s.peers) result.push_back(e.info);return result;
+    result.reserve(s.peers.size());
+    const bool unavailable=!s.running || s.error!=0;
+    for(const auto& e:s.peers) {
+        result.push_back(e.info);
+        if(unavailable) {result.back().state=PeerState::LOST;Impl::InvalidateMetadata(result.back());}
+    }
+    return result;
 }
 DiscoveryStats PeerDiscovery::GetStats() const {std::lock_guard<std::mutex> lock(impl_->mutex);return impl_->stats;}
 std::uint64_t PeerDiscovery::GetSessionId() const {std::lock_guard<std::mutex> lock(impl_->mutex);return impl_->session;}

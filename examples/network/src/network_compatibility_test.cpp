@@ -123,7 +123,7 @@ void Discovery()
     auto pb=Peer(a,2);Expect(pb.compatibility,R::NETWORK_MAJOR_MISMATCH);assert(pb.profile.network.major==2);
     Expect(n::CheckRouteCompatibility(ca,pb,local,remote.identity),R::NETWORK_MAJOR_MISMATCH);
     Expect(Peer(b,1).compatibility,R::NETWORK_MAJOR_MISMATCH);
-    auto pc=Peer(a,3);Expect(pc.compatibility,R::COMPATIBLE);assert(pc.profile.framework.patch==1);
+    auto pc=Peer(a,3);Expect(pc.compatibility,R::COMPATIBLE);assert(pc.profile.framework.patch==cc.profile.framework.patch);
     Expect(Peer(c,1).compatibility,R::FRAMEWORK_VERSION_MISMATCH);
     Expect(n::CheckRouteCompatibility(ca,pc,local,third.identity),R::CAPABILITY_MISSING);
     // Synthetic supported-transport profiles exercise the future route gate.

@@ -2,6 +2,16 @@ add_executable(kcf_gateway src/main.cpp)
 target_link_libraries(kcf_gateway PRIVATE kcf_core)
 target_compile_options(kcf_gateway PRIVATE -Wall -Wextra -Wpedantic)
 install(TARGETS kcf_gateway RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(PROGRAMS systemd/kcf-gateway-setup.py
+    DESTINATION ${CMAKE_INSTALL_SBINDIR} RENAME kcf-gateway-setup)
+# The setup command uses Python's standard library; ELF shlibdeps cannot infer this.
+list(APPEND CPACK_DEBIAN_PACKAGE_DEPENDS python3)
+set(CPACK_DEBIAN_PACKAGE_DEPENDS "${CPACK_DEBIAN_PACKAGE_DEPENDS}" PARENT_SCOPE)
+install(FILES
+    systemd/kcf-gateway.service.in
+    systemd/gateway.env.example
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/kcf/systemd
+)
 
 add_executable(kcf_gateway_test src/gateway_test.cpp)
 target_link_libraries(kcf_gateway_test PRIVATE kcf_core)

@@ -4,7 +4,7 @@
 int main()
 {
     constexpr kcf::network::FrameworkVersion version{};
-    static_assert(version.major == 5 && version.minor == 6 && version.patch == 0);
+    static_assert(version.major == 5 && version.minor == 6 && version.patch == 1);
     kcf::ProcessRuntime runtime;
     return runtime.IsRunning() ? 1 : 0;
 }

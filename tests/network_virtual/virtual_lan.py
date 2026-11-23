@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import select
 import signal
+import shutil
 import subprocess as sp
 import sys
 import time
@@ -94,6 +95,8 @@ class Lab:
         self.output.mkdir(parents=True, exist_ok=True)
         self.events = (self.output/'events.jsonl').open('w')
         self.processes, self.keepers, self.results = [], {}, {}
+        self.diagnostics = os.environ.get("KCF_VLAN_DIAGNOSTICS") == "1"
+        self.observers = []
 
     def enter(self, host):
         return ['nsenter', '-t', str(self.keepers[host].pid), '-n', '-i', '-m', '--']
@@ -137,6 +140,74 @@ class Lab:
         (self.output/'topology.json').write_text(json.dumps(topology, indent=2))
         self.record('namespace_isolation')
 
+    def diagnostic_snapshot(self, phase, gateways):
+        if not self.diagnostics:
+            return
+        report = {'monotonic': time.monotonic(), 'wall_time': time.time(), 'hosts': {}}
+        for host, gateway in enumerate(gateways, 1):
+            data = {'status': gateway.ask(), 'commands': {}}
+            for args in [('ip', '-j', '-s', 'link', 'show', 'dev', 'lan0'),
+                         ('ip', '-j', 'addr', 'show', 'dev', 'lan0'),
+                         ('ip', '-j', 'route'), ('ip', 'maddr', 'show', 'dev', 'lan0'),
+                         ('ss', '-uapn'), ('cat', '/proc/net/igmp')]:
+                try:
+                    result = sp.run(self.enter(host) + list(args), text=True,
+                                    capture_output=True, timeout=3)
+                    data['commands'][' '.join(args)] = dict(code=result.returncode,
+                        stdout=result.stdout, stderr=result.stderr)
+                except (OSError, sp.TimeoutExpired) as exc:
+                    data['commands'][' '.join(args)] = {'LIMITATION': str(exc)}
+            report['hosts'][str(host)] = data
+        (self.output / ('diagnostic-' + phase + '.json')).write_text(json.dumps(report, indent=2))
+
+    def diagnostic_start(self, gateways):
+        if not self.diagnostics:
+            return
+        self.record('discovery_internal_error', 'LIMITATION',
+                    'ControlNode API exposes only its own error, not PeerDiscovery error; no API changes')
+        for host, gateway in enumerate(gateways, 1):
+            for tool in ('tcpdump', 'strace'):
+                if not shutil.which(tool):
+                    self.record(f'diagnostic_{tool}_{host}', 'LIMITATION', 'tool unavailable')
+                    continue
+                if tool == 'tcpdump':
+                    # Non-promiscuous capture; only this private host's virtual NIC.
+                    args = self.enter(host) + [tool, '-Z', 'root', '-p', '-U', '-n', '-i', 'lan0',
+                        '-w', str(self.output / f'host-{host}.pcap'), 'udp or igmp']
+                else:
+                    # Attach only to the fixture, never an operating host process.
+                    args = [tool, '-f', '-ttt', '-s', '96', '-e',
+                        'trace=sendto,recvfrom,getsockopt,setsockopt', '-p', str(gateway.proc.pid),
+                        '-o', str(self.output / f'host-{host}.strace')]
+                log = (self.output / f'host-{host}-{tool}.log').open('w')
+                process = sp.Popen(args, stdout=log, stderr=log)
+                self.observers.append((process, log, f'diagnostic_{tool}_{host}'))
+                time.sleep(.1)  # Capture startup precedes link DOWN, outside rediscovery timeout.
+                self.record(f'diagnostic_{tool}_{host}',
+                    'PASS' if process.poll() is None else 'LIMITATION',
+                    'observer started; inspect capture/log for actual coverage' if process.poll() is None
+                    else f'observer exited {process.returncode}; see log')
+
+    def diagnostic_stop(self):
+        for process, log, name in self.observers:
+            try:
+                if process.poll() is None:
+                    process.send_signal(signal.SIGINT)
+                    try:
+                        process.wait(timeout=3)
+                    except sp.TimeoutExpired:
+                        process.kill(); process.wait()
+                if process.returncode not in (0, -signal.SIGINT):
+                    self.record(name, 'LIMITATION', f'observer exit {process.returncode}; inspect log')
+            except OSError as exc:
+                # A capture tool may drop capabilities and reject signals under
+                # userns/LSM policy. Preserve the original test failure; the outer
+                # isolated PID namespace teardown kills remaining observers.
+                self.record(name, 'LIMITATION', f'observer cleanup: {exc}; PID namespace teardown required')
+            finally:
+                log.close()
+        self.observers.clear()
+
     def shm(self, host):
         return self.inside(host, 'python3', '-c', 'import os,json; print(json.dumps(sorted(os.listdir("/dev/shm"))))').strip()
 
@@ -160,6 +231,7 @@ class Lab:
             self.qdisc = True
 
     def cleanup(self):
+        self.diagnostic_stop()
         for p in reversed(self.processes):
             p.stop()
         for p in self.keepers.values():
@@ -228,10 +300,23 @@ class Lab:
         new=gb.ask();require(new['peer_session']!=old['peer_session'] and new['source_session']==new['peer_session'] and new['route_id']!=old['route_id'], 'stale route reused')
         controls();self.record('peer_restart',details={'old_session':old['peer_session'],'new_session':new['peer_session']})
         # Actual veth down, not a fake peer-table event.
+        self.diagnostic_start((ga, gb))
+        self.diagnostic_snapshot('before-down', (ga, gb))
         self.inside(1,'ip','link','set','lan0','down')
         until(lambda: not gb.ask()['online'] and gb.ask()['receive_routes']==0 and '10.203.0.2:' not in self.inside(2,'ss','-Htn','state','established'), 'link down isolation')
         require(gb.ask('GET')['code']!=0 and a.ask()['local_read']==0,'link down changed Local IPC')
-        self.inside(1,'ip','link','set','lan0','up');until(discovered,'link up rediscovery')
+        self.diagnostic_snapshot('down', (ga, gb))
+        self.inside(1,'ip','link','set','lan0','up')
+        if self.diagnostics:
+            (self.output/'diagnostic-up-marker.json').write_text(json.dumps(
+                {'monotonic': time.monotonic(), 'wall_time': time.time()}))
+        try:
+            until(discovered,'link up rediscovery')  # Original predicate and 15s timeout.
+        finally:
+            try:
+                self.diagnostic_snapshot('after-up-wait', (ga, gb))
+            finally:
+                self.diagnostic_stop()
         before=sub.ask()['callbacks'];until(lambda: sub.ask()['callbacks']>before,'topic after link up');controls();self.record('network_down_up')
         # Probe netem support explicitly. This namespace never changes host qdisc.
         try:

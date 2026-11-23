@@ -6,6 +6,17 @@
 namespace kcf::network
 {
 enum class PeerState : std::uint8_t { ONLINE = 1, LOST = 2 };
+// Display only, never a source for Subscribe/Route/Service/Action/Control decisions.
+// valid means a fully verified snapshot in this peer incarnation, including an
+// empty endpoint list. stale means a newer revision is still being collected.
+// Invalidation clears endpoints/revision and resets both flags.
+struct EndpointSnapshot
+{
+    std::vector<NetworkEndpointMetadata> endpoints;
+    std::uint64_t revision{0};
+    bool valid{false};
+    bool stale{false};
+};
 struct PeerInfo
 {
     HostIdentity host, boot_id;
@@ -18,7 +29,8 @@ struct PeerInfo
     PeerProfile profile;
     CompatibilityResult compatibility; // version-level only, independent of ONLINE/LOST
     bool metadata_ready{false};
-    std::vector<NetworkEndpointMetadata> endpoints;
+    std::vector<NetworkEndpointMetadata> endpoints; // Current verified metadata only.
+    EndpointSnapshot last_complete_snapshot; // Independent, display-only copy.
 };
 struct DiscoveryConfig
 {
@@ -61,6 +73,8 @@ public:
     int RegisterConsumer(std::uint64_t session,const NetworkEndpointMetadata&);
     int UnregisterConsumer(std::uint64_t session,const RemoteEndpointIdentity&);
     void Stop(); // wakes poll, joins worker, closes all sockets; idempotent
+    // Independent copies under the metadata mutex. Discovery error/stopped worker
+    // reports retained peers as LOST with current and display metadata invalidated.
     std::vector<PeerInfo> GetPeers() const;
     DiscoveryStats GetStats() const;
     std::uint64_t GetSessionId() const;

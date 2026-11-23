@@ -27,6 +27,7 @@ EXPECTED = {
     'Unit': {'StartLimitIntervalSec': '60', 'StartLimitBurst': '5',
              'Wants': 'network-online.target', 'After': 'network-online.target'},
     'Service': {'Type': 'exec', 'Restart': 'on-failure', 'RestartSec': '3',
+                'Environment': '"KCF_GATEWAY_ARGS="',
                 'RestartPreventExitStatus': '2', 'StateDirectory': 'kcf-stab6b',
                 'RuntimeDirectory': 'kcf-stab6b', 'RuntimeDirectoryPreserve': 'yes',
                 'StateDirectoryMode': '0700', 'RuntimeDirectoryMode': '0700',
@@ -257,7 +258,7 @@ def live(args, report, rendered):
         duplicate = sp.run(command, user=account.pw_uid, group=account.pw_gid, extra_groups=[],
                            text=True, stdout=sp.PIPE, stderr=sp.STDOUT, timeout=10)
         (report.out/'duplicate.log').write_text(duplicate.stdout)
-        if duplicate.returncode != 1 or 'singleton lock error=-16' not in duplicate.stdout:
+        if duplicate.returncode != 2 or 'singleton lock error=-16' not in duplicate.stdout:
             raise RuntimeError('duplicate Gateway was not rejected')
         report.add('duplicate-lock', 'PASS', 'same-UID duplicate refused with -EBUSY')
         ctl('kill', '--kill-whom=main', '--signal=SIGTERM')

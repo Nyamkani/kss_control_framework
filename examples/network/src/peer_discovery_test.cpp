@@ -1,15 +1,29 @@
 #include "kcf/network/peer_discovery.hpp"
 #include "kcf/ipc/shared_channel.hpp"
 #include <cassert>
+#include <atomic>
+#include <sys/syscall.h>
 #include <chrono>
 #include <filesystem>
 #include <iostream>
 #include <thread>
 #include <random>
 #include <csignal>
+#include <poll.h>
 #include <arpa/inet.h>
 #include <sys/wait.h>
 #include <unistd.h>
+// Fault injection is confined to this test executable and selected socket FDs.
+static std::atomic<int> failed_send_fd{-1}, failed_receive_fd{-1};
+static std::atomic<int> injected_send_error{ENETUNREACH};
+extern "C" ssize_t sendto(int fd,const void* data,size_t size,int flags,const sockaddr* address,socklen_t length) {
+    if(fd==failed_send_fd.load()) {errno=injected_send_error.load();return -1;}
+    return syscall(SYS_sendto,fd,data,size,flags,address,length);
+}
+extern "C" ssize_t recvfrom(int fd,void* data,size_t size,int flags,sockaddr* address,socklen_t* length) {
+    if(fd==failed_receive_fd.load()) {errno=EHOSTUNREACH;return -1;}
+    return syscall(SYS_recvfrom,fd,data,size,flags,address,length);
+}
 using namespace std::chrono_literals;
 namespace n=kcf::network;
 n::HostIdentity Id(unsigned char x) {n::HostIdentity id;id.bytes[0]=x;return id;}
@@ -60,6 +74,161 @@ struct Injector {
 };
 n::DiscoveryPacket Announce(unsigned char id=90) {
     n::DiscoveryPacket p;p.host=Id(id);p.boot_id=Id(42);p.session_id=7;p.sequence=1;p.revision=1;p.metadata_size=2;return p;
+}
+// Controlled peer: reply one requested chunk at a time, with real UDP framing.
+struct MetadataPeer : Injector {
+    n::DiscoveryPacket announce=Announce();
+    std::vector<std::uint8_t> metadata;
+    explicit MetadataPeer(std::uint16_t port):Injector(port) {}
+    void Heartbeat() {
+        ++announce.sequence;
+        std::vector<std::uint8_t> bytes;assert(n::EncodeDiscoveryPacket(announce,bytes)==0);Send(bytes);
+    }
+    void Revision(std::uint64_t revision,const std::vector<n::NetworkEndpointMetadata>& endpoints) {
+        assert(n::EncodeDiscoveryMetadata(endpoints,metadata)==0);
+        announce.revision=revision;announce.metadata_size=metadata.size();announce.endpoint_count=endpoints.size();Heartbeat();
+    }
+    struct Request {n::DiscoveryPacket packet;sockaddr_in address;};
+    Request Next(std::size_t offset) {
+        const auto deadline=std::chrono::steady_clock::now()+2s;
+        auto heartbeat=std::chrono::steady_clock::time_point{};
+        for(;;) {
+            const auto now=std::chrono::steady_clock::now();assert(now<deadline);
+            if(now>=heartbeat){Heartbeat();heartbeat=now+60ms;}
+            pollfd ready{fd,POLLIN,0};assert(poll(&ready,1,20)>=0);
+            if(!(ready.revents&POLLIN))continue;
+            std::array<std::uint8_t,n::DISCOVERY_MAX_DATAGRAM> bytes{};Request request{};socklen_t size=sizeof(request.address);
+            const auto count=recvfrom(fd,bytes.data(),bytes.size(),0,reinterpret_cast<sockaddr*>(&request.address),&size);assert(count>0);
+            assert(n::DecodeDiscoveryPacket(bytes.data(),count,request.packet)==0);
+            if(request.packet.kind==n::DiscoveryMessage::METADATA_REQUEST &&
+               request.packet.revision==announce.revision && request.packet.offset==offset)return request;
+        }
+    }
+    n::DiscoveryPacket Response(const Request& request) const {
+        n::DiscoveryPacket response;response.kind=n::DiscoveryMessage::METADATA_RESPONSE;
+        response.host=announce.host;response.boot_id=announce.boot_id;response.session_id=announce.session_id;
+        response.request_id=request.packet.request_id;response.revision=request.packet.revision;
+        response.metadata_size=metadata.size();response.offset=request.packet.offset;
+        const auto end=std::min(metadata.size(),response.offset+n::DISCOVERY_CHUNK_SIZE);
+        response.chunk.assign(metadata.begin()+response.offset,metadata.begin()+end);return response;
+    }
+    void Reply(const Request& request,const n::DiscoveryPacket& response) {
+        std::vector<std::uint8_t> bytes;assert(n::EncodeDiscoveryPacket(response,bytes)==0);
+        assert(sendto(fd,bytes.data(),bytes.size(),0,reinterpret_cast<const sockaddr*>(&request.address),sizeof(request.address))==static_cast<ssize_t>(bytes.size()));
+    }
+    void Complete(std::size_t offset=0) {
+        while(offset<metadata.size()) {
+            auto request=Next(offset);auto response=Response(request);Reply(request,response);offset+=response.chunk.size();
+        }
+    }
+};
+n::PeerInfo OnlyPeer(n::PeerDiscovery& observer) {
+    auto peers=observer.GetPeers();assert(peers.size()==1);return peers[0];
+}
+void NoSnapshot(const n::PeerInfo& peer) {
+    assert(!peer.metadata_ready && peer.endpoints.empty());
+    assert(!peer.last_complete_snapshot.valid && !peer.last_complete_snapshot.stale);
+    assert(!peer.last_complete_snapshot.revision && peer.last_complete_snapshot.endpoints.empty());
+}
+void SnapshotRevisions() {
+    const auto baseline=Fds();
+    {
+        const auto port=FreePort();auto config=Config(1,port);n::PeerDiscovery observer;
+        assert(observer.Start(config)==0);MetadataPeer remote(port);
+        const auto initial=Metadata(90,32);remote.Revision(1,initial);
+        auto request=remote.Next(0);NoSnapshot(OnlyPeer(observer));
+        remote.Reply(request,remote.Response(request));
+        remote.Complete(n::DISCOVERY_CHUNK_SIZE);
+        Until([&]{return OnlyPeer(observer).metadata_ready;});
+        auto original=OnlyPeer(observer);
+        assert(original.endpoints.size()==32 && original.last_complete_snapshot.valid && !original.last_complete_snapshot.stale);
+        assert(original.last_complete_snapshot.revision==1 && original.last_complete_snapshot.endpoints.size()==32);
+        // Returned vectors are independent copies, including nested metadata strings.
+        auto copy=original;copy.endpoints.clear();copy.last_complete_snapshot.endpoints[0].name="changed-copy";
+        assert(OnlyPeer(observer).last_complete_snapshot.endpoints[0].name==initial[0].name);
+        auto stale=[&](std::uint64_t revision,std::uint64_t completed,std::size_t count) {
+            const auto peer=OnlyPeer(observer);assert(peer.state==n::PeerState::ONLINE);
+            assert(peer.metadata_revision==revision && !peer.metadata_ready && peer.endpoints.empty());
+            assert(peer.last_complete_snapshot.valid && peer.last_complete_snapshot.stale);
+            assert(peer.last_complete_snapshot.revision==completed && peer.last_complete_snapshot.endpoints.size()==count);
+            assert(n::CheckRouteCompatibility(config,peer,Metadata(1)[0],initial[0].identity).reason==n::CompatibilityReason::METADATA_UNAVAILABLE);
+        };
+        remote.Revision(2,Metadata(90,16));request=remote.Next(0);stale(2,1,32);
+        remote.Reply(request,remote.Response(request));
+        auto missing=remote.Next(n::DISCOVERY_CHUNK_SIZE);
+        auto retry=remote.Next(n::DISCOVERY_CHUNK_SIZE); // Deliberately lose a response.
+        assert(retry.packet.request_id==missing.packet.request_id);stale(2,1,32);
+        auto wrong=remote.Response(retry);++wrong.request_id;remote.Reply(retry,wrong);
+        wrong=remote.Response(retry);++wrong.revision;remote.Reply(retry,wrong);
+        wrong=remote.Response(retry);wrong.offset=0;remote.Reply(retry,wrong); // Duplicate/out-of-order.
+        remote.Next(n::DISCOVERY_CHUNK_SIZE);stale(2,1,32);
+        remote.Complete(n::DISCOVERY_CHUNK_SIZE);
+        Until([&]{return OnlyPeer(observer).metadata_ready;});
+        auto replacement=OnlyPeer(observer);
+        assert(replacement.endpoints.size()==16 && replacement.last_complete_snapshot.endpoints.size()==16);
+        assert(replacement.last_complete_snapshot.revision==2 && !replacement.last_complete_snapshot.stale);
+        // A complete but invalid revision must restart collection, not replace display data.
+        remote.Revision(3,Metadata(90,16));remote.metadata[0]=255;
+        request=remote.Next(0);remote.Reply(request,remote.Response(request));
+        const auto rejected=observer.GetStats().rejected_datagrams;
+        remote.Complete(n::DISCOVERY_CHUNK_SIZE);
+        Until([&]{return observer.GetStats().rejected_datagrams>rejected;});
+        auto restarted=remote.Next(0);assert(restarted.packet.request_id!=request.packet.request_id);stale(3,2,16);
+        // Consecutive revisions discard staging, even if an old response arrives late.
+        remote.Revision(4,Metadata(90,16));request=remote.Next(0);
+        const auto late=remote.Response(request);remote.Reply(request,late);
+        remote.Next(n::DISCOVERY_CHUNK_SIZE);stale(4,2,16);
+        remote.Revision(5,Metadata(90,1));auto current=remote.Next(0);
+        remote.Reply(request,late);stale(5,2,16);
+        remote.Reply(current,remote.Response(current));
+        Until([&]{return OnlyPeer(observer).metadata_ready;});
+        auto fresh=OnlyPeer(observer);
+        assert(fresh.endpoints.size()==1 && fresh.last_complete_snapshot.endpoints.size()==1);
+        assert(fresh.last_complete_snapshot.revision==5 && !fresh.last_complete_snapshot.stale);
+        assert(original.endpoints.size()==32 && original.last_complete_snapshot.revision==1);
+        // A verified empty revision is valid and distinct from never having metadata.
+        remote.Revision(6,{});remote.Complete();Until([&]{return OnlyPeer(observer).metadata_ready;});
+        fresh=OnlyPeer(observer);assert(fresh.endpoints.empty() && fresh.last_complete_snapshot.endpoints.empty());
+        assert(fresh.last_complete_snapshot.valid && !fresh.last_complete_snapshot.stale && fresh.last_complete_snapshot.revision==6);
+        remote.Revision(7,initial);remote.Next(0);stale(7,6,0);
+        Until([&]{return OnlyPeer(observer).state==n::PeerState::LOST;});NoSnapshot(OnlyPeer(observer));
+        // Same generation after loss cannot resurrect the old display snapshot.
+        remote.Revision(8,Metadata(90,1));remote.Next(0);NoSnapshot(OnlyPeer(observer));
+        remote.Complete();Until([&]{return OnlyPeer(observer).metadata_ready;});
+        // First live incarnation wins; accepted new Session/Boot must start without a snapshot.
+        ++remote.announce.session_id;remote.Heartbeat();
+        std::this_thread::sleep_for(40ms);assert(OnlyPeer(observer).session_id==7);
+        Until([&]{return OnlyPeer(observer).state==n::PeerState::LOST;});
+        remote.Revision(1,Metadata(90,1));remote.Next(0);NoSnapshot(OnlyPeer(observer));
+        assert(OnlyPeer(observer).session_id==remote.announce.session_id);
+        remote.Complete();Until([&]{return OnlyPeer(observer).metadata_ready;});
+        Until([&]{return OnlyPeer(observer).state==n::PeerState::LOST;});
+        remote.announce.boot_id=Id(43);auto rebooted=Metadata(90,1);
+        for(auto& e:rebooted){e.identity.runtime.boot_id=Id(43);e.application.boot_id=Id(43);}
+        remote.Revision(1,rebooted);remote.Next(0);NoSnapshot(OnlyPeer(observer));
+        remote.Complete();Until([&]{return OnlyPeer(observer).metadata_ready;});
+        assert(OnlyPeer(observer).boot_id==Id(43));
+        // Moving the same Host/Boot/Session to a different metadata socket also invalidates.
+        MetadataPeer moved(port);moved.announce=remote.announce;moved.Revision(1,rebooted);
+        std::this_thread::sleep_for(40ms);assert(OnlyPeer(observer).port!=0);
+        const auto old_port=OnlyPeer(observer).port;
+        Until([&]{return OnlyPeer(observer).state==n::PeerState::LOST;});
+        moved.Heartbeat();moved.Next(0);NoSnapshot(OnlyPeer(observer));assert(OnlyPeer(observer).port!=old_port);
+        moved.Complete();Until([&]{return OnlyPeer(observer).metadata_ready;});
+        // Fault only this observer's multicast socket. No descriptors are opened
+        // between closing it and Stop(), so its eventual EBADF close cannot hit a reused fd.
+        int failed=-1;
+        for(const auto& entry:std::filesystem::directory_iterator("/proc/self/fd")) {
+            const int fd=std::stoi(entry.path().filename().string());sockaddr_in address{};socklen_t size=sizeof(address);
+            if(getsockname(fd,reinterpret_cast<sockaddr*>(&address),&size)==0 && address.sin_family==AF_INET && ntohs(address.sin_port)==port)failed=fd;
+        }
+        assert(failed>=0 && close(failed)==0);
+        Until([&]{return observer.GetLastError()!=0;});NoSnapshot(OnlyPeer(observer));
+        assert(OnlyPeer(observer).state==n::PeerState::LOST);
+        observer.Stop();assert(observer.GetPeers().empty());
+    }
+    assert(Fds()==baseline);
+    std::cout<<"display snapshots: chunks/retry/invalid/consecutive revisions/removal/empty/LOST/session/boot/move/failure/copy/route rejection PASS\n";
 }
 void Codec() {
     std::vector<std::uint8_t> bytes;auto original=Announce();assert(n::EncodeDiscoveryPacket(original,bytes)==0);
@@ -193,9 +362,56 @@ void Capacity() {
     const auto fds=Fds();config.interface_address="192.0.2.123";assert(observer.Start(config)<0);observer.Stop();assert(Fds()==fds);
     std::cout<<"peer table capacity/LOST eviction/failed Start cleanup PASS\n";
 }
+void TransientRecovery() {
+    const auto baseline=Fds();
+    {
+        const auto port=FreePort();auto config=Config(71,port);config.metadata_port=FreePort();
+        n::PeerDiscovery observer,remote;
+        assert(observer.Start(config,Metadata(71))==0);
+        int send_fd=-1,receive_fd=-1;
+        for(const auto& entry:std::filesystem::directory_iterator("/proc/self/fd")) {
+            int fd=std::stoi(entry.path().filename().string());sockaddr_in a{};socklen_t size=sizeof(a);
+            if(getsockname(fd,reinterpret_cast<sockaddr*>(&a),&size)==0 && a.sin_family==AF_INET) {
+                if(ntohs(a.sin_port)==config.metadata_port) send_fd=fd;
+                if(ntohs(a.sin_port)==port) receive_fd=fd;
+            }
+        }
+        assert(send_fd>=0 && receive_fd>=0);
+        assert(remote.Start(Config(72,port),Metadata(72))==0);
+        Until([&]{return Has(observer,72,n::PeerState::ONLINE,true,4);});
+        const auto session=observer.GetSessionId();
+        failed_send_fd=send_fd;
+        Until([&]{return observer.GetLastError()==-ENETUNREACH;});
+        // Valid incoming announces, repeated queries and time alone cannot heal send failure.
+        std::this_thread::sleep_for(150ms);
+        assert(observer.GetLastError()==-ENETUNREACH);
+        for(const auto& p:observer.GetPeers()) {assert(p.state==n::PeerState::LOST);assert(!p.metadata_ready && !p.last_complete_snapshot.valid);}
+        failed_send_fd=-1;
+        Until([&]{return observer.GetLastError()==0 && Has(observer,72,n::PeerState::ONLINE,true,4);});
+        failed_receive_fd=receive_fd;
+        Until([&]{return observer.GetLastError()==-EHOSTUNREACH;});
+        // Announce sends still succeed, but must not clear the receive failure.
+        std::this_thread::sleep_for(500ms);
+        assert(observer.GetLastError()==-EHOSTUNREACH);
+        assert(Has(observer,72,n::PeerState::LOST));
+        failed_receive_fd=-1;
+        Until([&]{return observer.GetLastError()==0 && Has(observer,72,n::PeerState::ONLINE,true,4);});
+        for(const auto& p:observer.GetPeers()) assert(p.last_complete_snapshot.valid && !p.last_complete_snapshot.stale);
+        assert(observer.GetSessionId()==session);
+        injected_send_error=EBADF;failed_send_fd=send_fd;
+        Until([&]{return observer.GetLastError()==-EBADF;});
+        failed_send_fd=-1;injected_send_error=ENETUNREACH;
+        std::this_thread::sleep_for(150ms);
+        assert(observer.GetLastError()==-EBADF); // Valid remote traffic must not heal a fatal worker failure.
+        for(const auto& p:observer.GetPeers()) {assert(p.state==n::PeerState::LOST);assert(!p.metadata_ready && !p.last_complete_snapshot.valid);}
+        observer.Stop();assert(observer.GetPeers().empty());remote.Stop();
+    }
+    assert(Fds()==baseline);
+    std::cout<<"transient send/receive errors: same-direction success, no query/time/opposite-direction clearing, metadata recovery/session/Stop PASS\n";
+}
 int main(int argc,char** argv) {
     if(argc==3 && std::string(argv[1])=="--child") {
         n::PeerDiscovery d;assert(d.Start(Config(4,std::stoi(argv[2])),Metadata(4))==0);for(;;)pause();
     }
-    alarm(45);Codec();Integration(argv[0]);Capacity();
+    alarm(45);TransientRecovery();Codec();SnapshotRevisions();Integration(argv[0]);Capacity();
 }

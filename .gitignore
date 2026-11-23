@@ -5,3 +5,8 @@ build/
 /applications/      
 /docs/instructions
 /build-*/
+
+# Local AI agent and editor settings
+.agents/
+.codex/
+.vscode/

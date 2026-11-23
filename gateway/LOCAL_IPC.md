@@ -1,7 +1,7 @@
 # Gateway Local IPC v1 (NET56-5B1)
 
 This is a read-only **host-local** protocol, separate from Network Discovery,
-Control TCP, Topic wire and Local SHM formats. Framework version stays 5.5.0.
+Control TCP, Topic wire and Local SHM formats. Current Framework version is 5.6.1; the Local Gateway IPC framing remains version 1.
 No second Discovery instance is created. No payload, Parameter Get/Set, Service,
 Action, or remote-control relay operation is supported.
 
@@ -61,7 +61,8 @@ nonzero Network recovery error across successful recovery; initially zero.
 
 GET_PEERS returns `{ "peers": [...] }`. Each peer contains `host`, `boot`,
 `session`, `state` (ONLINE/LOST), `address`, `metadata_port`, `metadata_revision`,
-`metadata_ready`, and `endpoints`. LOST retention/removal follows existing Discovery.
+`metadata_ready`, `endpoints`, and (since Framework 5.6.1) `last_complete_snapshot`.
+LOST retention/removal follows existing Discovery.
 Each endpoint contains `runtime` (host/boot/pid/start_ticks), `registration_id`,
 `application` (same Runtime identity schema), `host_name`, `application_name`,
 `element_name`, `name`, `kind`, `role`, `scope`, `groups`, and
@@ -69,6 +70,44 @@ Each endpoint contains `runtime` (host/boot/pid/start_ticks), `registration_id`,
 Type identities contain `type_id`, `schema_id`, `encoding_id`, `payload_size`.
 Kind/role/scope retain the numeric values of the existing Network metadata enums.
 Unused identities/types remain zero; a zero Application identity means Standalone.
+
+### Last complete metadata (Framework 5.6.1)
+
+Each peer adds the following object; `endpoints` uses the exact endpoint schema above:
+
+```json
+{
+  "valid": true,
+  "stale": false,
+  "revision": "42",
+  "endpoints": []
+}
+```
+
+This example is a **verified empty** snapshot, not missing metadata.
+
+| Field | Meaning |
+| --- | --- |
+| `valid` | A fully received and validated snapshot exists in this Host/Boot/Session. |
+| `stale` | A newer revision is being collected; the valid snapshot is display-only. |
+| `revision` | Original completed revision, encoded as a uint64 decimal string, never a JSON number. |
+| `endpoints` | Independent last-complete endpoint list; never substitutes for peer `endpoints`. |
+
+During same-generation revision collection, peer `metadata_ready=false`, peer `endpoints=[]`,
+and the previous valid snapshot remains with `stale=true` and its original revision.
+Only complete validated metadata replaces both lists, sets `metadata_ready=true`, and clears stale.
+A valid empty revision clears the lists while keeping snapshot `valid=true`. Failed/partial chunks,
+retry and successive revisions cannot promote incomplete staging data to the snapshot.
+LOST, accepted Boot/Session changes or peer movement, and Discovery failure invalidate it:
+`{"valid":false,"stale":false,"revision":"0","endpoints":[]}`.
+
+The snapshot is **display only**. It grants no Subscribe, Route, Parameter, Service, Action or
+Control authority. Preserve current readiness/identity/permission checks. The server reflects Core
+state directly; it does not turn stale data into current endpoints.
+Old clients that ignore unknown JSON fields remain compatible. New clients must treat absence of
+`last_complete_snapshot` from an older Gateway as unavailable, not as a valid empty snapshot.
+Both endpoint arrays count toward the same **1 MiB total response body** limit. Duplication may make
+a previously fitting response too large; `-E2BIG` returns an empty body, without truncation or fallback.
 
 All 64-bit integer fields are decimal JSON **strings**, avoiding consumer floating
 point loss. Metadata text is represented byte-for-byte: non-ASCII/control bytes
@@ -93,3 +132,7 @@ real Gateway waiting/rebinding, copied Peer metadata, Session changes and crash
 recovery; it must not be run against host network interfaces. Existing
 `src/gateway_network_test.sh` continues to check independent Local Runtime survival.
 No systemd installation or physical LAN validation is implied by these tests.
+
+Framework 5.6.1 preparation records include pre-alignment VM tests of fresh/stale/empty/invalid
+snapshot JSON, uint64 precision, escaping, exact 1MiB/+1 and combined-array limits, plus isolated
+Gateway integration. These PASS records are not a new packaged-binary or physical-device test.

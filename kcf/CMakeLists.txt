@@ -1,3 +1,4 @@
+include(GNUInstallDirs)
 add_library(kcf_core
     src/network/network_interface.cpp
     src/network/host_identity.cpp
@@ -32,10 +33,23 @@ add_library(kcf_core
 
 target_include_directories(kcf_core
     PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
+target_compile_features(kcf_core PUBLIC cxx_std_17)
+set_target_properties(kcf_core PROPERTIES EXPORT_NAME core)
+add_library(KCF::core ALIAS kcf_core)
 
 target_link_libraries(kcf_core
     PUBLIC
         Threads::Threads
 )
+
+# The Tools project embeds this directory with EXCLUDE_FROM_ALL. Only the
+# Framework top-level project owns SDK installation/export and packaging.
+if(PROJECT_NAME STREQUAL "kss_control_framework")
+    install(TARGETS kcf_core EXPORT KCFTargets
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
+    install(DIRECTORY include/kcf DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+endif()

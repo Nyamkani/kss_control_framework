@@ -1,10 +1,34 @@
 # STAB-6B: systemd 운영 시험 준비
 
-Framework **5.5.0**, Tools **0.14.0**을 유지한다. 이 패키지는 설치 도구가 아니다.
+최초 STAB-6B 준비 기준은 Framework **5.5.0**, Tools **0.14.0**이었다.
+현재 Core **5.6.1** 시험에서도 아래 runner는 설치 도구가 아니며 제품 설정 도구와 구분한다.
 기본 실행은 실제 서비스 제어 없이 Unit 렌더링, 계약 검사, `systemd-analyze verify`,
 실행 계획 및 결과 파일 생성만 수행한다. 준비 PASS를 운영 PASS로 해석하지 않는다.
 제품 Template은 [기존 Unit](../../gateway/systemd/kcf-gateway.service.in)을 사용한다.
 [서비스 UID 계약](../../gateway/systemd/README.md), [Local IPC v1](../../gateway/LOCAL_IPC.md)을 따른다.
+
+## v5.6.1 설정 도구 회귀와 검증 경계
+
+제품 설정 도구는 [kcf-gateway-setup](../../gateway/systemd/kcf-gateway-setup.py)이며,
+아래 runner의 시험 Unit과 별개다. `--dry-run`, `--update`, `--enable`의 실제 운영 절차는
+[Gateway 운영 문서](../../gateway/systemd/README.md)를 따른다.
+
+```sh
+python3 -B -m unittest discover -s tests/systemd -p test_gateway_setup.py -v
+```
+
+기존 개발 VM 실행 기록은 **25/25 PASS**다. systemctl은 mock이며 Unit/백업/Host ID/환경 파일은
+임시 디렉터리에서 검사한다. `systemd-analyze verify`만 실제 정적 검증기로 실행한다.
+정상 설치/갱신, 기존 Unit 유지, 알려지지 않은 Unit 보호, 권한 거부, Dry-run, reload 실패 후
+재실패·복구·중복 재실행, 실행 중 서비스/PID/enablement 및 파일 보존을 포함한다.
+계정 검사는 실제 `select_account` 함수에 mock OS 계정·설정을 공급하여 명시 계정/SUDO_USER 확인,
+비대화형 계정 필수, root/시스템 UID/숫자 UID/없는 계정/중복 UID/로그인 불가 shell을 검증한다.
+
+**미완료/SKIP:** 실제 systemd daemon-reload 실패·재시도, 서비스 설치/부팅/재시작 한도,
+신규 5.6.1 OPI5+ ARM64 패키지 및 UGV02 재빌드·실물 동작. 일회용 승인 VM에서만 실제 시험한다.
+특히 실제 reload 실패 후 새 Unit·기존 백업·Host ID 보존, 재실행 시 reload만 수행되는지,
+서비스 PID가 유지되는지 확인해야 한다. Mock PASS를 운영 PASS로 해석하지 않는다.
+이번 문서 갱신으로 추가 시험을 수행하거나 과거 결과를 변경하지 않았다.
 
 ## 기본 준비 / Dry-run
 

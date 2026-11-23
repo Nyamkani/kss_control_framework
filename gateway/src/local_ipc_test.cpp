@@ -9,7 +9,50 @@ namespace l=gateway::local;
 int Connect(const std::string& path){int fd=socket(AF_UNIX,SOCK_STREAM|SOCK_CLOEXEC,0);assert(fd>=0);timeval tv{3,0};setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&tv,sizeof(tv));sockaddr_un a{};a.sun_family=AF_UNIX;std::copy(path.begin(),path.end(),a.sun_path);assert(!connect(fd,reinterpret_cast<sockaddr*>(&a),sizeof(a)));return fd;}
 std::string Query(const std::string& path,unsigned op){gateway::Fd fd;fd.value=Connect(path);auto f=l::Frame(op,0);assert(send(fd.value,f.data(),f.size(),MSG_NOSIGNAL)==16);std::string all;char bytes[4096];ssize_t n;while((n=recv(fd.value,bytes,sizeof(bytes),0))>0)all.append(bytes,n);assert(n==0&&all.size()>=16&&l::Get(all.data(),4)==all.size()-16);return all;}
 std::size_t Fds(){return std::distance(fs::directory_iterator("/proc/self/fd"),fs::directory_iterator());}
+// Deterministic serializer cases, also parsed with Python's JSON decoder by the
+// existing integration runner (--snapshot-json-only); no NIC or service required.
+std::vector<kcf::network::PeerInfo> SnapshotCases(){
+ namespace n=kcf::network;
+ n::PeerInfo peer;peer.host.bytes[0]=3;peer.boot_id.bytes[0]=4;peer.session_id=42;
+ peer.metadata_revision=UINT64_MAX-1;peer.metadata_ready=true;
+ n::NetworkEndpointMetadata e;e.name="/quote\"\\\n";e.groups={"display", "quote\""};
+ peer.endpoints={e};peer.last_complete_snapshot={peer.endpoints,peer.metadata_revision,true,false};
+ std::vector<n::PeerInfo> cases{peer};
+ peer.metadata_revision=UINT64_MAX;peer.metadata_ready=false;peer.endpoints.clear();
+ peer.last_complete_snapshot.stale=true;cases.push_back(peer);
+ peer.metadata_ready=true;peer.last_complete_snapshot={{},UINT64_MAX,true,false};cases.push_back(peer);
+ peer.metadata_revision=5;peer.metadata_ready=false;peer.last_complete_snapshot={{},4,true,true};cases.push_back(peer);
+ peer.state=n::PeerState::LOST;peer.last_complete_snapshot={};cases.push_back(peer);
+ peer.state=n::PeerState::ONLINE;peer.boot_id.bytes[0]=5;peer.session_id=43;peer.metadata_revision=1;cases.push_back(peer);
+ return cases;
+}
+void SnapshotResponses(l::Server& server,const l::Status& status,const std::string& path){
+ for(const auto& peer:SnapshotCases()){
+    server.Publish(status,{peer});const auto response=Query(path,l::GET_PEERS);
+    assert(l::Get(response.data()+12,4)==0 && response.substr(16)==l::Peers({peer}));
+ }
+ // Snapshot alone can exceed the cap; never silently fall back to current data.
+ auto peer=SnapshotCases()[1];peer.last_complete_snapshot.endpoints[0].name=std::string(l::MAX_BODY,'s');
+ server.Publish(status,{peer});auto response=Query(path,l::GET_PEERS);
+ assert(static_cast<std::int32_t>(l::Get(response.data()+12,4))==-E2BIG && response.size()==16);
+ // Each array fits on its own, but their combined JSON must respect the same cap.
+ peer=SnapshotCases()[0];peer.endpoints[0].name.clear();peer.last_complete_snapshot.endpoints[0].name.clear();
+ const auto padding=l::MAX_BODY-l::Peers({peer}).size();
+ peer.endpoints[0].name=std::string(padding/2,'a');
+ peer.last_complete_snapshot.endpoints[0].name=std::string(padding-padding/2,'b');
+ assert(l::Peers({peer}).size()==l::MAX_BODY);
+ server.Publish(status,{peer});response=Query(path,l::GET_PEERS);
+ assert(l::Get(response.data()+12,4)==0 && response.size()==16+l::MAX_BODY);
+ peer.last_complete_snapshot.endpoints[0].name+='b';
+ server.Publish(status,{peer});response=Query(path,l::GET_PEERS);
+ assert(static_cast<std::int32_t>(l::Get(response.data()+12,4))==-E2BIG && response.size()==16);
+ // A subsequent small response must clear the cached E2BIG error.
+ server.Publish(status,{SnapshotCases()[2]});response=Query(path,l::GET_PEERS);
+ assert(l::Get(response.data()+12,4)==0 && response.size()>16);
+ std::cout<<"Snapshot fresh/stale/empty/invalid/generation, uint64 and exact 1MiB/+1/combined limits PASS\n";
+}
 int main(int argc,char** argv){
+ if(argc==2&&std::string(argv[1])=="--snapshot-json"){std::cout<<l::Peers(SnapshotCases())<<std::endl;return 0;}
  if(argc==2&&std::string(argv[1])=="--peer") {
     namespace n=kcf::network;n::DiscoveryConfig c;c.host.bytes[0]=77;c.boot_id.bytes[0]=78;
     c.interface_address="192.0.2.1";c.port=47651;c.announce_interval=50ms;
@@ -31,6 +74,7 @@ char temp[]="/tmp/kcf-local-ipc-XXXXXX";assert(mkdtemp(temp));std::string root=t
  peer.metadata_revision=3;peer.endpoints.clear();server.Publish(s,{peer});assert(Query(path,l::GET_PEERS).find("\"metadata_revision\":\"3\"")!=std::string::npos);
  peer.endpoints={e};peer.endpoints[0].name=std::string(l::MAX_BODY,'a');server.Publish(s,{peer});
  auto large=Query(path,l::GET_PEERS);assert(static_cast<std::int32_t>(l::Get(large.data()+12,4))==-E2BIG&&large.size()==16);
+ SnapshotResponses(server,s,path);
  server.Publish(s,{});assert(Query(path,l::GET_PEERS).substr(16)=="{\"peers\":[]}");
  auto unsupported=Query(path,99);assert(static_cast<std::int32_t>(l::Get(unsupported.data()+12,4))==-ENOTSUP);
  // Malformed/oversized/version inputs close without allocating a body.

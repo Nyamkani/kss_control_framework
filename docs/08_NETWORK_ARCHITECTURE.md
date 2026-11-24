@@ -1156,3 +1156,11 @@ Topic wire v1, Topic Format 4, Parameter Format 3, Local Service protocol 2는 �
 
 [검증 기록](06_VERIFICATION_AND_LIMITATIONS.md#v53-network-diagnostics-검증)은 기존 로그를 인용합니다.
 이 문서화 단계에서 build/test 또는 실제 물리 LAN/데스크톱 GUI 수동 검증을 새로 수행하지 않았습니다.
+
+
+### 2026-11-25 Remote Action Event/Poll development verification (Core #20)
+
+- Independent Draft PR #21: [Ubuntu 24.04 Actions #45371109697](https://github.com/Nyamkani/kss_control_framework/actions/runs/45371109697) PASS.
+- Core combined branch [Actions #45400513845](https://github.com/Nyamkani/kss_control_framework/actions/runs/45400513845) PASS with #12/#10/#15/#16/#17 first-slice changes.
+- Ubuntu 24.04 VM, `kcf_control_action_test`: operations/codec/malformed frame/identity, capabilities, authorized Goal/Cancel/Feedback/Result, Event and scheduled Poll, timeout, partial frames, disconnect/reconnect/correlation all **PASS** (`Remote Action PASS`). These use local test Action targets, **not** OPI5+ physical motor commands.
+- Remaining: Ubuntu 26.04 ARM64 operation with the **new** Gateway, sustained concurrent Action race/stress tests, and comparative Event vs 10/50/100 ms Poll CPU/wakeup/latency measurements. Default 10 ms scheduled polling remains; remote control grants remain DENY unless explicitly enabled. PR Draft / Issue #20 OPEN.

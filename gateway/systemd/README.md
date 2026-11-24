@@ -51,7 +51,7 @@ symlinks, hard-linked files and unsafe parent directories are rejected. Conflict
 there is no chown, Host ID regeneration, lock/socket deletion or process termination.
 An existing non-default `/etc/kcf/gateway.env` requires manual deployment review and is preserved;
 the tool never sources it or copies the example over it. This conservative setup path does not
-change CLI options, default-deny Topic policy, default lock or Local IPC paths.
+change CLI options, Topic exposure policy, default lock or Local IPC paths.
 
 The unit is rendered from the packaged template with the confirmed account and installed
 `kcf_gateway` absolute path, then verified with `systemd-analyze verify`. A new unit is published
@@ -155,7 +155,19 @@ is blocked on an existing Local mutex. This does not repair another process's Lo
 Local Applications are not children/dependents of this unit and must not be placed in its cgroup.
 
 Host ID survives restart; Discovery creates a new Session. Existing remote selections/Action handles
-are not reattached or retried. With no exposure/reception options, Network default deny and Topic/Diagnostics OFF remain unchanged.
+are not reattached or retried. With no Topic exposure options, **local Topic Publishers are remotely
+discoverable/subscribable by default** on a trusted LAN. No subscriber interest means no periodic
+Topic DATA transmission. Subscribers remain LOCAL unless explicitly enabled by the legacy
+`--remote-topic NAME` path. Parameter/Service/Action Control remains default denied, and
+Diagnostics stays OFF. The new `--topic-default-deny` flag restores private-by-default
+Publisher exposure; `--topic-allow-prefix /specific` with or without this flag restricts
+exposure to the listed prefixes. `--topic-exclude-prefix /private` alone exposes all
+except /private, and exclusions win when overlapping an allow prefix.
+
+**Upgrade security note:** removing all explicit allow options changes the publisher default
+from private to public. Hosts with sensitive data or untrusted network access should explicitly
+use `--topic-default-deny` before restarting. Existing explicit allow-prefix lists keep their
+restricted semantics. The Gateway does not provide cryptographic peer authentication.
 Session logs use `ControlNode::GetSessionId()`, the same source as Local IPC
 `GET_STATUS`. A successful start prints `[Gateway] session=<nonzero ID>`;
 WAITING_NETWORK/REBINDING state logs and IPC report zero without an active generation.

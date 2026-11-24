@@ -241,3 +241,11 @@ Framework version alignment is 5.6.0, Tools 0.14.0. The user reported first-stag
 the service remained disabled. Discovery multicast gaps and IGMP Report recovery remain under
 investigation. See [measurements and limits](../../docs/06_VERIFICATION_AND_LIMITATIONS.md#net56-lan-20261028).
 Independent OPI5+ operational testing remains pending; Raspberry Pi 5 remains robot-only.
+
+
+## 2026-11-25 Topic policy validation update (Core #12)
+
+- Independent [Draft PR #19 CI #45382409416](https://github.com/Nyamkani/kss_control_framework/actions/runs/45382409416) PASS; combined Core [CI #45400513845](https://github.com/Nyamkani/kss_control_framework/actions/runs/45400513845) PASS on Ubuntu 24.04 amd64.
+- VM tested default Publisher visibility, restrictive allow and exclude precedence, `--topic-default-deny`, request-driven Data Plane, read-only Observer descriptor and Network payload. `kcf_gateway_topic_policy_test` and `--network` PASS.
+- Actual CLI subprocess policy test initially failed because a prior same-UID Tools Local fixture remained registered. The test incorrectly assumed `peer().endpoints` was globally empty/size 3/empty. A later assertion abort left a child Gateway occupying loopback test ports, producing `-EADDRINUSE`. The test now matches **its own PID and topic names**, intentionally starts an unrelated local Publisher, and uses exception unwinding to reap the child on check failures. The Ubuntu VM `kcf_gateway_test --policy-network ./build-ux/gateway/kcf_gateway` then passed with exit code 0. A subsequent source-formatting fix removed a misleading-indentation warning; update was applied by the user in the VM.
+- VM systemd Gateway and OPI5+ systemd Gateway remain the **old distributed binaries**; both were left intact. Existing OPI5+ Gateway still has three explicit UGV02 allow prefixes. New Gateway default-open on OPI5+ ARM64 and security/migration behavior on actual LAN remain pending. Draft/Issue OPEN.

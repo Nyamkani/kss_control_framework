@@ -26,6 +26,7 @@ struct SupervisorFailureDiagnostic {
     ElementFailureKind failure_kind{ElementFailureKind::NONE};
     ProcessTerminationKind termination_kind{ProcessTerminationKind::NONE};
     std::int32_t exit_code{0},signal_number{0},runtime_error{0};
+    std::uint32_t reserved_tail{0}; // avoid implicit tail padding (8-byte aligned)
 };
 struct SupervisorDiagnosticsInfo {
     std::uint32_t protocol_version{1},struct_size{sizeof(SupervisorDiagnosticsInfo)};
@@ -34,7 +35,7 @@ struct SupervisorDiagnosticsInfo {
     std::uint64_t process_start_ticks{0},revision{0},generation{0},last_error_sequence{0};
     ApplicationState application_state{ApplicationState::INITIALIZING};
     std::uint8_t reserved_state[3]{};
-    std::uint32_t element_count{0},history_count{0};
+    std::uint32_t element_count{0},history_count{0},reserved_counts{0};
     // Oldest retained entry first; history_count<=64.
     SupervisorElementDiagnostic elements[MAX_SUPERVISOR_ELEMENTS]{};
     SupervisorFailureDiagnostic history[MAX_SUPERVISOR_DIAGNOSTIC_HISTORY]{};
@@ -43,4 +44,8 @@ static_assert(std::is_trivially_copyable_v<SupervisorElementDiagnostic>);
 static_assert(std::is_trivially_copyable_v<SupervisorFailureDiagnostic>);
 static_assert(std::is_trivially_copyable_v<SupervisorDiagnosticsInfo>);
 static_assert(std::is_standard_layout_v<SupervisorDiagnosticsInfo>);
+static_assert(sizeof(SupervisorElementDiagnostic)==152);
+static_assert(sizeof(SupervisorFailureDiagnostic)==176);
+static_assert(offsetof(SupervisorDiagnosticsInfo,elements)==64);
+static_assert(sizeof(SupervisorDiagnosticsInfo)==64+MAX_SUPERVISOR_ELEMENTS*152+MAX_SUPERVISOR_DIAGNOSTIC_HISTORY*176);
 }

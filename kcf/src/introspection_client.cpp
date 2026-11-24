@@ -195,7 +195,7 @@ int IntrospectionClient::GetSupervisorDiagnostics(std::int32_t pid,std::uint64_t
             if(!std::memchr(item.element_name,0,sizeof(item.element_name))||
                !item.sequence||item.sequence<=previous_sequence||
                item.sequence>snapshot.last_error_sequence||item.generation>snapshot.generation||
-               item.pid<=0||item.exit_info_available>1||item.runtime_error_observed>1||
+               item.pid==0||item.pid< -1||item.exit_info_available>1||item.runtime_error_observed>1||
                static_cast<unsigned>(item.failure_kind)>static_cast<unsigned>(ElementFailureKind::HEARTBEAT_STALL)||
                static_cast<unsigned>(item.termination_kind)>static_cast<unsigned>(ProcessTerminationKind::SIGNALED))
                 return -EPROTO;

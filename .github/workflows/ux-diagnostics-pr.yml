@@ -1,0 +1,34 @@
+name: KCF UX diagnostics draft validation
+on:
+  push:
+    branches: [feature/ux-diagnostics-foundation]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  linux-amd64:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+      - name: Build diagnostics and regression targets
+        run: |
+          cmake --build build --parallel 4 --target kcf \
+            kcf_diagnostics_contract_test \
+            kcf_supervisor_failure_contract_test \
+            kcf_supervisor_discovery_test \
+            kcf_gateway
+      - name: Diagnostics contract
+        run: timeout 30s ./build/examples/network/kcf_diagnostics_contract_test
+      - name: Supervisor failure and discovery regression
+        run: |
+          timeout 120s ./build/examples/supervisor/kcf_supervisor_failure_contract_test ./build/examples/supervisor/kcf_supervisor_runtime_test
+          timeout 120s ./build/examples/introspection/kcf_supervisor_discovery_test
+      - name: Read-only CLI smoke tests
+        run: |
+          ./build/kcf --help
+          ./build/kcf status
+          ./build/kcf topic list
+          ./build/kcf doctor

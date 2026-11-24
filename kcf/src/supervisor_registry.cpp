@@ -66,6 +66,7 @@ void SupervisorRegistry::UpdateDiagnostics(SupervisorDiagnosticsInfo snapshot) n
     if (creation_state_ == CreationState::IDLE || !current_.process_start_ticks) return;
     snapshot.pid=current_.pid;
     snapshot.process_start_ticks=current_.process_start_ticks;
+    snapshot.revision=diagnostics_current_.revision; // exclude revision itself from change detection
     if (!diagnostic_initialized_ || std::memcmp(&snapshot,&diagnostics_current_,sizeof(snapshot))!=0)
     {
         if (diagnostics_current_.revision==std::numeric_limits<std::uint64_t>::max()) return;

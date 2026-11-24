@@ -93,7 +93,7 @@ void SupervisorRegistry::End() noexcept
     (void)diagnostics_channel_.Close();
     if (diagnostic_active_) (void)diagnostics_channel_.Unlink();
     diagnostic_attempts_=0;diagnostic_active_=false;diagnostic_dirty_=false;diagnostic_initialized_=false;
-    diagnostics_current_={};
+    diagnostics_current_=SupervisorDiagnosticsInfo{};
     (void)channel_.Close();
     if (creation_state_ == CreationState::ACTIVE) (void)channel_.Unlink();
     creation_state_ = CreationState::IDLE;

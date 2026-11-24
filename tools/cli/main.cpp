@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -42,6 +43,16 @@ std::uint32_t ReadBig(const unsigned char* p,unsigned bytes) {
     while(bytes--)result=(result<<8)|*p++;
     return result;
 }
+int SendExact(int fd,const void* buffer,std::size_t size) {
+    const auto* bytes=static_cast<const unsigned char*>(buffer);
+    while(size) {
+        const ssize_t sent=send(fd,bytes,size,MSG_NOSIGNAL);
+        if(sent<0){if(errno==EINTR)continue;return -errno;}
+        if(sent==0)return -EIO;
+        bytes+=sent;size-=static_cast<std::size_t>(sent);
+    }
+    return 0;
+}
 int ReadExact(int fd,void* buffer,std::size_t size) {
     auto* bytes=static_cast<unsigned char*>(buffer);
     while(size) {
@@ -69,8 +80,7 @@ int NetworkStatus(const std::string& socket_path) {
     // length u32=0, magic K C F L, version=1, op=GET_STATUS(1), status=0
     request[4]='K';request[5]='C';request[6]='F';request[7]='L';
     request[9]=1;request[11]=1;
-    if(!result && send(fd,request,sizeof(request),MSG_NOSIGNAL)!=sizeof(request))
-        result=errno?-errno:-EIO;
+    if(!result)result=SendExact(fd,request,sizeof(request));
     unsigned char header[16]{};
     if(!result)result=ReadExact(fd,header,sizeof(header));
     std::string body;

@@ -41,6 +41,8 @@ add_subdirectory(examples/application_composition)
 add_subdirectory(gateway)
 
 add_executable(kcf tools/cli/main.cpp)
+# Top-level build/kcf is a directory holding the Core library build files.
+set_target_properties(kcf PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 target_link_libraries(kcf PRIVATE kcf_core)
 target_compile_options(kcf PRIVATE -Wall -Wextra -Wpedantic)
 install(TARGETS kcf RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

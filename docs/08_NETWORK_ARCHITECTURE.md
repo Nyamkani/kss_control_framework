@@ -800,9 +800,22 @@ Goal의 TypeIdentity는 기존 type 필드입니다. request_id는 Goal/Cancel r
 ControlNode가 실행될 때 REMOTE_ACTION을 추가로 광고하며 기존 DISCOVERY/PARAMETER/SERVICE/5종 Target을 유지합니다.
 REMOTE_TOPIC은 광고하지 않습니다. 구버전 peer에 Action operation을 보내지 않습니다.
 
+### Remote Action Gateway 상태 관측 모드 (사용자 편의성 Core #20, 구현 검증 대기)
+
+Host Gateway의 `ControlConfig::action_status_mode`를 `SCHEDULED_POLL`(기본값) 또는 `EVENT`로 설정한다.
+독립 `kcf_gateway` CLI에서는 `--action-status-mode poll|event`를 사용한다.
+
+- **Scheduled Poll:** `--action-status-poll-ms N` (1..1000ms; 기본 10ms). Gateway 내부 스케줄러가 Local status SHM의 최신 Feedback을 설정 간격으로 확인한다. Application이 Gateway 함수를 직접 호출하지 않는다.
+- **Event:** Local Action status SHM의 프로세스 공유 condition variable 변경 알림을 기다리고 최신값을 읽는다. 새 Feedback이 없으면 최대 50ms bounded timeout으로 깨어나 별도 Result 조회를 진행한다.
+- **공통:** 최종 Result는 두 모드에서 약 50ms 간격으로 기존 Local UDP Service에서 별도 조회한다. Goal/Cancel/Result의 Remote TCP Control 경로와 기본 거부 권한, 연결 해제 시 Local Action 비취소 정책은 유지한다.
+- Local Application의 `PublishFeedback()` 주기는 그대로 Application이 결정한다. 두 모드 모두 latest-only이므로 모든 중간 Feedback 전달 또는 hard real-time 주기/지연을 보장하지 않는다.
+- `--action-status-poll-ms`는 Poll 모드에서 Feedback 관측 주기에 적용되며 Event 모드에서 무시된다. 모드 전환은 Gateway 재시작 시 적용된다.
+
+**상태:** 기능 브랜치에서 수정한 설계/구현. 빌드, 네트워크 회귀, 실장 검증 전이므로 검증된 동작으로 간주하지 않는다.
+
 ### Feedback, 취소, 장애 및 자원 상한
 
-- Feedback은 기존 Local status Topic의 **latest** 의미를 유지합니다. 약 10 ms 간격으로 관측하고 sequence가 증가한 값만 전송합니다.
+- Feedback은 기존 Local status Topic의 **latest** 의미를 유지합니다. 기본 Poll 모드는 약 10 ms 간격, Event 모드는 SHM 변경 알림 기반으로 관측하며 sequence가 증가한 값만 전송합니다.
   모든 중간 Feedback 전달은 보장하지 않습니다. client session도 최신 payload 하나만 보관합니다.
 - 완료 Result는 terminal state(SUCCEEDED/FAILED/CANCELED)와 result payload를 전달한 뒤 gateway tracking을 제거합니다.
   Local 조회/codec 오류는 `communication_lost/error`로 표시하고 Local Action의 terminal 실패로 추측하지 않습니다.

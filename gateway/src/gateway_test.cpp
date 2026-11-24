@@ -195,9 +195,15 @@ static void TopicMetadataCLI(const std::string& executable) {
             (e.name=="/cli/value" || e.name=="/cli/private/value"))found.push_back(e);
         return found;
     };
-    check(Until([&]{auto p=peer();if(!p.metadata_ready)return false;
-        for(const auto& e:p.endpoints)if(e.identity.runtime.pid==getpid()&&e.name==unrelated_name)
-            return e.scope==n::NetworkScope::LOCAL;return false;}),"unrelated Local endpoint missing");
+    check(Until([&] {
+        const auto p=peer();
+        if(!p.metadata_ready)return false;
+        for(const auto& e:p.endpoints) {
+            if(e.identity.runtime.pid==getpid()&&e.name==unrelated_name)
+                return e.scope==n::NetworkScope::LOCAL;
+        }
+        return false;
+    }),"unrelated Local endpoint missing");
     check(owned().empty(),"test-owned endpoints present before creation");
     check((peer().profile.capabilities&n::CapabilityBit(n::Capability::REMOTE_TOPIC))!=0,"REMOTE_TOPIC capability missing");
     check((peer().profile.capabilities&n::CapabilityBit(n::Capability::TYPE_DESCRIPTOR_QUERY))!=0,"Descriptor capability missing");

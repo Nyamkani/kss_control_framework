@@ -69,7 +69,7 @@ void Integration(const char* exe){auto port=Port();pid_t children[2];std::string
     for(int i=0;i<2;++i){auto local=std::to_string(Port());children[i]=fork();assert(children[i]>=0);if(!children[i]){execl(exe,exe,"--owner",local.c_str(),nullptr);_exit(127);}names[i]="/kcf_action_"+std::to_string(children[i]);}
     kcf::detail::SupervisorRegistry supervisor;supervisor.Begin();kcf::SupervisorInfo app{};std::strcpy(app.application_name,"action_test");app.application_state=kcf::ApplicationState::RUNNING;app.element_count=2;
     for(int i=0;i<2;++i){auto& e=app.elements[i];e.pid=children[i];e.process_alive=1;std::strcpy(e.name,i?"second":"first");std::strcpy(e.executable,exe);Until([&]{return kcf::detail::ReadProcessIdentity(e.pid,e.process_start_ticks);});}supervisor.Update(app);
-    n::ControlNode a,b,c;auto ca=Config(10,port),cb=Config(20,port),cc=Config(30,port);ca.metadata.runtime_pids={children[0],children[1]};ca.metadata.remote_actions={names[0],names[1]};ca.metadata.groups={"robots"};assert(!a.Start(ca)&&!b.Start(cb)&&!c.Start(cc));
+    n::ControlNode a,b,c;auto ca=Config(10,port),cb=Config(20,port),cc=Config(30,port);ca.metadata.runtime_pids={children[0],children[1]};ca.metadata.remote_actions={names[0],names[1]};ca.metadata.groups={"robots"};ca.action_status_mode=n::ActionStatusMode::EVENT;assert(!a.Start(ca)&&!b.Start(cb)&&!c.Start(cc));
     Until([&]{auto p=Peer(b,10);return p.metadata_ready&&p.endpoints.size()==4;});auto peer=Peer(b,10);n::NetworkEndpointMetadata endpoints[2];
     for(const auto& e:peer.endpoints){assert(e.kind==n::EndpointKind::ACTION&&e.identity.registration_id&(1ull<<62));assert(e.application_name=="action_test");for(int i=0;i<2;++i)if(e.name==names[i])endpoints[i]=e;}
     assert(n::Valid(endpoints[0])&&n::Valid(endpoints[1]));
@@ -78,6 +78,14 @@ void Integration(const char* exe){auto port=Port();pid_t children[2];std::string
     auto first=One(start(Endpoint(endpoints[0]),5));assert(!first.error&&first.action&&first.action->Snapshot().accepted);
     std::uint64_t previous=0;int feedbacks=0;Until([&]{auto s=first.action->Snapshot();if(s.feedback_sequence!=previous){assert(s.feedback_sequence>previous);previous=s.feedback_sequence;++feedbacks;assert(Count(s.feedback)>0);}return s.terminal;});
     assert(feedbacks>=2&&Count(first.action->Snapshot().result)==10&&first.action->Snapshot().state==kcf::ActionState::SUCCEEDED);
+    // Repeat the completed-goal path after switching the provider Gateway
+    // from Event notification to a slower 50ms scheduled Feedback poll.
+    a.Stop();ca.action_status_mode=n::ActionStatusMode::SCHEDULED_POLL;
+    ca.action_status_poll_interval=50ms;assert(!a.Start(ca));
+    Until([&]{auto p=Peer(b,10);return p.metadata_ready&&p.state==n::PeerState::ONLINE;});
+    auto scheduled=One(start(Endpoint(endpoints[0]),3));assert(!scheduled.error);
+    Until([&]{return scheduled.action->Snapshot().terminal;});
+    assert(scheduled.action->Snapshot().state==kcf::ActionState::SUCCEEDED&&Count(scheduled.action->Snapshot().result)==6);
     auto rejected=One(start(Endpoint(endpoints[0]),-1));assert(rejected.error==-EINVAL&&!rejected.action->Snapshot().accepted&&!rejected.execution_unknown);
     auto cancel=One(start(Endpoint(endpoints[0]),7));assert(!cancel.error);auto cancel_result=One(b.CancelAction(cancel.action));assert(!cancel_result.error&&!cancel_result.cancel_unknown);Until([&]{return cancel.action->Snapshot().terminal;});assert(cancel.action->Snapshot().state==kcf::ActionState::CANCELED);
     assert(Result(c.CancelAction(cancel.action)).error==-EACCES);

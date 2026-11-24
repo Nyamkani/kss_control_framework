@@ -1,6 +1,6 @@
 # UX Diagnostics Foundation — Core #10 / #16 / #17 / #15 (Draft)
 
-Status: **feature branch implementation; build, integration and physical LAN tests not yet run**.
+Status: **Ubuntu 24.04 amd64 CI and VM Core/CLI regression PASS; new Core ARM64 physical deployment and performance validation pending**.
 Target: KCF Core v5.6.1 development branch. This is not a new release.
 
 ## 1. Supervisor details (Core #10)

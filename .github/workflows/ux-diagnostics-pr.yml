@@ -28,7 +28,7 @@ jobs:
           timeout 120s ./build/examples/introspection/kcf_supervisor_discovery_test
       - name: Read-only CLI smoke tests
         run: |
-          ./build/kcf --help
-          ./build/kcf status
-          ./build/kcf topic list
-          ./build/kcf doctor
+          ./build/bin/kcf --help
+          ./build/bin/kcf status
+          ./build/bin/kcf topic list
+          ./build/bin/kcf doctor

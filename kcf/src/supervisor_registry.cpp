@@ -11,6 +11,10 @@ std::string SupervisorRegistryName(std::int32_t pid, std::uint64_t ticks)
 {
     return std::string("/") + SUPERVISOR_REGISTRY_PREFIX + std::to_string(pid) + "_" + std::to_string(ticks);
 }
+std::string SupervisorDiagnosticsRegistryName(std::int32_t pid, std::uint64_t ticks)
+{
+    return std::string("/") + SUPERVISOR_DIAGNOSTICS_REGISTRY_PREFIX + std::to_string(pid) + "_" + std::to_string(ticks);
+}
 void SupervisorRegistry::TryCreate() noexcept
 {
     if (creation_state_ != CreationState::RETRY_PENDING) return;
@@ -57,8 +61,39 @@ void SupervisorRegistry::Update(SupervisorInfo snapshot) noexcept
     if (creation_state_ == CreationState::ACTIVE && dirty_ &&
         channel_.TryPublishSnapshot(current_) == 0) dirty_ = false;
 }
+void SupervisorRegistry::UpdateDiagnostics(SupervisorDiagnosticsInfo snapshot) noexcept
+{
+    if (creation_state_ == CreationState::IDLE || !current_.process_start_ticks) return;
+    snapshot.pid=current_.pid;
+    snapshot.process_start_ticks=current_.process_start_ticks;
+    snapshot.revision=diagnostics_current_.revision; // exclude revision itself from change detection
+    if (!diagnostic_initialized_ || std::memcmp(&snapshot,&diagnostics_current_,sizeof(snapshot))!=0)
+    {
+        if (diagnostics_current_.revision==std::numeric_limits<std::uint64_t>::max()) return;
+        snapshot.revision=diagnostics_current_.revision+1;
+        diagnostics_current_=snapshot;
+        diagnostic_dirty_=true;
+        diagnostic_initialized_=true;
+    }
+    if (!diagnostic_active_ && diagnostic_attempts_<MAX_CREATE_ATTEMPTS)
+    {
+        ++diagnostic_attempts_;
+        int code=-EIO;
+        try { code=diagnostics_channel_.TryCreate(
+            SupervisorDiagnosticsRegistryName(current_.pid,current_.process_start_ticks)); }
+        catch (...) { code=-EIO; }
+        if (!code) diagnostic_active_=true;
+        else if (code!=-EAGAIN) diagnostic_attempts_=MAX_CREATE_ATTEMPTS;
+    }
+    if (diagnostic_active_ && diagnostic_dirty_ &&
+        diagnostics_channel_.TryPublishSnapshot(diagnostics_current_)==0) diagnostic_dirty_=false;
+}
 void SupervisorRegistry::End() noexcept
 {
+    (void)diagnostics_channel_.Close();
+    if (diagnostic_active_) (void)diagnostics_channel_.Unlink();
+    diagnostic_attempts_=0;diagnostic_active_=false;diagnostic_dirty_=false;diagnostic_initialized_=false;
+    diagnostics_current_=SupervisorDiagnosticsInfo{};
     (void)channel_.Close();
     if (creation_state_ == CreationState::ACTIVE) (void)channel_.Unlink();
     creation_state_ = CreationState::IDLE;

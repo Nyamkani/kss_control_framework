@@ -75,3 +75,7 @@ target_compile_options(kcf_network_interface_test PRIVATE -UNDEBUG -Wall -Wextra
 add_executable(kcf_topic_exposure_test src/topic_exposure_test.cpp)
 target_link_libraries(kcf_topic_exposure_test PRIVATE kcf_core)
 target_compile_options(kcf_topic_exposure_test PRIVATE -UNDEBUG -Wall -Wextra -Wpedantic)
+
+add_executable(kcf_diagnostics_contract_test src/diagnostics_contract_test.cpp)
+target_link_libraries(kcf_diagnostics_contract_test PRIVATE kcf_core)
+target_compile_options(kcf_diagnostics_contract_test PRIVATE -UNDEBUG -Wall -Wextra -Wpedantic)

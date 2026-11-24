@@ -276,6 +276,48 @@ void Bringup::PublishIntrospection() noexcept
         child.process_alive = entry.process_alive ? 1 : 0;
     }
     introspection_.Update(snapshot);
+    kcf::SupervisorDiagnosticsInfo diagnostic{};
+    diagnostic.application_state=application_state_;
+    diagnostic.generation=generation_;
+    diagnostic.last_error_sequence=error_sequence_;
+    diagnostic.element_count=snapshot.element_count;
+    diagnostic.history_count=static_cast<std::uint32_t>(std::min(error_history_.size(),kcf::MAX_SUPERVISOR_DIAGNOSTIC_HISTORY));
+    for(std::size_t i=0;i<diagnostic.element_count;++i)
+    {
+        const auto& entry=*elements_[i];
+        auto& item=diagnostic.elements[i];
+        std::memcpy(item.name,entry.spec.name.data(),std::min(entry.spec.name.size(),sizeof(item.name)-1));
+        item.pid=entry.pid;item.running=entry.process_alive?1:0;
+        item.failure_detected=entry.failure_detected?1:0;
+        item.exit_info_available=entry.exit_info.available?1:0;
+        item.failure_kind=entry.failure_kind;
+        item.termination_kind=entry.exit_info.signaled?kcf::ProcessTerminationKind::SIGNALED:
+            entry.exit_info.exited_normally?kcf::ProcessTerminationKind::EXITED:kcf::ProcessTerminationKind::NONE;
+        item.exit_code=entry.exit_info.exit_code;
+        item.signal_number=entry.exit_info.signal_number;
+        item.runtime_error=entry.runtime_error;
+    }
+    std::size_t index=0;
+    for(const auto& event:error_history_)
+    {
+        if(index>=diagnostic.history_count)break;
+        auto& item=diagnostic.history[index++];
+        item.sequence=event.sequence;
+        item.monotonic_ns=event.monotonic_ns;
+        item.generation=event.generation;
+        item.pid=event.error.pid;
+        std::memcpy(item.element_name,event.error.element_name.data(),
+            std::min(event.error.element_name.size(),sizeof(item.element_name)-1));
+        item.failure_kind=event.error.failure_kind;
+        item.runtime_error=event.error.runtime_error;
+        item.runtime_error_observed=event.runtime_error_observed?1:0;
+        item.exit_info_available=event.error.exit_info.available?1:0;
+        item.termination_kind=event.error.exit_info.signaled?kcf::ProcessTerminationKind::SIGNALED:
+            event.error.exit_info.exited_normally?kcf::ProcessTerminationKind::EXITED:kcf::ProcessTerminationKind::NONE;
+        item.exit_code=event.error.exit_info.exit_code;
+        item.signal_number=event.error.exit_info.signal_number;
+    }
+    introspection_.UpdateDiagnostics(diagnostic);
 }
 void Bringup::PublishSystemStatus()
 {

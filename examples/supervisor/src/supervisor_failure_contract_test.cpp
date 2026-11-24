@@ -1,6 +1,7 @@
 // Supervisor contract only. Runtime Setup/exception/Shutdown coverage remains in
 // kcf_runtime_lifecycle_test; children reuse kcf_supervisor_runtime_test.
 #include "bringup/bringup.hpp"
+#include "kcf/introspection/introspection_client.hpp"
 #include <cassert>
 #include <atomic>
 #include <chrono>
@@ -81,6 +82,12 @@ static void InitialFailure(const std::string& self,const std::string& executable
     const auto first=app.GetErrorHistory().front();
     assert(app.GetErrorHistory().size()==1 && first.generation==1 && first.sequence==1);
     assert(first.error.element_name=="target");
+    kcf::IntrospectionClient observer;
+    kcf::SupervisorDiagnosticsInfo detail{};
+    Until([&]{return observer.GetSupervisorDiagnostics(getpid(),ticks,detail)==0 &&
+                     detail.history_count==1;});
+    assert(detail.element_count==2 && detail.history[0].sequence==first.sequence);
+    assert(std::string(detail.history[0].element_name)=="target");
     if(first.error.failure_kind==kcf::ElementFailureKind::PROCESS_EXIT)
         assert(first.error.exit_info.exit_code==7 &&
                (first.runtime_error_observed || first.error.runtime_error==0));
@@ -153,6 +160,12 @@ static void RunningExit(const std::string& executable,std::uint64_t ticks,
             // Give the regular monitor cycles time to observe the second exit.
             Until([&]{return !fs::exists("/proc/"+std::to_string(children[0].pid));});
             assert(status.ReadCurrent(error)==0 && error.failed_pid==first_pid);
+            kcf::IntrospectionClient observer;
+            kcf::SupervisorDiagnosticsInfo detail{};
+            Until([&]{return observer.GetSupervisorDiagnostics(getpid(),ticks,detail)==0 &&
+                             detail.history_count==2;});
+            assert(detail.history[0].pid==children[1].pid &&
+                   detail.history[1].pid==children[0].pid);
             // ERROR latches, but does not automatically terminate the healthy sibling.
         }
         assert(status.Close()==0);

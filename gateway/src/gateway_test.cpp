@@ -54,8 +54,8 @@ static void Unit() {
     assert(config.discovery.interface_address==one.ipv4_address&&config.discovery.metadata_port==39002);
     assert(config.metadata.runtime_pids.empty()&&config.metadata.remote_topics.empty()&&config.metadata.remote_parameters.empty()&&config.metadata.remote_services.empty()&&config.metadata.remote_actions.empty());
     assert(config.parameter_get_clients.empty()&&config.parameter_set_clients.empty()&&config.service_call_clients.empty()&&config.action_goal_clients.empty()&&config.action_cancel_clients.empty()&&config.descriptor_query_clients.empty());
-    assert(!config.topics.enabled&&!config.diagnostics_enabled);
-    std::cout<<"Gateway configuration/auto-selection/ambiguity/override/default deny PASS\n";
+    assert(config.topics.enabled&&config.topic_observer_enabled&&!config.diagnostics_enabled);
+    std::cout<<"Gateway configuration/auto-selection/ambiguity/override/Topic default public/Control deny PASS\n";
 }
 static void LockTests() {
     char temp[]="/tmp/kcf-lock-test-XXXXXX";assert(mkdtemp(temp));fs::path root=temp;
@@ -106,7 +106,7 @@ static void Network(const std::string& executable) {
     n::PeerInfo peer;n::NetworkEndpointMetadata endpoint;
     assert(Until([&]{for(const auto& p:observer.GetPeers())if(p.host==host&&p.metadata_ready)for(const auto& e:p.endpoints)if(e.name==name){peer=p;endpoint=e;return true;}return false;}));
     assert(endpoint.scope==n::NetworkScope::LOCAL&&endpoint.identity.runtime.pid==getpid());
-    assert(!(peer.profile.capabilities&n::CapabilityBit(n::Capability::REMOTE_TOPIC)));
+    assert(peer.profile.capabilities&n::CapabilityBit(n::Capability::REMOTE_TOPIC));
     assert(!(peer.profile.capabilities&n::CapabilityBit(n::Capability::NETWORK_DIAGNOSTICS)));
     n::RemoteControlClient client(observer,dc);assert(client.Start()==0);
     Value changed{99,false,2.5};kcf::DynamicPayload native;

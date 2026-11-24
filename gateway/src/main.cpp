@@ -19,7 +19,7 @@ int main(int argc,char** argv) {
                  <<"State directory must already exist; default /var/lib/kcf. Test loopback requires explicit interface.\n"
                  <<"Account-owned runtime lock: /run/kcf/gateway.lock; parent must exist and be protected. Never unlinked.\n"
                  <<"Metadata ON; repeatable Topic prefixes opt in Publisher exposure/data plane. Public Topic VALUE schema access follows allow prefixes; Control grants default OFF; Diagnostics OFF. Trusted LAN only. Network recovery enabled; no Control request replay.\n";
-        std::cout<<"Remote Action status: poll (default 10 ms, configurable 1..1000 ms) or event (Local SHM notify); terminal Result check remains separate (~50 ms).\\n";
+        std::cout<<"Remote Action status: poll (default 10 ms, configurable 1..1000 ms) or event (Local SHM notify); terminal Result check remains separate (~50 ms).\n";
         std::cout<<"Fresh-start waits for a new Local Publish on every new route; it grants no exposure. Topic rates (0.1..1000 Hz) replace the default 50 Hz per exact name; they grant no access.\n"
                  <<"--remote-topic opts into the legacy exact-name REMOTE list (both roles), including reception; requires a local consumer descriptor/bootstrap. Publisher prefixes alone never opt in reception.\n";
         std::cout<<"--remote-parameter NAME / --remote-service NAME / --remote-action NAME: repeatable exact-name exposure, default empty.\n"

@@ -63,3 +63,12 @@ recommendations remain **unimplemented** and their Issues stay open.
   OPI5+↔VM checks remain a separate physical validation.
 
 Nothing in this draft closes Core #10/#15/#16/#17 or changes deployed packages.
+
+
+## 2026-11-25 validation update
+
+- Independent Draft PR #22 [Ubuntu 24.04 Actions #45381852680](https://github.com/Nyamkani/kss_control_framework/actions/runs/45381852680) PASS; combined Core [Actions #45400513845](https://github.com/Nyamkani/kss_control_framework/actions/runs/45400513845) PASS.
+- VM `kcf_diagnostics_contract_test` **PASS**; `kcf_supervisor_failure_contract_test` **PASS** (deliberately injected startup failure, ERROR/RESET/cleanup, SIGKILL/timeout/fault paths); `kcf_supervisor_discovery_test` **PASS** (capacity 65, recovery/identity/generation, cleanup). ERROR lines are intentionally generated assertions of the failure-handling contract, not failures of these tests.
+- VM new `build-ux/bin/kcf status`, `topic list`, `doctor`, `network status` exercised. Local status displayed 0 runtimes when empty and enumerated test fixture endpoints when running. `network status` successfully read existing VM systemd Gateway `/run/kcf/gateway.sock` and its RUNNING/session/NIC JSON, without replacing the systemd Gateway.
+- Real OPI5+ (old distributed v5.6.1 Gateway) to VM Tools remote Subscribe/payload/49.08 Hz and Graph passed compatibility smoke, **not** physical validation of the new diagnostics implementation.
+- Still required: new Core on ARM64, prolonged performance/SHM overhead and race tests, complete diagnostic and CLI commands. Issues #10/#15/#16/#17 remain OPEN; PR Draft.

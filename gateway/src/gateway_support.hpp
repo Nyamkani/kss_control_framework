@@ -30,6 +30,8 @@ struct Options {
     std::vector<kcf::network::HostIdentity> descriptor_query_clients, parameter_get_clients,
         parameter_set_clients, service_call_clients, action_goal_clients, action_cancel_clients;
     std::vector<std::string> fresh_start_topics;
+    kcf::network::ActionStatusMode action_status_mode{kcf::network::ActionStatusMode::SCHEDULED_POLL};
+    std::uint32_t action_status_poll_ms{10};
     std::uint16_t discovery{37651},control{39001},topic{37652};
 };
 inline std::uint16_t Port(const std::string& text) {
@@ -72,7 +74,7 @@ inline Options Parse(int argc,char** argv) {
         const bool prefix=endpoints||clients||key=="--topic-allow-prefix"||key=="--topic-exclude-prefix"||key=="--topic-rate"||key=="--remote-topic"||key=="--topic-fresh-start";
         if(!prefix&&!seen.insert(key).second)throw std::invalid_argument("duplicate option");
         if(key=="--allow-loopback"){out.nic.allow_loopback=true;continue;}
-        if(!prefix&&key!="--ipc-socket"&&key!="--lock-file"&&key!="--state-dir"&&key!="--interface"&&key!="--discovery-port"&&key!="--control-port"&&key!="--topic-port")throw std::invalid_argument("unknown option");
+        if(!prefix&&key!="--ipc-socket"&&key!="--lock-file"&&key!="--state-dir"&&key!="--interface"&&key!="--discovery-port"&&key!="--control-port"&&key!="--topic-port"&&key!="--action-status-mode"&&key!="--action-status-poll-ms")throw std::invalid_argument("unknown option");
         if(++i==argc||!*argv[i])throw std::invalid_argument("missing option value");
         std::string value=argv[i];
         if(clients){
@@ -105,6 +107,17 @@ inline Options Parse(int argc,char** argv) {
             if(std::find(out.remote_topics.begin(),out.remote_topics.end(),value)!=out.remote_topics.end())throw std::invalid_argument("duplicate remote Topic");
             out.remote_topics.push_back(value);
         }
+        if(key=="--action-status-mode"){
+            if(value=="event")out.action_status_mode=kcf::network::ActionStatusMode::EVENT;
+            else if(value=="poll")out.action_status_mode=kcf::network::ActionStatusMode::SCHEDULED_POLL;
+            else throw std::invalid_argument("Action status mode must be event or poll");
+        }
+        if(key=="--action-status-poll-ms"){
+            if(value.find_first_not_of("0123456789")!=std::string::npos||value.empty())throw std::invalid_argument("Action status poll interval must be 1..1000 ms");
+            auto ms=std::stoul(value);
+            if(ms<1||ms>1000)throw std::invalid_argument("Action status poll interval must be 1..1000 ms");
+            out.action_status_poll_ms=static_cast<std::uint32_t>(ms);
+        }
         if(key=="--state-dir")out.state_dir=value;
         if(key=="--ipc-socket")out.ipc_socket=value;
         if(key=="--lock-file")out.lock_file=value;
@@ -130,6 +143,8 @@ inline kcf::network::ControlConfig Config(const Options& options,const kcf::netw
     config.discovery.interface_address=nic.ipv4_address;
     config.discovery.port=options.discovery;config.discovery.metadata_port=options.control;
     config.topics.port=options.topic;
+    config.action_status_mode=options.action_status_mode;
+    config.action_status_poll_interval=std::chrono::milliseconds(options.action_status_poll_ms);
     config.metadata.topic_exposure=options.topic_policy;
     config.topics.enabled=options.topic_policy.enabled&&!options.topic_policy.allow_prefixes.empty();
     config.topic_observer_enabled=config.topics.enabled;

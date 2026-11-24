@@ -697,19 +697,28 @@ struct ControlNode::Impl {
         auto response=ActionResponse(job,ControlMessage::ACTION_GOAL_RESPONSE,code);response.reason=reason;response.outcome_unknown=unknown;
         context->accepted=!code;ActionReply(job.connection,std::move(response));
         if(code)return;
-        std::uint64_t feedback_sequence=0;auto next_result=Clock::time_point{};
+        std::uint64_t feedback_sequence=0,notify_sequence=0;
+        auto next_result=Clock::time_point{},next_feedback=Clock::time_point{};
+        bool feedback_due=true; // Initial state must be observed in both modes.
         while(Live(job.connection)){
             ActionHeader header;DynamicPayload feedback,result;ActionState state=ActionState::FAILED;
             code=ValidateLocalActionEndpoint(entry);
             if(!code){
                 std::lock_guard<std::mutex> lock(context->call_mutex);
-                code=context->client.ReadFeedback(header,feedback);
-                if(!code&&header.goal_id==context->local_goal&&header.feedback_sequence>feedback_sequence&&header.state==ActionState::RUNNING){
-                    auto event=ActionResponse(job,ControlMessage::ACTION_FEEDBACK);event.request_id=0;event.action_state=ActionState::RUNNING;event.feedback_sequence=header.feedback_sequence;
-                    code=EncodeParameterValue(entry.feedback_descriptor,feedback,event.payload);
-                    if(!code){feedback_sequence=header.feedback_sequence;ActionReply(job.connection,std::move(event));}
+                const bool read_feedback=config.action_status_mode==ActionStatusMode::EVENT
+                    ? feedback_due : Clock::now()>=next_feedback;
+                if(read_feedback){
+                    code=context->client.ReadFeedback(header,feedback);
+                    if(!code&&header.goal_id==context->local_goal&&header.feedback_sequence>feedback_sequence&&header.state==ActionState::RUNNING){
+                        auto event=ActionResponse(job,ControlMessage::ACTION_FEEDBACK);event.request_id=0;event.action_state=ActionState::RUNNING;event.feedback_sequence=header.feedback_sequence;
+                        code=EncodeParameterValue(entry.feedback_descriptor,feedback,event.payload);
+                        if(!code){feedback_sequence=header.feedback_sequence;ActionReply(job.connection,std::move(event));}
+                    }
+                    if(config.action_status_mode==ActionStatusMode::SCHEDULED_POLL)
+                        next_feedback=Clock::now()+config.action_status_poll_interval;
                 }
                 if(code==-EAGAIN)code=0;
+                // Terminal Result checks stay independent of Feedback observation cadence.
                 if(!code&&Clock::now()>=next_result){
                     code=context->client.GetResult(context->local_goal,state,result);next_result=Clock::now()+std::chrono::milliseconds(50);
                     if(!code){auto event=ActionResponse(job,ControlMessage::ACTION_RESULT);event.request_id=0;event.action_state=state;
@@ -720,7 +729,15 @@ struct ControlNode::Impl {
                 }
             }
             if(code){auto event=ActionResponse(job,ControlMessage::ACTION_RESULT,code);event.request_id=0;event.action_state=ActionState::FAILED;ActionReply(job.connection,std::move(event));return;}
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            if(config.action_status_mode==ActionStatusMode::EVENT){
+                // Bounded wait also wakes to check the independent terminal Result.
+                const int changed=context->client.WaitFeedback(notify_sequence,std::chrono::milliseconds(50));
+                if(changed<0){auto event=ActionResponse(job,ControlMessage::ACTION_RESULT,changed);event.request_id=0;event.action_state=ActionState::FAILED;ActionReply(job.connection,std::move(event));return;}
+                feedback_due=changed>0;
+            }else{
+                const auto deadline=std::min(next_feedback,next_result);
+                if(deadline>Clock::now())std::this_thread::sleep_until(deadline);
+            }
         }
         // Lost connection releases only gateway resources. Never Local Cancel.
     }
@@ -810,7 +827,9 @@ ControlNode::~ControlNode(){Stop();}
 int ControlNode::Start(const ControlConfig& input) {
     auto& s=*impl_;if(s.io.joinable()||s.backend.joinable())return -EBUSY;
     if(input.metadata_interval.count()<20||input.metadata_interval.count()>60000||input.connect_timeout.count()<20||
-        input.connect_timeout.count()>60000||input.reconnect_interval.count()<20||input.reconnect_interval.count()>60000)return -EINVAL;
+        input.connect_timeout.count()>60000||input.reconnect_interval.count()<20||input.reconnect_interval.count()>60000||
+        input.action_status_poll_interval.count()<1||input.action_status_poll_interval.count()>1000||
+        (input.action_status_mode!=ActionStatusMode::SCHEDULED_POLL&&input.action_status_mode!=ActionStatusMode::EVENT))return -EINVAL;
     if(input.descriptor_query_clients.size()>32||input.parameter_get_clients.size()>32||input.parameter_set_clients.size()>32||input.service_call_clients.size()>32||input.action_goal_clients.size()>32||input.action_cancel_clients.size()>32)return -EINVAL;
     for(const auto& host:input.parameter_get_clients)if(!Valid(host)||host==input.discovery.host)return -EINVAL;
     for(const auto& host:input.parameter_set_clients)if(!Valid(host)||host==input.discovery.host)return -EINVAL;

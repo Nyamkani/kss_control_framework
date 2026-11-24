@@ -6,6 +6,8 @@
 #include <future>
 #include <mutex>
 namespace kcf::network {
+// Controls how the Gateway observes Local Action status SHM; not the Local publisher cadence.
+enum class ActionStatusMode : std::uint8_t { SCHEDULED_POLL, EVENT };
 struct ControlConfig {
     TopicConfig topics;
     DiscoveryConfig discovery;
@@ -13,6 +15,8 @@ struct ControlConfig {
     std::chrono::milliseconds metadata_interval{250};
     std::chrono::milliseconds connect_timeout{1000};
     std::chrono::milliseconds reconnect_interval{250};
+    ActionStatusMode action_status_mode{ActionStatusMode::SCHEDULED_POLL};
+    std::chrono::milliseconds action_status_poll_interval{10}; // 1..1000 ms; terminal Result still checked independently at 50 ms
     // Read-only diagnostics on the existing listener, queried via NetworkDiagnosticsClient.
     // Opt-in: at most 8 observer connections / queued jobs, one job per connection,
     // 10 admissions/s per Host session, 50 dispatches/s globally. Observer output

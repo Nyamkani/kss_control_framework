@@ -15,10 +15,11 @@ int Error(const char* stage,int code){std::cerr<<"[Gateway] "<<stage<<" error="<
 int main(int argc,char** argv) {
     std::cout.setf(std::ios::unitbuf);
     if(argc==2&&std::string(argv[1])=="--help") {
-        std::cout<<"kcf_gateway [--state-dir DIR] [--lock-file PATH] [--ipc-socket PATH] [--interface NAME] [--discovery-port N] [--control-port N] [--topic-port N] [--allow-loopback] [--topic-allow-prefix PREFIX] [--topic-exclude-prefix PREFIX] [--topic-rate TOPIC:HZ] [--topic-fresh-start TOPIC] [--remote-topic TOPIC]\n"
+        std::cout<<"kcf_gateway [--state-dir DIR] [--lock-file PATH] [--ipc-socket PATH] [--interface NAME] [--discovery-port N] [--control-port N] [--topic-port N] [--action-status-mode poll|event] [--action-status-poll-ms N] [--allow-loopback] [--topic-allow-prefix PREFIX] [--topic-exclude-prefix PREFIX] [--topic-rate TOPIC:HZ] [--topic-fresh-start TOPIC] [--remote-topic TOPIC]\n"
                  <<"State directory must already exist; default /var/lib/kcf. Test loopback requires explicit interface.\n"
                  <<"Account-owned runtime lock: /run/kcf/gateway.lock; parent must exist and be protected. Never unlinked.\n"
                  <<"Metadata ON; repeatable Topic prefixes opt in Publisher exposure/data plane. Public Topic VALUE schema access follows allow prefixes; Control grants default OFF; Diagnostics OFF. Trusted LAN only. Network recovery enabled; no Control request replay.\n";
+        std::cout<<"Remote Action status: poll (default 10 ms, configurable 1..1000 ms) or event (Local SHM notify); terminal Result check remains separate (~50 ms).\\n";
         std::cout<<"Fresh-start waits for a new Local Publish on every new route; it grants no exposure. Topic rates (0.1..1000 Hz) replace the default 50 Hz per exact name; they grant no access.\n"
                  <<"--remote-topic opts into the legacy exact-name REMOTE list (both roles), including reception; requires a local consumer descriptor/bootstrap. Publisher prefixes alone never opt in reception.\n";
         std::cout<<"--remote-parameter NAME / --remote-service NAME / --remote-action NAME: repeatable exact-name exposure, default empty.\n"
@@ -57,7 +58,9 @@ int main(int argc,char** argv) {
                          <<" discovery_udp="<<options.discovery<<" control_tcp/metadata_udp="<<options.control
                          <<" topic_udp="<<options.topic<<" metadata=ON public_topic_descriptor="<<(config.topic_observer_enabled?"PUBLIC_TOPIC_VALUE":"NONE")<<" diagnostics=OFF topic="<<(config.topics.enabled?"ON":"OFF")
                          <<" topic_max_hz="<<config.topics.max_hz<<" allow_prefixes="<<options.topic_policy.allow_prefixes.size()
-                         <<" exclude_prefixes="<<options.topic_policy.exclude_prefixes.size()<<'\n';
+                         <<" exclude_prefixes="<<options.topic_policy.exclude_prefixes.size()
+                         <<" action_status_mode="<<(config.action_status_mode==n::ActionStatusMode::EVENT?"event":"poll")
+                         <<" action_status_poll_ms="<<config.action_status_poll_interval.count()<<'\n';
                 for(const auto& name:config.topics.fresh_start_topics)std::cout<<"[Gateway] topic_fresh_start="<<name<<'\n';
                 for(const auto& rate:config.topics.rate_limits)std::cout<<"[Gateway] topic_rate="<<rate.name<<":"<<rate.max_hz<<'\n';
                 for(const auto& name:config.metadata.remote_topics)std::cout<<"[Gateway] legacy_remote_topic="<<name<<'\n';

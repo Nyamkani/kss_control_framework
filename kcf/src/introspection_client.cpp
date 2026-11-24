@@ -176,7 +176,7 @@ int IntrospectionClient::GetSupervisorDiagnostics(std::int32_t pid,std::uint64_t
            snapshot.pid!=pid||snapshot.process_start_ticks!=ticks||
            snapshot.element_count>MAX_SUPERVISOR_ELEMENTS||
            snapshot.history_count>MAX_SUPERVISOR_DIAGNOSTIC_HISTORY)return -EPROTO;
-        if(static_cast<unsigned>(snapshot.application_state)>static_cast<unsigned>(ApplicationState::SHUTTING_DOWN))
+        if(static_cast<unsigned>(snapshot.application_state)>static_cast<unsigned>(ApplicationState::STOPPED))
             return -EPROTO;
         for(std::uint32_t i=0;i<snapshot.element_count;++i)
         {

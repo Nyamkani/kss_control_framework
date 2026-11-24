@@ -13,6 +13,7 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <stdexcept>
 #include <spawn.h>
 #include <sys/wait.h>
 #include <thread>
@@ -152,27 +153,61 @@ static void Network(const std::string& executable) {
     std::cout<<"Gateway isolated lifecycle/metadata/LOCAL deny/identity reuse/crash/ports/FD/lock PASS\n";
 }
 static void TopicMetadataCLI(const std::string& executable) {
-    char temp[]="/tmp/kcf-cli-policy-XXXXXX";assert(mkdtemp(temp));fs::path root=temp;
+    const auto check=[](bool ok,const char* message) {
+        if(!ok)throw std::runtime_error(std::string("TopicMetadataCLI: ")+message);
+    };
+    char temp[]="/tmp/kcf-cli-policy-XXXXXX";check(mkdtemp(temp)!=nullptr,"mkdtemp");
+    fs::path root=temp;
+    // Deliberately retain an unrelated Local endpoint throughout the test.
+    // The Gateway collects metadata for ALL same-UID local runtimes, not only
+    // the endpoints registered below. Global zero/three/zero counts are invalid.
+    kcf::detail::BeginRuntimeIntrospection(kcf::ExecutionMode::STANDALONE);
+    kcf::detail::UpdateRuntimeIntrospection(kcf::ProcessState::RUNNING,0);
+    kcf::Publisher<Value> unrelated;
+    const auto unrelated_name="/gateway_cli_unrelated_"+std::to_string(getpid());
+    check(unrelated.Create(unrelated_name)==0,"create unrelated Local publisher");
     std::vector<std::string> args{executable,"--state-dir",root.string(),"--ipc-socket",(root/"gateway.sock").string(),"--lock-file",(root/"gateway.lock").string(),
         "--interface","lo","--allow-loopback","--discovery-port","49651","--control-port","49021","--topic-port","49652",
         "--topic-allow-prefix","/cli","--topic-allow-prefix","/other","--topic-exclude-prefix","/cli/private"};
-    Child gateway(args,root/"gateway.log");assert(Until([&]{return Read(root/"gateway.log").find("[Gateway] ready")!=std::string::npos;}));
-    n::HostIdentity host;assert(n::LoadHostIdentity((root/"host-id").string(),host)==0);
-    n::DiscoveryConfig dc;dc.host.bytes[0]=99;assert(n::ReadLinuxBootIdentity(dc.boot_id)==0);dc.interface_address="127.0.0.1";dc.port=49651;
-    n::PeerDiscovery observer;assert(observer.Start(dc)==0);
+    // Child's destructor kills/waits on any thrown check failure. Do NOT use
+    // assert() while the Gateway child is live: abort() skips stack unwinding.
+    Child gateway(args,root/"gateway.log");
+    check(Until([&]{return Read(root/"gateway.log").find("[Gateway] ready")!=std::string::npos;}),"Gateway not ready; inspect gateway.log (ports/lock)");
+    n::HostIdentity host;check(n::LoadHostIdentity((root/"host-id").string(),host)==0,"load test Host ID");
+    n::DiscoveryConfig dc;dc.host.bytes[0]=99;check(n::ReadLinuxBootIdentity(dc.boot_id)==0,"read boot ID");
+    dc.interface_address="127.0.0.1";dc.port=49651;
+    n::PeerDiscovery observer;check(observer.Start(dc)==0,"start observer");
     const auto peer=[&]{for(const auto& p:observer.GetPeers())if(p.host==host)return p;return n::PeerInfo{};};
-    assert(Until([&]{return peer().metadata_ready;}));
-    assert(peer().endpoints.empty());assert(peer().profile.capabilities&n::CapabilityBit(n::Capability::REMOTE_TOPIC));
-    assert(peer().profile.capabilities&n::CapabilityBit(n::Capability::TYPE_DESCRIPTOR_QUERY));
-    kcf::detail::BeginRuntimeIntrospection(kcf::ExecutionMode::STANDALONE);kcf::detail::UpdateRuntimeIntrospection(kcf::ProcessState::RUNNING,0);
-    kcf::Publisher<Value> publisher,excluded;assert(publisher.Create("/cli/value")==0);assert(excluded.Create("/cli/private/value")==0);
-    kcf::Subscriber<Value> subscriber;assert(subscriber.Create("/cli/value",[](const Value&){})==0);
-    assert(Until([&]{return peer().metadata_ready&&peer().endpoints.size()==3;}));
-    for(const auto& e:peer().endpoints){const bool allowed=e.name=="/cli/value"&&e.role==n::EndpointRole::PROVIDER;assert(e.scope==(allowed?n::NetworkScope::REMOTE:n::NetworkScope::LOCAL));}
-    assert(subscriber.Close()==0);assert(publisher.Close()==0);assert(publisher.Unlink()==0);assert(excluded.Close()==0);assert(excluded.Unlink()==0);
-    assert(Until([&]{return peer().metadata_ready&&peer().endpoints.empty();}));
+    const auto owned=[&] {
+        std::vector<n::NetworkEndpointMetadata> found;
+        for(const auto& e:peer().endpoints)if(e.identity.runtime.pid==getpid() &&
+            (e.name=="/cli/value" || e.name=="/cli/private/value"))found.push_back(e);
+        return found;
+    };
+    check(Until([&]{auto p=peer();if(!p.metadata_ready)return false;
+        for(const auto& e:p.endpoints)if(e.identity.runtime.pid==getpid()&&e.name==unrelated_name)
+            return e.scope==n::NetworkScope::LOCAL;return false;}),"unrelated Local endpoint missing");
+    check(owned().empty(),"test-owned endpoints present before creation");
+    check((peer().profile.capabilities&n::CapabilityBit(n::Capability::REMOTE_TOPIC))!=0,"REMOTE_TOPIC capability missing");
+    check((peer().profile.capabilities&n::CapabilityBit(n::Capability::TYPE_DESCRIPTOR_QUERY))!=0,"Descriptor capability missing");
+    kcf::Publisher<Value> publisher,excluded;
+    check(publisher.Create("/cli/value")==0,"create allowed Publisher");
+    check(excluded.Create("/cli/private/value")==0,"create excluded Publisher");
+    kcf::Subscriber<Value> subscriber;
+    check(subscriber.Create("/cli/value",[](const Value&){} )==0,"create Local Subscriber");
+    check(Until([&]{return peer().metadata_ready&&owned().size()==3;}),"three test-owned endpoints not discovered");
+    for(const auto& e:owned()) {
+        const bool allowed=e.name=="/cli/value"&&e.role==n::EndpointRole::PROVIDER;
+        check(e.scope==(allowed?n::NetworkScope::REMOTE:n::NetworkScope::LOCAL),"Publisher-only allow/exclude policy");
+    }
+    check(subscriber.Close()==0,"close Local Subscriber");
+    check(publisher.Close()==0&&publisher.Unlink()==0,"remove allowed Publisher");
+    check(excluded.Close()==0&&excluded.Unlink()==0,"remove excluded Publisher");
+    check(Until([&]{return peer().metadata_ready&&owned().empty();}),"test-owned endpoints remain after removal");
+    check(unrelated.Close()==0&&unrelated.Unlink()==0,"remove unrelated Publisher");
     kcf::detail::EndRuntimeIntrospection(kcf::ProcessState::STOPPED,0);
-    observer.Stop();assert(gateway.Stop()==0);fs::remove_all(root);
+    observer.Stop();check(gateway.Stop()==0,"stop test Gateway");
+    fs::remove_all(root);
     std::cout<<"Actual kcf_gateway CLI policy dynamic Metadata/Publisher-only/public Topic Descriptor capability PASS\n";
 }
 static volatile std::sig_atomic_t owner_stop=0;
@@ -202,4 +237,4 @@ static void LocalOwner() {
     kcf::detail::EndRuntimeIntrospection(kcf::ProcessState::STOPPED,0);
     std::cout<<"Local owner maintained value and exited normally PASS\n";
 }
-int main(int argc,char** argv){if(argc==2&&std::string(argv[1])=="--owner"){LocalOwner();return 0;}Unit();LockTests();if(argc==3&&std::string(argv[1])=="--policy-network"){TopicMetadataCLI(argv[2]);return 0;}if(argc==3&&std::string(argv[1])=="--network")Network(argv[2]);else assert(argc==1);}
+int main(int argc,char** argv){if(argc==2&&std::string(argv[1])=="--owner"){LocalOwner();return 0;}Unit();LockTests();if(argc==3&&std::string(argv[1])=="--policy-network"){try{TopicMetadataCLI(argv[2]);return 0;}catch(const std::exception& e){std::cerr<<"[GatewayTest] "<<e.what()<<'\n';return 1;}}if(argc==3&&std::string(argv[1])=="--network")Network(argv[2]);else assert(argc==1);}

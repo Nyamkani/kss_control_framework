@@ -15,7 +15,7 @@ int Error(const char* stage,int code){std::cerr<<"[Gateway] "<<stage<<" error="<
 int main(int argc,char** argv) {
     std::cout.setf(std::ios::unitbuf);
     if(argc==2&&std::string(argv[1])=="--help") {
-        std::cout<<"kcf_gateway [--state-dir DIR] [--lock-file PATH] [--ipc-socket PATH] [--interface NAME] [--discovery-port N] [--control-port N] [--topic-port N] [--allow-loopback] [--topic-allow-prefix PREFIX] [--topic-exclude-prefix PREFIX] [--topic-rate TOPIC:HZ] [--topic-fresh-start TOPIC] [--remote-topic TOPIC]\n"
+        std::cout<<"kcf_gateway [--state-dir DIR] [--lock-file PATH] [--ipc-socket PATH] [--interface NAME] [--discovery-port N] [--control-port N] [--topic-port N] [--allow-loopback] [--topic-default-deny] [--topic-allow-prefix PREFIX] [--topic-exclude-prefix PREFIX] [--topic-rate TOPIC:HZ] [--topic-fresh-start TOPIC] [--remote-topic TOPIC]\n"
                  <<"State directory must already exist; default /var/lib/kcf. Test loopback requires explicit interface.\n"
                  <<"Account-owned runtime lock: /run/kcf/gateway.lock; parent must exist and be protected. Never unlinked.\n"
                  <<"Metadata ON; repeatable Topic prefixes opt in Publisher exposure/data plane. Public Topic VALUE schema access follows allow prefixes; Control grants default OFF; Diagnostics OFF. Trusted LAN only. Network recovery enabled; no Control request replay.\n";

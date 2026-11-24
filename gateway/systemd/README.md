@@ -51,7 +51,7 @@ symlinks, hard-linked files and unsafe parent directories are rejected. Conflict
 there is no chown, Host ID regeneration, lock/socket deletion or process termination.
 An existing non-default `/etc/kcf/gateway.env` requires manual deployment review and is preserved;
 the tool never sources it or copies the example over it. This conservative setup path does not
-change CLI options, default-deny Topic policy, default lock or Local IPC paths.
+change CLI options, Topic exposure policy, default lock or Local IPC paths.
 
 The unit is rendered from the packaged template with the confirmed account and installed
 `kcf_gateway` absolute path, then verified with `systemd-analyze verify`. A new unit is published
@@ -155,7 +155,19 @@ is blocked on an existing Local mutex. This does not repair another process's Lo
 Local Applications are not children/dependents of this unit and must not be placed in its cgroup.
 
 Host ID survives restart; Discovery creates a new Session. Existing remote selections/Action handles
-are not reattached or retried. With no exposure/reception options, Network default deny and Topic/Diagnostics OFF remain unchanged.
+are not reattached or retried. With no Topic exposure options, **local Topic Publishers are remotely
+discoverable/subscribable by default** on a trusted LAN. No subscriber interest means no periodic
+Topic DATA transmission. Subscribers remain LOCAL unless explicitly enabled by the legacy
+`--remote-topic NAME` path. Parameter/Service/Action Control remains default denied, and
+Diagnostics stays OFF. The new `--topic-default-deny` flag restores private-by-default
+Publisher exposure; `--topic-allow-prefix /specific` with or without this flag restricts
+exposure to the listed prefixes. `--topic-exclude-prefix /private` alone exposes all
+except /private, and exclusions win when overlapping an allow prefix.
+
+**Upgrade security note:** removing all explicit allow options changes the publisher default
+from private to public. Hosts with sensitive data or untrusted network access should explicitly
+use `--topic-default-deny` before restarting. Existing explicit allow-prefix lists keep their
+restricted semantics. The Gateway does not provide cryptographic peer authentication.
 Session logs use `ControlNode::GetSessionId()`, the same source as Local IPC
 `GET_STATUS`. A successful start prints `[Gateway] session=<nonzero ID>`;
 WAITING_NETWORK/REBINDING state logs and IPC report zero without an active generation.
@@ -229,3 +241,11 @@ Framework version alignment is 5.6.0, Tools 0.14.0. The user reported first-stag
 the service remained disabled. Discovery multicast gaps and IGMP Report recovery remain under
 investigation. See [measurements and limits](../../docs/06_VERIFICATION_AND_LIMITATIONS.md#net56-lan-20261028).
 Independent OPI5+ operational testing remains pending; Raspberry Pi 5 remains robot-only.
+
+
+## 2026-11-25 Topic policy validation update (Core #12)
+
+- Independent [Draft PR #19 CI #45382409416](https://github.com/Nyamkani/kss_control_framework/actions/runs/45382409416) PASS; combined Core [CI #45400513845](https://github.com/Nyamkani/kss_control_framework/actions/runs/45400513845) PASS on Ubuntu 24.04 amd64.
+- VM tested default Publisher visibility, restrictive allow and exclude precedence, `--topic-default-deny`, request-driven Data Plane, read-only Observer descriptor and Network payload. `kcf_gateway_topic_policy_test` and `--network` PASS.
+- Actual CLI subprocess policy test initially failed because a prior same-UID Tools Local fixture remained registered. The test incorrectly assumed `peer().endpoints` was globally empty/size 3/empty. A later assertion abort left a child Gateway occupying loopback test ports, producing `-EADDRINUSE`. The test now matches **its own PID and topic names**, intentionally starts an unrelated local Publisher, and uses exception unwinding to reap the child on check failures. The Ubuntu VM `kcf_gateway_test --policy-network ./build-ux/gateway/kcf_gateway` then passed with exit code 0. A subsequent source-formatting fix removed a misleading-indentation warning; update was applied by the user in the VM.
+- VM systemd Gateway and OPI5+ systemd Gateway remain the **old distributed binaries**; both were left intact. Existing OPI5+ Gateway still has three explicit UGV02 allow prefixes. New Gateway default-open on OPI5+ ARM64 and security/migration behavior on actual LAN remain pending. Draft/Issue OPEN.

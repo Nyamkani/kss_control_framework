@@ -24,6 +24,7 @@ struct Options {
     std::string lock_file{"/run/kcf/gateway.lock"};
     kcf::network::NetworkInterfaceOptions nic;
     kcf::network::TopicExposurePolicy topic_policy;
+    bool topic_default_deny{false}; // Explicit opt-out of the default public Publisher policy.
     std::vector<kcf::network::TopicRateLimit> topic_rates;
     std::vector<std::string> remote_topics;
     std::vector<std::string> remote_parameters, remote_services, remote_actions;
@@ -72,6 +73,7 @@ inline Options Parse(int argc,char** argv) {
         const bool prefix=endpoints||clients||key=="--topic-allow-prefix"||key=="--topic-exclude-prefix"||key=="--topic-rate"||key=="--remote-topic"||key=="--topic-fresh-start";
         if(!prefix&&!seen.insert(key).second)throw std::invalid_argument("duplicate option");
         if(key=="--allow-loopback"){out.nic.allow_loopback=true;continue;}
+        if(key=="--topic-default-deny"){out.topic_default_deny=true;continue;}
         if(!prefix&&key!="--ipc-socket"&&key!="--lock-file"&&key!="--state-dir"&&key!="--interface"&&key!="--discovery-port"&&key!="--control-port"&&key!="--topic-port")throw std::invalid_argument("unknown option");
         if(++i==argc||!*argv[i])throw std::invalid_argument("missing option value");
         std::string value=argv[i];
@@ -120,6 +122,11 @@ inline Options Parse(int argc,char** argv) {
     for(const auto& r:out.topic_rates)if(!valid_name(r.name))throw std::invalid_argument("invalid Topic rate name");
     for(const auto& name:out.fresh_start_topics)if(!valid_name(name))throw std::invalid_argument("invalid fresh-start Topic name");
     for(const auto& name:out.remote_topics)if(!valid_name(name))throw std::invalid_argument("invalid remote Topic name");
+    // No allow list: make local Publishers remotely subscribable by default.
+    // A supplied allow list continues to mean an explicit, restrictive policy.
+    // Exclude-only settings deny named prefixes while exposing the remainder.
+    if(out.topic_policy.allow_prefixes.empty()&&!out.topic_default_deny)
+        out.topic_policy.allow_prefixes.push_back("/");
     out.topic_policy.enabled=!out.topic_policy.allow_prefixes.empty()||!out.topic_policy.exclude_prefixes.empty();
     const int policy_error=kcf::network::ValidateTopicExposurePolicy(out.topic_policy);
     if(policy_error)throw std::invalid_argument("Topic policy error="+std::to_string(policy_error));

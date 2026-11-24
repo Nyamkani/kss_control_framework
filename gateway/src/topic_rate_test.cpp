@@ -200,9 +200,9 @@ int main(int argc,char** argv){std::cout.setf(std::ios::unitbuf);alarm(180);
     if(argc==2&&std::string(argv[1])=="--watchdog") {WatchdogCases();return 0;}
     if(argc==2&&std::string(argv[1])=="--multi") {MultiRoutes();return 0;}
     if(argc==2&&std::string(argv[1])=="--rates") {fresh=true;Run(false);Run(true);publish_hz=200;Run(true);return 0;}
-    auto r=Parse({"x","--topic-rate","/robot/cmd_vel:100"});auto c=gateway::Config(r,{"lo","127.0.0.1",1,false});assert(!c.topics.enabled&&c.topics.max_hz==50&&c.topics.rate_limits[0].max_hz==100);
+    auto r=Parse({"x","--topic-rate","/robot/cmd_vel:100"});auto c=gateway::Config(r,{"lo","127.0.0.1",1,false});assert(c.topics.enabled&&c.topics.max_hz==50&&c.topics.rate_limits[0].max_hz==100);
     for(auto value:{"x:100","/x:0","/x:nan","/x:1001","/x:100tail"}){bool failed=false;try{Parse({"x","--topic-rate",value});}catch(...){failed=true;}assert(failed);}
     bool duplicate=false;try{Parse({"x","--topic-rate","/x:50","--topic-rate","/x:100"});}catch(...){duplicate=true;}assert(duplicate);
-    auto rx=gateway::Config(Parse({"x","--remote-topic","/robot/cmd_vel"}),{"lo","127.0.0.1",1,false});assert(rx.topics.enabled&&!rx.topic_observer_enabled&&rx.metadata.remote_topics.size()==1&&rx.parameter_set_clients.empty()&&rx.service_call_clients.empty()&&rx.action_goal_clients.empty());
-    std::cout<<"CLI rate replacement / explicit legacy receive / default deny PASS\n";Run(false);Run(true);fresh=true;Run(false);Run(true);FreshCases();
+    auto rx=gateway::Config(Parse({"x","--remote-topic","/robot/cmd_vel"}),{"lo","127.0.0.1",1,false});assert(rx.topics.enabled&&rx.topic_observer_enabled&&rx.metadata.remote_topics.size()==1&&rx.parameter_set_clients.empty()&&rx.service_call_clients.empty()&&rx.action_goal_clients.empty());
+    std::cout<<"CLI rate replacement / explicit legacy receive / default Publisher exposure PASS\n";Run(false);Run(true);fresh=true;Run(false);Run(true);FreshCases();
 }

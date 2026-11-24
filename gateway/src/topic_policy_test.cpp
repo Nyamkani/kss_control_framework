@@ -15,13 +15,29 @@ static gateway::Options Parse(std::vector<std::string> args){std::vector<char*> 
 template<class F> void Until(F f){auto end=std::chrono::steady_clock::now()+10s;while(!f()){assert(std::chrono::steady_clock::now()<end);std::this_thread::sleep_for(20ms);}}
 int main(int argc,char** argv){
     assert(!n::ControlConfig{}.topic_observer_enabled);
-    auto off=Parse({"gateway"});n::NetworkInterfaceSelection nic{"lo","127.0.0.1",1,false};assert(!gateway::Config(off,nic).topics.enabled&&!gateway::Config(off,nic).topic_observer_enabled);
+    auto defaults=Parse({"gateway"});n::NetworkInterfaceSelection nic{"lo","127.0.0.1",1,false};
+    assert(gateway::Config(defaults,nic).topics.enabled&&gateway::Config(defaults,nic).topic_observer_enabled);
+    assert(defaults.topic_policy.allow_prefixes.size()==1&&defaults.topic_policy.allow_prefixes.front()=="/");
+    n::NetworkScope scope{};
+    assert(n::EvaluateTopicExposure(gateway::Config(defaults,nic).metadata,"/custom/topic",n::EndpointRole::PROVIDER,scope)==0&&scope==n::NetworkScope::REMOTE);
+    assert(n::EvaluateTopicExposure(gateway::Config(defaults,nic).metadata,"/custom/topic",n::EndpointRole::CONSUMER,scope)==0&&scope==n::NetworkScope::LOCAL);
+    auto denied=Parse({"gateway","--topic-default-deny"});
+    assert(!gateway::Config(denied,nic).topics.enabled&&!gateway::Config(denied,nic).topic_observer_enabled);
+    assert(n::EvaluateTopicExposure(gateway::Config(denied,nic).metadata,"/custom/topic",n::EndpointRole::PROVIDER,scope)==0&&scope==n::NetworkScope::LOCAL);
+    auto opt_in=Parse({"gateway","--topic-default-deny","--topic-allow-prefix","/safe"});
+    assert(gateway::Config(opt_in,nic).topics.enabled&&opt_in.topic_policy.allow_prefixes.size()==1);
+    assert(n::EvaluateTopicExposure(gateway::Config(opt_in,nic).metadata,"/safe/data",n::EndpointRole::PROVIDER,scope)==0&&scope==n::NetworkScope::REMOTE);
+    assert(n::EvaluateTopicExposure(gateway::Config(opt_in,nic).metadata,"/other/data",n::EndpointRole::PROVIDER,scope)==0&&scope==n::NetworkScope::LOCAL);
     auto options=Parse({"gateway","--topic-allow-prefix","/policy","--topic-allow-prefix","/extra/","--topic-exclude-prefix","/policy/private"});
     auto config=gateway::Config(options,nic);assert(config.topics.enabled&&config.topics.max_hz==50&&config.metadata.remote_topics.empty());
     assert(config.parameter_set_clients.empty()&&config.service_call_clients.empty()&&config.action_goal_clients.empty()&&config.action_cancel_clients.empty()&&config.descriptor_query_clients.empty());
     for(auto args:std::vector<std::vector<std::string>>{{"x","--topic-allow-prefix","bad"},{"x","--topic-allow-prefix","/a","--topic-allow-prefix","/a/"},{"x","--topic-exclude-prefix"}}){bool bad=false;try{Parse(args);}catch(...){bad=true;}assert(bad);}
-    auto excluded=Parse({"x","--topic-exclude-prefix","/policy"});assert(!gateway::Config(excluded,nic).topics.enabled&&!gateway::Config(excluded,nic).topic_observer_enabled);
-    std::cout<<"Gateway repeated Prefix CLI/validation/default deny/rate/Config PASS\n";
+    auto excluded=Parse({"x","--topic-exclude-prefix","/policy"});
+    assert(gateway::Config(excluded,nic).topics.enabled&&gateway::Config(excluded,nic).topic_observer_enabled);
+    assert(n::EvaluateTopicExposure(gateway::Config(excluded,nic).metadata,"/policy/private",n::EndpointRole::PROVIDER,scope)==0&&scope==n::NetworkScope::LOCAL);
+    assert(n::EvaluateTopicExposure(gateway::Config(excluded,nic).metadata,"/public/data",n::EndpointRole::PROVIDER,scope)==0&&scope==n::NetworkScope::REMOTE);
+    assert(n::EvaluateTopicExposure(config.metadata,"/outside/data",n::EndpointRole::PROVIDER,scope)==0&&scope==n::NetworkScope::LOCAL);
+    std::cout<<"Gateway default public/restrictive allow/exclude/explicit deny/rate/Config PASS\n";
     if(argc==1)return 0;
     assert(argc==2&&std::string(argv[1])=="--network");
     config.discovery.host.bytes[0]=10;config.discovery.boot_id.bytes[0]=42;config.discovery.port=48651;

@@ -1,6 +1,7 @@
 #pragma once
 #include "kcf/network/topic_data_plane.hpp"
 #include <chrono>
+#include <cerrno>
 #include <cmath>
 #include <cstdint>
 

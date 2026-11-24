@@ -26,6 +26,7 @@ jobs:
           ./build/gateway/kcf_gateway --help | grep -- '--action-status-mode'
           ./build/gateway/kcf_gateway --help | grep -- '--topic-default-deny'
           timeout 120s ./build/gateway/kcf_gateway_test
+          timeout 120s ./build/gateway/kcf_gateway_test --policy-network ./build/gateway/kcf_gateway
           timeout 120s ./build/gateway/kcf_gateway_topic_policy_test
           timeout 120s ./build/gateway/kcf_gateway_lifecycle_test
           timeout 120s ./build/gateway/kcf_gateway_topic_rate_test

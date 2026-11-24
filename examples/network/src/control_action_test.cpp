@@ -80,9 +80,10 @@ void Integration(const char* exe){auto port=Port();pid_t children[2];std::string
     assert(feedbacks>=2&&Count(first.action->Snapshot().result)==10&&first.action->Snapshot().state==kcf::ActionState::SUCCEEDED);
     // Repeat the completed-goal path after switching the provider Gateway
     // from Event notification to a slower 50ms scheduled Feedback poll.
+    const auto previous_session=Peer(b,10).session_id;
     a.Stop();ca.action_status_mode=n::ActionStatusMode::SCHEDULED_POLL;
     ca.action_status_poll_interval=50ms;assert(!a.Start(ca));
-    Until([&]{auto p=Peer(b,10);return p.metadata_ready&&p.state==n::PeerState::ONLINE;});
+    Until([&]{auto p=Peer(b,10);return p.metadata_ready&&p.state==n::PeerState::ONLINE&&p.session_id!=previous_session;});
     auto scheduled=One(start(Endpoint(endpoints[0]),3));assert(!scheduled.error);
     Until([&]{return scheduled.action->Snapshot().terminal;});
     assert(scheduled.action->Snapshot().state==kcf::ActionState::SUCCEEDED&&Count(scheduled.action->Snapshot().result)==6);

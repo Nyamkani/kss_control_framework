@@ -55,6 +55,17 @@ static void Unit() {
     assert(config.metadata.runtime_pids.empty()&&config.metadata.remote_topics.empty()&&config.metadata.remote_parameters.empty()&&config.metadata.remote_services.empty()&&config.metadata.remote_actions.empty());
     assert(config.parameter_get_clients.empty()&&config.parameter_set_clients.empty()&&config.service_call_clients.empty()&&config.action_goal_clients.empty()&&config.action_cancel_clients.empty()&&config.descriptor_query_clients.empty());
     assert(config.topics.enabled&&config.topic_observer_enabled&&!config.diagnostics_enabled);
+    assert(defaults.action_status_mode==n::ActionStatusMode::SCHEDULED_POLL&&defaults.action_status_poll_ms==10);
+    auto action_options=parse({"x","--action-status-mode","event","--action-status-poll-ms","50"});
+    auto action_config=gateway::Config(action_options,selected);
+    assert(action_config.action_status_mode==n::ActionStatusMode::EVENT&&action_config.action_status_poll_interval==50ms);
+    for(auto args:std::vector<std::vector<std::string>>{
+        {"x","--action-status-mode","other"},{"x","--action-status-poll-ms","0"},
+        {"x","--action-status-poll-ms","1001"},{"x","--action-status-poll-ms","5ms"},
+        {"x","--action-status-poll-ms","-10"}}){
+        bool rejected=false;try{parse(args);}catch(...){rejected=true;}assert(rejected);
+    }
+
     std::cout<<"Gateway configuration/auto-selection/ambiguity/override/Topic default public/Control deny PASS\n";
 }
 static void LockTests() {

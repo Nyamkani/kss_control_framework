@@ -158,6 +158,59 @@ int IntrospectionClient::ListSupervisors(std::vector<SupervisorInfo>& supervisor
 
 namespace kcf
 {
+int IntrospectionClient::GetSupervisorDiagnostics(std::int32_t pid,std::uint64_t ticks,SupervisorDiagnosticsInfo& output)
+{
+    try
+    {
+        if(pid<=0||!ticks)return -EINVAL;
+        std::uint64_t actual=0;
+        if(!detail::ReadProcessIdentity(pid,actual)||actual!=ticks)return -ENOENT;
+        SharedChannel<SupervisorDiagnosticsInfo> storage;
+        const int opened=storage.Open(detail::SupervisorDiagnosticsRegistryName(pid,ticks));
+        if(opened)return opened;
+        SupervisorDiagnosticsInfo snapshot{};std::uint64_t sequence=0;
+        const int read=storage.ReadLatestSnapshot(snapshot,sequence);
+        (void)storage.Close();
+        if(read)return read;
+        if(snapshot.protocol_version!=1||snapshot.struct_size!=sizeof(snapshot)||
+           snapshot.pid!=pid||snapshot.process_start_ticks!=ticks||
+           snapshot.element_count>MAX_SUPERVISOR_ELEMENTS||
+           snapshot.history_count>MAX_SUPERVISOR_DIAGNOSTIC_HISTORY)return -EPROTO;
+        if(static_cast<unsigned>(snapshot.application_state)>static_cast<unsigned>(ApplicationState::SHUTTING_DOWN))
+            return -EPROTO;
+        for(std::uint32_t i=0;i<snapshot.element_count;++i)
+        {
+            const auto& item=snapshot.elements[i];
+            if(!std::memchr(item.name,0,sizeof(item.name))||
+               item.pid==0||item.pid< -1||
+               item.running>1||item.failure_detected>1||item.exit_info_available>1||
+               static_cast<unsigned>(item.failure_kind)>static_cast<unsigned>(ElementFailureKind::HEARTBEAT_STALL)||
+               static_cast<unsigned>(item.termination_kind)>static_cast<unsigned>(ProcessTerminationKind::SIGNALED))
+                return -EPROTO;
+        }
+        std::uint64_t previous_sequence=0;
+        for(std::uint32_t i=0;i<snapshot.history_count;++i)
+        {
+            const auto& item=snapshot.history[i];
+            if(!std::memchr(item.element_name,0,sizeof(item.element_name))||
+               !item.sequence||item.sequence<=previous_sequence||
+               item.sequence>snapshot.last_error_sequence||item.generation>snapshot.generation||
+               item.pid<=0||item.exit_info_available>1||item.runtime_error_observed>1||
+               static_cast<unsigned>(item.failure_kind)>static_cast<unsigned>(ElementFailureKind::HEARTBEAT_STALL)||
+               static_cast<unsigned>(item.termination_kind)>static_cast<unsigned>(ProcessTerminationKind::SIGNALED))
+                return -EPROTO;
+            previous_sequence=item.sequence;
+        }
+        if(!detail::ReadProcessIdentity(pid,actual)||actual!=ticks)return -ENOENT;
+        output=snapshot;return 0;
+    }
+    catch(const std::bad_alloc&){return -ENOMEM;}
+    catch(...){return -EIO;}
+}
+}
+
+namespace kcf
+{
 int IntrospectionClient::ListTypes(const RuntimeInfo& runtime, std::vector<TypeDescriptor>& types)
 {
     try {

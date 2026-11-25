@@ -142,6 +142,7 @@ int main(int argc,char** argv){
     assert(control.QueryTypeDescriptor(endpoint.identity,peer().session_id,endpoint.name,n::DescriptorRole::VALUE,endpoint.value_type,schema)!=0);
     // No Topic CLI policy: an unrelated Publisher must be discoverable and
     // remotely subscribable through the real loopback data plane.
+    std::cerr<<"[default-open] stop restricted Gateway\\n";
     const auto prior_session=peer().session_id;
     sender.Stop();
     auto default_config=gateway::Config(defaults,nic);
@@ -152,9 +153,12 @@ int main(int argc,char** argv){
     assert(default_config.parameter_set_clients.empty()&&default_config.service_call_clients.empty()
         &&default_config.action_goal_clients.empty()&&default_config.action_cancel_clients.empty());
     assert(sender.Start(default_config)==0);
+    std::cerr<<"[default-open] waiting empty metadata new session\\n";
     Until([&]{return peer().metadata_ready&&peer().session_id!=prior_session&&peer().endpoints.empty();});
+    std::cerr<<"[default-open] new session ready\\n";
     kcf::Publisher<Value> default_publisher;
     assert(default_publisher.Create("/default_open/value")==0);
+    std::cerr<<"[default-open] publisher created, waiting metadata\\n";
     n::NetworkEndpointMetadata default_endpoint;
     Until([&]{
         if(!peer().metadata_ready||peer().endpoints.size()!=1)return false;
@@ -164,11 +168,14 @@ int main(int argc,char** argv){
         default_endpoint=e;
         return true;
     });
+    std::cerr<<"[default-open] metadata ready, query descriptor\\n";
     assert(control.QueryTypeDescriptor(default_endpoint.identity,peer().session_id,
         default_endpoint.name,n::DescriptorRole::VALUE,default_endpoint.value_type,schema)==0);
     std::shared_ptr<n::RemoteTopicSubscription> default_handle;
+    std::cerr<<"[default-open] descriptor ready, subscribe\\n";
     assert(client.Subscribe(default_endpoint.identity,peer().session_id,
         default_endpoint.name,default_endpoint.value_type,default_handle,2s)==0);
+    std::cerr<<"[default-open] subscribed, wait payload\\n";
     Until([&]{assert(default_publisher.Publish({456,true,2.5})==0);return default_handle->Snapshot().has_value;});
     kcf::DynamicPayload default_decoded;
     assert(n::DecodeParameterValue(kcf::TypeDescriptorTraits<Value>::Get(),

@@ -4,9 +4,13 @@
 #include "kcf/network/topic_protocol.hpp"
 #include "kcf/network/detail/proxy_ownership.hpp"
 #include <optional>
+#include <chrono>
 namespace kcf::network {
 struct TopicTypeBinding {std::string name;TypeDescriptor descriptor;};
 struct TopicRateLimit {std::string name;double max_hz{50};};
+// Sender-local payload timestamp: uint64 CLOCK_MONOTONIC nanoseconds sampled
+// immediately before Publish, NOT SHM commit time or a remote Host clock.
+struct TopicTimestampTolerance {std::string name,field;std::chrono::microseconds tolerance{0};};
 class RemoteTopicSubscription;
 class RemoteTopicClient;
 struct TopicConfig {
@@ -21,6 +25,9 @@ struct TopicConfig {
     std::optional<std::uint16_t> receive_port; // absent => legacy port; 0 => ephemeral
     // Exact opt-in names: every new send route waits for a commit after its baseline.
     std::vector<std::string> fresh_start_topics;
+    // Exact opt-in names only; tolerance must be >0 and <= half the Topic period.
+    // A named field with a missing/incompatible descriptor rejects that route.
+    std::vector<TopicTimestampTolerance> timestamp_tolerances;
 };
 enum class TopicRouteState : std::uint8_t { WAITING_SUBSCRIBER, ACTIVE, REJECTED, CLOSED };
 struct TopicRouteInfo {

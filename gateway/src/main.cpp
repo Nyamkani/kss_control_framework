@@ -15,10 +15,11 @@ int Error(const char* stage,int code){std::cerr<<"[Gateway] "<<stage<<" error="<
 int main(int argc,char** argv) {
     std::cout.setf(std::ios::unitbuf);
     if(argc==2&&std::string(argv[1])=="--help") {
-        std::cout<<"kcf_gateway [--state-dir DIR] [--lock-file PATH] [--ipc-socket PATH] [--interface NAME] [--discovery-port N] [--control-port N] [--topic-port N] [--action-status-mode poll|event] [--action-status-poll-ms N] [--allow-loopback] [--topic-default-deny] [--topic-allow-prefix PREFIX] [--topic-exclude-prefix PREFIX] [--topic-rate TOPIC:HZ] [--topic-fresh-start TOPIC] [--remote-topic TOPIC]\n"
+        std::cout<<"kcf_gateway [--state-dir DIR] [--lock-file PATH] [--ipc-socket PATH] [--interface NAME] [--discovery-port N] [--control-port N] [--topic-port N] [--action-status-mode poll|event] [--action-status-poll-ms N] [--allow-loopback] [--topic-default-deny] [--topic-allow-prefix PREFIX] [--topic-exclude-prefix PREFIX] [--topic-rate TOPIC:HZ] [--topic-fresh-start TOPIC] [--topic-timestamp-tolerance TOPIC:FIELD:US] [--remote-topic TOPIC]\n"
                  <<"State directory must already exist; default /var/lib/kcf. Test loopback requires explicit interface.\n"
                  <<"Account-owned runtime lock: /run/kcf/gateway.lock; parent must exist and be protected. Never unlinked.\n"
                  <<"Metadata ON; Local Topic Publishers are exposed to Remote Subscribers by default on trusted LAN. Explicit allow-prefix limits exposure; exclude-prefix takes precedence; --topic-default-deny closes defaults. Remote Control grants remain OFF; Diagnostics OFF. Network recovery enabled; no Control request replay.\n";
+        std::cout<<"Timestamp tolerance is sender-local and opt-in: FIELD must be a scalar uint64 CLOCK_MONOTONIC nanoseconds sampled immediately before Publish. US must be 1..1000000 and <= half the Topic period; invalid fields reject the route. No SHM commit timestamp is inferred.\n";
         std::cout<<"Remote Action status: poll (default 10 ms, configurable 1..1000 ms) or event (Local SHM notify); terminal Result check remains separate (~50 ms).\n";
         std::cout<<"Fresh-start waits for a new Local Publish on every new route; it grants no exposure. Topic rates (0.1..1000 Hz) replace the default 50 Hz per exact name; they grant no access.\n"
                  <<"--remote-topic opts into the legacy exact-name REMOTE list (both roles), including reception; requires a local consumer descriptor/bootstrap. Publisher prefixes alone never opt in reception.\n";

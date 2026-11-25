@@ -31,6 +31,7 @@ struct Options {
     std::vector<kcf::network::HostIdentity> descriptor_query_clients, parameter_get_clients,
         parameter_set_clients, service_call_clients, action_goal_clients, action_cancel_clients;
     std::vector<std::string> fresh_start_topics;
+    std::vector<kcf::network::TopicTimestampTolerance> timestamp_tolerances;
     kcf::network::ActionStatusMode action_status_mode{kcf::network::ActionStatusMode::SCHEDULED_POLL};
     std::uint32_t action_status_poll_ms{10};
     std::uint16_t discovery{37651},control{39001},topic{37652};
@@ -72,7 +73,7 @@ inline Options Parse(int argc,char** argv) {
         if(key=="--service-call-client")clients=&out.service_call_clients;
         if(key=="--action-goal-client")clients=&out.action_goal_clients;
         if(key=="--action-cancel-client")clients=&out.action_cancel_clients;
-        const bool prefix=endpoints||clients||key=="--topic-allow-prefix"||key=="--topic-exclude-prefix"||key=="--topic-rate"||key=="--remote-topic"||key=="--topic-fresh-start";
+        const bool prefix=endpoints||clients||key=="--topic-allow-prefix"||key=="--topic-exclude-prefix"||key=="--topic-timestamp-tolerance"||key=="--topic-rate"||key=="--remote-topic"||key=="--topic-fresh-start";
         if(!prefix&&!seen.insert(key).second)throw std::invalid_argument("duplicate option");
         if(key=="--allow-loopback"){out.nic.allow_loopback=true;continue;}
         if(key=="--topic-default-deny"){out.topic_default_deny=true;continue;}
@@ -100,6 +101,16 @@ inline Options Parse(int argc,char** argv) {
             if(used!=number.size()||!std::isfinite(hz)||hz<0.1||hz>1000)throw std::invalid_argument("Topic Hz must be 0.1..1000");
             for(const auto& r:out.topic_rates)if(r.name==name)throw std::invalid_argument("duplicate Topic rate");
             out.topic_rates.push_back({name,hz});
+        }
+        if(key=="--topic-timestamp-tolerance") {
+            const auto last=value.rfind(':'), first=value.find(':');
+            if(first==std::string::npos||last==first)throw std::invalid_argument("expected Topic:Field:microseconds");
+            const auto name=value.substr(0,first),field=value.substr(first+1,last-first-1),number=value.substr(last+1);
+            if(field.empty()||field.size()>95||field.find_first_of(" :\t\r\n")!=std::string::npos||number.empty()||number.find_first_not_of("0123456789")!=std::string::npos)
+                throw std::invalid_argument("invalid Topic timestamp tolerance");
+            const auto us=std::stoull(number);if(!us||us>1000000)throw std::invalid_argument("tolerance must be 1..1000000 us and <= half period");
+            for(const auto& t:out.timestamp_tolerances)if(t.name==name)throw std::invalid_argument("duplicate Topic timestamp tolerance");
+            out.timestamp_tolerances.push_back({name,field,std::chrono::microseconds(us)});
         }
         if(key=="--topic-fresh-start") {
             if(std::find(out.fresh_start_topics.begin(),out.fresh_start_topics.end(),value)!=out.fresh_start_topics.end())throw std::invalid_argument("duplicate fresh-start Topic");
@@ -131,7 +142,8 @@ inline Options Parse(int argc,char** argv) {
     if(out.discovery==out.control||out.discovery==out.topic||out.control==out.topic)throw std::invalid_argument("UDP port numbers must differ");
     if(out.nic.allow_loopback && out.nic.interface_name.empty())throw std::invalid_argument("--allow-loopback requires --interface");
     auto valid_name=[](const std::string& name){return !name.empty()&&name.front()=='/'&&name.size()<=240&&name.find_first_of(" \t\r\n")==std::string::npos;};
-    if(out.topic_rates.size()>64||out.remote_topics.size()>64||out.fresh_start_topics.size()>64)throw std::invalid_argument("too many Topic settings");
+    if(out.timestamp_tolerances.size()>64||out.topic_rates.size()>64||out.remote_topics.size()>64||out.fresh_start_topics.size()>64)throw std::invalid_argument("too many Topic settings");
+    for(const auto& t:out.timestamp_tolerances)if(!valid_name(t.name))throw std::invalid_argument("invalid Topic timestamp name");
     for(const auto& r:out.topic_rates)if(!valid_name(r.name))throw std::invalid_argument("invalid Topic rate name");
     for(const auto& name:out.fresh_start_topics)if(!valid_name(name))throw std::invalid_argument("invalid fresh-start Topic name");
     for(const auto& name:out.remote_topics)if(!valid_name(name))throw std::invalid_argument("invalid remote Topic name");
@@ -167,6 +179,7 @@ inline kcf::network::ControlConfig Config(const Options& options,const kcf::netw
     config.action_cancel_clients=options.action_cancel_clients;
     config.topics.rate_limits=options.topic_rates;
     config.topics.fresh_start_topics=options.fresh_start_topics;
+    config.topics.timestamp_tolerances=options.timestamp_tolerances;
     config.topics.enabled=config.topics.enabled||!options.remote_topics.empty();
     return config; // Rate settings do not grant exposure or Control permissions.
 }

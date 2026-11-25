@@ -78,8 +78,11 @@ jobs:
 
           test "$(dpkg-deb -f "$deb" Package)" = kcf-core
           test "$(dpkg-deb -f "$deb" Architecture)" = "${{ matrix.arch }}"
+          version="$(sed -nE             's/^set\(CPACK_PACKAGE_VERSION "([^"]+)"\)$/\1/p'             build-cd/CPackConfig.cmake)"
+          test -n "$version"
+
           test "$(dpkg-deb -f "$deb" Version)" = \
-            "5.6.1-1+ubuntu${{ matrix.os_version }}"
+            "${version}-1+ubuntu${{ matrix.os_version }}"
 
           dpkg-deb --contents "$deb" > packages/CONTENTS.txt
           grep -q './usr/bin/kcf_gateway' packages/CONTENTS.txt

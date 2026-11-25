@@ -16,6 +16,22 @@
 #include <sys/wait.h>
 #include <arpa/inet.h>
 #include <poll.h>
+#include <sys/syscall.h>
+// Test-only interposition: real directory flock contention at the first
+// nonblocking registry creation. No architecture-specific syscall numbers.
+std::atomic<bool> contend_registry{false};
+std::atomic<unsigned> registry_contentions{0};
+extern "C" int flock(int fd,int operation) {
+    if((operation&LOCK_NB) && contend_registry.exchange(false)) {
+        const int held=open("/dev/shm",O_RDONLY|O_DIRECTORY|O_CLOEXEC);assert(held>=0);
+        assert(syscall(SYS_flock,held,LOCK_EX|LOCK_NB)==0);
+        const int result=syscall(SYS_flock,fd,operation), saved=errno;
+        assert(syscall(SYS_flock,held,LOCK_UN)==0);close(held);
+        assert(result==-1 && (saved==EAGAIN || saved==EWOULDBLOCK));
+        ++registry_contentions;errno=saved;return result;
+    }
+    return syscall(SYS_flock,fd,operation);
+}
 namespace n=kcf::network;
 using namespace std::chrono_literals;
 n::HostIdentity Id(unsigned char x){n::HostIdentity id;id.bytes[0]=x;return id;}
@@ -46,12 +62,14 @@ n::ActionBatchResult Result(std::future<n::ActionBatchResult> f){assert(f.wait_f
 n::ParameterEndpointResult One(std::future<n::ActionBatchResult> f){auto r=Result(std::move(f));static unsigned step=0;++step;if(r.error||r.endpoints.size()!=1)std::cerr<<"One step="<<step<<" error="<<r.error<<" endpoints="<<r.endpoints.size()<<std::endl;assert(!r.error&&r.endpoints.size()==1);return r.endpoints[0];}
 volatile std::sig_atomic_t stopping=0,remove_action=0;
 void Signal(int s){if(s==SIGUSR1)remove_action=1;else stopping=1;}
-int Owner(std::uint16_t port){alarm(120);std::signal(SIGTERM,Signal);std::signal(SIGUSR1,Signal);
+int Owner(std::uint16_t port,bool contended=false){alarm(120);std::signal(SIGTERM,Signal);std::signal(SIGUSR1,Signal);
     kcf::detail::BeginRuntimeIntrospection(kcf::ExecutionMode::STANDALONE);
     kcf::ServiceServer server;assert(!server.Create(port));
     kcf::ActionServer<Value,Value,Value> action,local;std::atomic<int> count{0};
     const auto name="/kcf_action_"+std::to_string(getpid());
+    if(contended)contend_registry=true;
     assert(!action.Create(server,{1,2,3},name,[&](std::uint64_t,const Value& value){if(value.count<0)return -EINVAL;if(value.count==99)std::this_thread::sleep_for(350ms);count=value.count;return 0;}));
+    if(contended)assert(!contend_registry && registry_contentions==1);
     assert(!local.Create(server,{4,5,6},name+"_local",[](std::uint64_t,const Value&){return -EINVAL;}));
     assert(!server.Start());kcf::detail::UpdateRuntimeIntrospection(kcf::ProcessState::RUNNING,0);
     int ticks=0;
@@ -65,6 +83,39 @@ int Owner(std::uint16_t port){alarm(120);std::signal(SIGTERM,Signal);std::signal
         std::this_thread::sleep_for(10ms);
     }
     server.Stop();action.Unlink();local.Unlink();action.Close();local.Close();kcf::detail::EndRuntimeIntrospection(kcf::ProcessState::STOPPED,0);return 0;
+}
+void RegistrationContention(int disposition=0) {
+    const auto contentions_before=registry_contentions.load();
+    kcf::detail::BeginRuntimeIntrospection(kcf::ExecutionMode::STANDALONE);
+    kcf::ServiceServer server;assert(!server.Create(Port()));
+    kcf::ActionServer<Value,Value,Value> first,second;
+    const auto name="/action_registration_"+std::to_string(getpid());
+    contend_registry=true;
+    assert(!first.Create(server,{1,2,3},name,[](std::uint64_t,const Value&){return 0;}));
+    assert(!contend_registry && registry_contentions==contentions_before+1);
+    if(disposition==1){first.Unlink();first.Close();}
+    if(disposition==2)kcf::detail::EndRuntimeIntrospection(kcf::ProcessState::STOPPED,0);
+    assert(!second.Create(server,{4,5,6},name+"_local",[](std::uint64_t,const Value&){return 0;}));
+    assert(!server.Start());kcf::detail::UpdateRuntimeIntrospection(kcf::ProcessState::RUNNING,0);
+    kcf::RuntimeInfo runtime;runtime.pid=getpid();assert(kcf::detail::ReadProcessIdentity(runtime.pid,runtime.process_start_ticks));
+    kcf::IntrospectionClient client;std::vector<kcf::ActionInfo> actions;
+    if(disposition==2){
+        std::this_thread::sleep_for(100ms);
+        assert(client.ListActions(runtime,actions)==-ENOENT);
+        server.Stop();first.Unlink();second.Unlink();first.Close();second.Close();
+        std::cout<<"Action pending recovery canceled by End PASS\n";return;
+    }
+    const std::size_t expected=disposition==1?1:2;
+    Until([&]{return !client.ListActions(runtime,actions)&&actions.size()==expected;},"registration-contention-recovery",[&]{
+        std::cerr<<"Local Create succeeded for both actions; ListActions count="<<actions.size()<<std::endl;
+        for(const auto& action:actions)std::cerr<<"registered="<<action.name<<std::endl;
+    });
+    n::MetadataConfig config;config.host=Id(1);config.boot_id=Id(42);config.runtime_pids={getpid()};config.remote_actions={name};
+    std::vector<n::LocalEndpoint> metadata;assert(!n::CollectLocalMetadata(config,metadata)&&metadata.size()==expected);
+    if(disposition==1)assert(actions[0].name==name+"_local");
+    server.Stop();first.Unlink();second.Unlink();first.Close();second.Close();
+    kcf::detail::EndRuntimeIntrospection(kcf::ProcessState::STOPPED,0);
+    std::cout<<"Action real directory contention / successful Local Create / registry and Metadata recovery PASS\n";
 }
 void Codec(){n::ControlFrame f;f.operation=n::ControlMessage::ACTION_GOAL_REQUEST;f.source={Id(1),Id(42),123,1};f.session_id=1;f.request_id=2;f.endpoint={{Id(2),Id(42),321,1},1ull<<62};f.name="/action";f.type=Type();f.feedback_type=Type();f.response_type=Type();f.goal={f.source,9,1};f.payload=Bytes(6);f.timeout_ms=100;
     std::vector<std::uint8_t> bytes;assert(!n::EncodeControlFrame(f,bytes)&&bytes.size()==292+f.name.size()+13);n::ControlFrame out;assert(!n::DecodeControlFrame(bytes.data(),bytes.size(),out)&&out.goal==f.goal);
@@ -81,8 +132,8 @@ void Codec(){n::ControlFrame f;f.operation=n::ControlMessage::ACTION_GOAL_REQUES
     }
     std::cout<<"Action operations and malformed frame/identity/size checks PASS\n";
 }
-void Integration(const char* exe){auto port=Port();pid_t children[2];std::string names[2];
-    for(int i=0;i<2;++i){auto local=std::to_string(Port());children[i]=fork();assert(children[i]>=0);if(!children[i]){execl(exe,exe,"--owner",local.c_str(),nullptr);_exit(127);}names[i]="/kcf_action_"+std::to_string(children[i]);}
+void Integration(const char* exe,bool contended=false){auto port=Port();pid_t children[2];std::string names[2];
+    for(int i=0;i<2;++i){auto local=std::to_string(Port());children[i]=fork();assert(children[i]>=0);if(!children[i]){execl(exe,exe,contended?"--owner-contended":"--owner",local.c_str(),nullptr);_exit(127);}names[i]="/kcf_action_"+std::to_string(children[i]);}
     n::ControlNode a,b,c;
     auto diagnose=[&] {
         kcf::IntrospectionClient introspection;std::vector<kcf::RuntimeInfo> runtimes;
@@ -215,4 +266,4 @@ void Correlation(){auto port=Port();int listener=-1;auto tcp=Port(SOCK_STREAM,&l
     auto fifth=start();assert(!fifth.error);Until([&]{return fifth.action->Snapshot().communication_lost;});assert(client.GetStats().responses_ignored>=4);
     worker.join();client.Stop();server.Stop();close(listener);std::cout<<"request/goal correlation, cancel_unknown, late events, partial/malformed frame, reconnect isolation PASS\n";
 }
-int main(int argc,char** argv){if(argc==3&&std::string(argv[1])=="--owner")return Owner(std::stoi(argv[2]));std::cout.setf(std::ios::unitbuf);alarm(90);Codec();Gates();Integration(argv[0]);Correlation();std::cout<<"Remote Action PASS\n";}
+int main(int argc,char** argv){if(argc==3&&(std::string(argv[1])=="--owner"||std::string(argv[1])=="--owner-contended"))return Owner(std::stoi(argv[2]),std::string(argv[1])=="--owner-contended");std::cout.setf(std::ios::unitbuf);alarm(90);if(argc==2&&std::string(argv[1])=="--registration-contention"){for(int i=0;i<3;++i)RegistrationContention(i);return 0;}if(argc==2&&std::string(argv[1])=="--contended-integration"){Integration(argv[0],true);return 0;}Codec();for(int i=0;i<3;++i)RegistrationContention(i);Gates();Integration(argv[0]);Integration(argv[0],true);Correlation();std::cout<<"Remote Action PASS\n";}

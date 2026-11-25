@@ -1,24 +1,55 @@
-# KSS Control Framework (KCF) v5.6.1 — 개발자 사용 매뉴얼
+# KSS Control Framework (KCF) v5.6.2 — 개발자 사용 매뉴얼
 
-KCF는 Linux C++17 Application의 프로세스 실행·주기·감시와 IPC를 제공합니다.
-이 문서는 저장소 루트에서 예제를 실행하고, 같은 구조로 ProcessElement와 Bringup을 작성하는 순서로 읽습니다.
-장치 Driver, 알고리즘, FSM, 데이터 유효성 판단과 안전 정책은 Application이 구현합니다.
+KCF는 Linux C++17 Application의 ProcessElement/Bringup·Supervisor 실행 및 감시,
+Local IPC와 Host Gateway 기반 원격 관측·제어 기반을 제공합니다. 장치 드라이버,
+알고리즘, FSM과 실제 장치의 안전 정책은 Application 책임입니다.
 
-## 버전과 사용 범위
+## 현재 배포 및 개발 기준 (2026-11-26)
 
-현재 로컬 `dev`의 버전은 **Framework v5.6.1**이며 Release 준비 중입니다.
-기존 [v5.6.0 Pre-release](https://github.com/Nyamkani/kss_control_framework/releases/tag/v5.6.0)의
-배포·검증 이력과 이번 미커밋 변경의 검증 범위는 구분합니다.
-루트 [CMakeLists.txt](CMakeLists.txt)의 project version과
-[FrameworkVersion](kcf/include/kcf/network/compatibility.hpp)의 기본값은 모두 **5.6.1**입니다.
-`NETWORK_PROTOCOL` 정책은 Network major와 capability를 검사하고,
-`EXACT_FRAMEWORK_VERSION`은 Framework 버전까지 일치해야 합니다.
-NetworkProtocol 1.0 / Discovery v2 / Control TCP v1 / Topic wire v1은 별도 버전입니다.
+- **Core v5.6.2:** [GitHub Pre-release](https://github.com/Nyamkani/kss_control_framework/releases/tag/v5.6.2)
+  ([Release Workflow SUCCESS](https://github.com/Nyamkani/kss_control_framework/actions/runs/45684236886)).
+- **KCF Tools v0.16.0:** [별도 GUI 도구 Release](https://github.com/Nyamkani/kcf_tools/releases/tag/v0.16.0).
+- Ubuntu 24.04/26.04 × AMD64/ARM64: 네 환경의 Native DEB 빌드/패키지 검증 및 SHA256SUMS 배포.
+  이 결과를 네 환경 모두에서의 실제 설치·하드웨어 운영 성공으로 해석하지 않습니다.
+- FrameworkVersion은 5.6.2이고 NetworkProtocol 1.0 / Discovery v2 /
+  Control TCP v1 / Topic wire v1의 주요 버전은 유지합니다.
+  `EXACT_FRAMEWORK_VERSION` 정책은 5.6.1과 5.6.2를 다른 버전으로 판단합니다.
+  정적 링크된 Application·Tools는 Core 갱신 시 재빌드해야 합니다.
+- 이번 README/Changelog 갱신은 **문서 전용**입니다. Workflow, CMake, Runtime 기능,
+  기존 공개 태그/패키지 또는 Release 자산을 변경하지 않습니다.
 
-v5.5 이하 변경·커밋 이력은 [Changelog](Changelog.md), 당시 검증·Known Issue는
-[검증 및 제한](docs/06_VERIFICATION_AND_LIMITATIONS.md)을 참조합니다.
-Framework와 별도 KCF Tools의 버전은 독립적입니다. 과거 Tool 연동 PASS를 v5.6 재검증으로 해석하지 않습니다.
-이 README 정리는 새 tag/Release나 새 회귀·Benchmark 결과를 선언하지 않습니다.
+## v5.6.2의 주요 변경
+
+- Gateway: 별도 Topic allow-prefix가 없으면 유효 Local Publisher를 원격 구독 가능하게 공개.
+  기존 `--topic-allow-prefix`를 지정한 운영자는 해당 범위만 공개하며,
+  `--topic-exclude-prefix`가 우선합니다. `--topic-default-deny`로 비공개 기본 모드를 선택합니다.
+  공개/읽기와 Parameter/Service/Action 제어 권한은 분리되며 제어는 기본 거부입니다.
+  공개 Topic에 민감 데이터가 포함되지 않도록 신뢰 LAN과 정책을 확인해야 합니다.
+- Remote Action: Gateway `--action-status-mode poll|event`, `--action-status-poll-ms`로
+  상태 관측 방식을 선택합니다. 기본은 기존 10 ms Scheduled Poll이며 최종 Result 확인은 별도 경로입니다.
+- Supervisor: Element별 상태·최근 오류 이력을 조회하는 read-only 진단 경로가 추가됐습니다.
+- CLI: `kcf status`, `kcf topic list`, `kcf network status`, `kcf doctor`의 기본 조회 기능을 제공합니다.
+  `topic info/echo/hz`, 완전한 doctor/JSON 명세 등은 아직 미구현입니다.
+- Topic Diagnostics: Route counter delta/Hz와 근거 기반 Topic 실패 원인 진단의 1차 API가 추가됐습니다.
+  Source Publish Hz·전체 Consumer/Freshness를 모두 계측하는 완성형 시스템은 아닙니다.
+- Topic별 Timestamp Tolerance: 명시적 opt-in, 기본 OFF. 100 Hz 항상 도착 또는 손실 복구를 보장하지 않습니다.
+
+## 검증 범위와 Known Limitations
+
+- 통합 Gateway/Topic/Action/Supervisor/CLI 회귀 및 Native DEB 네 환경 CI/CD 성공.
+- **추가 검증:** 새 v5.6.2 패키지의 OPI5+ 실물 설치/업그레이드,
+  systemd·Wi-Fi/유선 LAN·보안 정책 마이그레이션·장시간 Topic/Action 부하.
+- Wi-Fi Discovery LOST 후 약 4~6분 재연결 지연은 원인 미확정
+  ([Core #6](https://github.com/Nyamkani/kss_control_framework/issues/6)).
+  실제 물리 환경의 지속 100 Hz/저지연·무손실 보장은 없습니다.
+- 개발·검증 기록과 미완료 작업은 [Changelog](Changelog.md),
+  [v5.6.2 Release Notes](docs/releases/v5.6.2.md),
+  [통합 검증 보고서](docs/KCF_INTEGRATION_VERIFICATION_2026-11-26.md),
+  [Issue Tracker #18](https://github.com/Nyamkani/kss_control_framework/issues/18)를 참고하세요.
+
+---
+
+## 이전 릴리스 검증 기록 (Historical)
 
 ## v5.6.1 변경 및 검증 범위
 
@@ -61,7 +92,7 @@ sudo apt install build-essential cmake git
 ```
 
 저장소 루트에서 **`build-main`을 표준 개발 빌드 디렉터리**로 사용합니다.
-현재 Core v5.6.1의 Debug·정적 Core 구성으로 Gateway, Bringup, 예제와 테스트를 함께 빌드합니다.
+현재 Core v5.6.2 소스의 Debug·정적 Core 구성으로 Gateway, Bringup, 예제와 테스트를 함께 빌드합니다.
 
 ```sh
 cmake -S . -B build-main \
@@ -148,8 +179,9 @@ systemctl status kcf-gateway.service --no-pager
 
 수동 실행은 Ctrl+C로 종료하며 부팅 자동 실행·systemd 재시작 정책을 제공하지 않습니다.
 기존 Host ID, Lock, Socket을 삭제하거나 경로를 바꿔 중복 실행을 우회하지 않습니다.
-Singleton Lock 충돌은 종료 코드 2입니다. Topic/Control 기본 노출 거부는 유지되므로
-필요한 원격 접근만 명시적으로 허용합니다. NIC·권한·허용 정책은
+Singleton Lock 충돌은 종료 코드 2입니다. 현재 Topic Publisher는 기본 공개이며
+명시적 allow/exclude/default-deny 정책으로 범위를 조절합니다. 제어 권한은 기본 거부입니다.
+NIC·권한·허용 정책은
 [Gateway 운영 가이드](gateway/systemd/README.md)를 따릅니다.
 
 ### Debian 패키지 설치 후 실행
@@ -464,10 +496,10 @@ Tool KCF+Qt 18/18, no-KCF 6/6 PASS와 당시 Tool+Virtual LAN 미검증은 이 �
 Qt offscreen E2E가 추가됐으나, 당시 Remote Set/Call/Goal/Cancel UI와 실제 물리 LAN/데스크톱 GUI
 수동 검증은 미실행이었습니다. 당시 기록은 현재 Remote Control 지원 범위와 구별합니다.
 [기존 검증 출처·측정값·제한](docs/06_VERIFICATION_AND_LIMITATIONS.md#v53-network-diagnostics-검증)은 보존합니다.
-현재 기능 설명으로 새 Tool tag/Release 또는 배포 버전을 선언하지 않습니다.
+위 v0.12/v5.3 설명은 당시 개발 이력입니다. 최신 Tool 배포는 상단의 v0.16.0 Release를 참조합니다.
 
 
-현재 Framework v5.6와 Tool의 신규 통합 시험은 이 문서 작업에서 수행하지 않았습니다.
+Core v5.6.2와 Tools v0.16.0의 CI/CD 통합 결과는 상단에 구분했습니다. 이번 문서 작업에서는 별도 시험을 수행하지 않았습니다.
 Builder는 향후 구상이며 현재 구현된 GUI/Launch 기능이 아닙니다.
 
 ## 8. Troubleshooting
@@ -516,4 +548,4 @@ Composition Observer의 `r` + Enter는 해당 예제에 구현된 명시적 재�
 현재 Remote 기능과 향후 배포 자동화는 별개입니다.
 [Deployment Policy](docs/10_NETWORK_DEPLOYMENT_POLICY.md)의 당시 미구현 기록은 보존합니다. 영구 ID API와 Gateway/systemd 템플릿은 현재 구현됐고,
 Debian 패키징 기반은 v5.6.0에 배포됐고 v5.6.1은 명시적 Gateway 설정·업데이트 도구를 추가합니다.
-network.conf 로더, 신규 버전 패키지 및 실제 systemd 운영 검증은 별도 과제로 남아 있습니다.
+network.conf 로더와 신규 v5.6.2 패키지의 실물 운영·복구 검증은 별도 과제로 남아 있습니다.

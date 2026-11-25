@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 project(kcf_installed_consumer LANGUAGES CXX)
-find_package(KCF 5.6.1 EXACT CONFIG REQUIRED)
+find_package(KCF 5.6.2 EXACT CONFIG REQUIRED)
 add_executable(core_consumer core.cpp)
 target_link_libraries(core_consumer PRIVATE KCF::core)
 add_executable(bringup_consumer bringup.cpp)

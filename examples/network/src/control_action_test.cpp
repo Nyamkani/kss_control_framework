@@ -226,8 +226,8 @@ void Integration(const char* exe,bool contended=false){auto port=Port();pid_t ch
             const auto final=sample.action->Snapshot();
             assert(final.state==kcf::ActionState::SUCCEEDED&&Count(final.result)==132);
             assert(final.feedback_sequence>0&&seen>0);
-            const auto previous_completed=a.GetStats().action_workers_completed;
-            wait("benchmark-worker-completed",[&]{return a.GetStats().action_workers_completed>previous_completed;});
+            const auto expected_completed=begin_stats.action_workers_completed+static_cast<std::uint64_t>(trial)+1;
+            wait("benchmark-worker-completed",[&]{return a.GetStats().action_workers_completed>=expected_completed;});
         }
         const auto after=a.GetStats();
         std::sort(latency_ms.begin(),latency_ms.end());

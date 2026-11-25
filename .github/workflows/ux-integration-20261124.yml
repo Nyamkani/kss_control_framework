@@ -1,7 +1,7 @@
 name: KCF UX combined Core validation
 on:
   push:
-    branches: [integration/ux-20261124]
+    branches: [integration/ux-20261124, dev]
   workflow_dispatch:
 permissions:
   contents: read
@@ -46,3 +46,10 @@ jobs:
           ./build/bin/kcf status
           ./build/bin/kcf topic list
           ./build/bin/kcf doctor
+
+  package:
+    name: Native DEB packages
+    needs: linux-amd64
+    uses: ./.github/workflows/core-release-cd.yml
+    permissions:
+      contents: read

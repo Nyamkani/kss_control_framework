@@ -1,0 +1,103 @@
+name: KCF Core Package CD
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Core ${{ matrix.os_version }} ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            os_version: "24.04"
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            os_version: "24.04"
+            arch: arm64
+          - runner: ubuntu-26.04
+            os_version: "26.04"
+            arch: amd64
+          - runner: ubuntu-26.04-arm
+            os_version: "26.04"
+            arch: arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake dpkg-dev python3
+
+      - name: Verify native environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /etc/os-release
+          test "$ID" = ubuntu
+          test "$VERSION_ID" = "${{ matrix.os_version }}"
+          test "$(dpkg --print-architecture)" = "${{ matrix.arch }}"
+          test "$(getconf LONG_BIT)" = 64
+
+      - name: Configure Release
+        run: |
+          cmake -S . -B build-cd \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DKCF_ENABLE_PACKAGING=ON
+
+      - name: Build
+        run: cmake --build build-cd --parallel 4
+
+      - name: Package
+        run: |
+          mkdir -p packages
+          cpack --config build-cd/CPackConfig.cmake \
+            -B packages
+
+      - name: Verify package
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          debs=(packages/*.deb)
+          test "${#debs[@]}" -eq 1
+          deb="${debs[0]}"
+
+          test "$(dpkg-deb -f "$deb" Package)" = kcf-core
+          test "$(dpkg-deb -f "$deb" Architecture)" = "${{ matrix.arch }}"
+          test "$(dpkg-deb -f "$deb" Version)" = \
+            "5.6.1-1+ubuntu${{ matrix.os_version }}"
+
+          dpkg-deb --contents "$deb" > packages/CONTENTS.txt
+          grep -q './usr/bin/kcf_gateway' packages/CONTENTS.txt
+          grep -q 'libkcf_core.a' packages/CONTENTS.txt
+          grep -q 'KCFConfig.cmake' packages/CONTENTS.txt
+
+          (
+            cd packages
+            sha256sum ./*.deb > SHA256SUMS
+            sha256sum -c SHA256SUMS
+          )
+
+      - name: Upload verified package
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-ubuntu${{ matrix.os_version }}-${{ matrix.arch }}
+          path: |
+            packages/*.deb
+            packages/SHA256SUMS
+            packages/CONTENTS.txt
+          if-no-files-found: error

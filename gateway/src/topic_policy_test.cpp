@@ -142,7 +142,7 @@ int main(int argc,char** argv){
     assert(control.QueryTypeDescriptor(endpoint.identity,peer().session_id,endpoint.name,n::DescriptorRole::VALUE,endpoint.value_type,schema)!=0);
     // No Topic CLI policy: an unrelated Publisher must be discoverable and
     // remotely subscribable through the real loopback data plane.
-    std::cerr<<"[default-open] stop restricted Gateway\\n";
+    std::cerr<<"[default-open] stop restricted Gateway\n";
     const auto prior_session=peer().session_id;
     sender.Stop();
     auto default_config=gateway::Config(defaults,nic);
@@ -153,20 +153,31 @@ int main(int argc,char** argv){
     assert(default_config.parameter_set_clients.empty()&&default_config.service_call_clients.empty()
         &&default_config.action_goal_clients.empty()&&default_config.action_cancel_clients.empty());
     assert(sender.Start(default_config)==0);
-    std::cerr<<"[default-open] waiting empty metadata new session\\n";
+    std::cerr<<"[default-open] waiting empty metadata new session\n";
     Until([&]{return peer().metadata_ready&&peer().session_id!=prior_session&&peer().endpoints.empty();});
     std::cerr<<"[default-open] new session ready\\n";
     kcf::Publisher<Value> default_publisher;
     assert(default_publisher.Create("/default_open/value")==0);
     std::cerr<<"[default-open] publisher created, waiting metadata\\n";
     n::NetworkEndpointMetadata default_endpoint;
+    auto last_dump=std::chrono::steady_clock::now();
     Until([&]{
-        if(!peer().metadata_ready||peer().endpoints.size()!=1)return false;
-        const auto& e=peer().endpoints.front();
-        if(e.name!="/default_open/value"||e.role!=n::EndpointRole::PROVIDER)return false;
-        assert(e.scope==n::NetworkScope::REMOTE);
-        default_endpoint=e;
-        return true;
+        const auto p=peer();
+        for(const auto& e:p.endpoints){
+            if(e.name!="/default_open/value"||e.role!=n::EndpointRole::PROVIDER)continue;
+            assert(e.scope==n::NetworkScope::REMOTE);
+            default_endpoint=e;
+            return p.metadata_ready;
+        }
+        if(std::chrono::steady_clock::now()-last_dump>1s){
+            std::cerr<<"[default-open] metadata_ready="<<p.metadata_ready
+                <<" endpoints="<<p.endpoints.size()<<" session="<<p.session_id<<"\\n";
+            for(const auto& e:p.endpoints)
+                std::cerr<<"[default-open] endpoint="<<e.name<<" role="<<static_cast<int>(e.role)
+                    <<" scope="<<static_cast<int>(e.scope)<<"\\n";
+            last_dump=std::chrono::steady_clock::now();
+        }
+        return false;
     });
     std::cerr<<"[default-open] metadata ready, query descriptor\\n";
     assert(control.QueryTypeDescriptor(default_endpoint.identity,peer().session_id,

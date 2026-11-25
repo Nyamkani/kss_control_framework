@@ -2,6 +2,7 @@
 #include "kcf/introspection/runtime_info.hpp"
 #include "kcf/introspection/endpoint_info.hpp"
 #include "kcf/introspection/supervisor_info.hpp"
+#include "kcf/introspection/supervisor_diagnostics_info.hpp"
 #include "kcf/introspection/type_descriptor.hpp"
 #include "kcf/introspection/service_info.hpp"
 #include <vector>
@@ -19,6 +20,8 @@ public:
     int ListActions(const RuntimeInfo&, std::vector<ActionInfo>&);
     int ListServices(const RuntimeInfo& runtime, std::vector<ServiceInfo>& services);
     int ListSupervisors(std::vector<SupervisorInfo>& supervisors);
+    // Optional Supervisor detail channel. No change to SupervisorInfo v1.
+    int GetSupervisorDiagnostics(std::int32_t pid,std::uint64_t process_start_ticks,SupervisorDiagnosticsInfo& output);
     int ListRuntimes(std::vector<RuntimeInfo>& runtimes);
     // Targeted lookup; negative errno preserves output. No payload read/write.
     int ListTypes(const RuntimeInfo& runtime, std::vector<TypeDescriptor>& types);

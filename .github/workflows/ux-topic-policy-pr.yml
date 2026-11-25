@@ -1,0 +1,31 @@
+name: KCF UX Topic exposure policy validation
+on:
+  push:
+    branches: [feature/ux-topic-default-open]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  linux-amd64:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+      - name: Build Gateway and Topic policy regressions
+        run: |
+          cmake --build build --parallel 4 --target \
+            kcf_gateway kcf_gateway_test kcf_gateway_topic_policy_test \
+            kcf_gateway_lifecycle_test kcf_gateway_topic_rate_test kcf_topic_exposure_test
+      - name: Gateway command help
+        run: ./build/gateway/kcf_gateway --help
+      - name: Gateway config and policy unit tests
+        run: |
+          timeout 120s ./build/gateway/kcf_gateway_test
+          timeout 120s ./build/gateway/kcf_gateway_topic_policy_test
+          timeout 120s ./build/gateway/kcf_gateway_lifecycle_test
+          timeout 120s ./build/gateway/kcf_gateway_topic_rate_test
+          timeout 120s ./build/examples/network/kcf_topic_exposure_test
+      - name: Localhost policy and observer data-plane integration
+        run: timeout 120s ./build/gateway/kcf_gateway_topic_policy_test --network

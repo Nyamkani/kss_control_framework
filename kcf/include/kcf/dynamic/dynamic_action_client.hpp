@@ -4,6 +4,7 @@
 #include "kcf/dynamic/dynamic_payload.hpp"
 #include "kcf/service/service_client.hpp"
 #include <memory>
+#include <chrono>
 namespace kcf {
 // Observational adapter to the existing Local Action Service/Topic protocol.
 // Calls are caller-serialized. Close never cancels the application goal.
@@ -15,6 +16,9 @@ public:
     int SendGoal(const DynamicPayload&,std::uint64_t& goal_id,bool* execution_unknown=nullptr);
     int Cancel(std::uint64_t goal_id,bool* cancel_unknown=nullptr);
     int ReadFeedback(ActionHeader&,DynamicPayload&);
+    // Wait for a new Local status notification, or return 0 on timeout.
+    // Returns 1 on notification, <0 on error. Caller serializes with other methods.
+    int WaitFeedback(std::uint64_t& last_notify,std::chrono::milliseconds timeout);
     int GetResult(std::uint64_t goal_id,ActionState&,DynamicPayload&);
     void Close();
 private:

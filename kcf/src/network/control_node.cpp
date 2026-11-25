@@ -19,6 +19,7 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+#include <time.h>
 namespace kcf::network {
 namespace {
 using Clock=std::chrono::steady_clock;
@@ -104,6 +105,9 @@ struct ControlNode::Impl {
     std::vector<Pending> pending;std::vector<Connection> connections;std::vector<Seen> seen;
     std::vector<ClientSeen> client_seen;
     std::atomic<std::uint64_t> connected{0},sent{0},ignored{0},rejected{0};
+    std::atomic<std::uint64_t> action_feedback_reads{0},action_event_waits{0},action_event_notifications{0};
+    std::atomic<std::uint64_t> action_result_checks{0},action_poll_sleeps{0};
+    std::atomic<std::uint64_t> action_worker_cpu_ns{0},action_workers_completed{0};
     void Wake(){if(wake>=0){std::uint64_t v=1;const auto n=write(wake,&v,sizeof(v));(void)n;}}
     void Close(){if(listener>=0)close(listener);if(wake>=0)close(wake);listener=wake=-1;}
     std::vector<LocalEndpoint> Local(){std::lock_guard<std::mutex> lock(mutex);return local;}
@@ -697,20 +701,31 @@ struct ControlNode::Impl {
         auto response=ActionResponse(job,ControlMessage::ACTION_GOAL_RESPONSE,code);response.reason=reason;response.outcome_unknown=unknown;
         context->accepted=!code;ActionReply(job.connection,std::move(response));
         if(code)return;
-        std::uint64_t feedback_sequence=0;auto next_result=Clock::time_point{};
+        std::uint64_t feedback_sequence=0,notify_sequence=0;
+        auto next_result=Clock::time_point{},next_feedback=Clock::time_point{};
+        bool feedback_due=true; // Initial state must be observed in both modes.
         while(Live(job.connection)){
             ActionHeader header;DynamicPayload feedback,result;ActionState state=ActionState::FAILED;
             code=ValidateLocalActionEndpoint(entry);
             if(!code){
                 std::lock_guard<std::mutex> lock(context->call_mutex);
-                code=context->client.ReadFeedback(header,feedback);
-                if(!code&&header.goal_id==context->local_goal&&header.feedback_sequence>feedback_sequence&&header.state==ActionState::RUNNING){
-                    auto event=ActionResponse(job,ControlMessage::ACTION_FEEDBACK);event.request_id=0;event.action_state=ActionState::RUNNING;event.feedback_sequence=header.feedback_sequence;
-                    code=EncodeParameterValue(entry.feedback_descriptor,feedback,event.payload);
-                    if(!code){feedback_sequence=header.feedback_sequence;ActionReply(job.connection,std::move(event));}
+                const bool read_feedback=config.action_status_mode==ActionStatusMode::EVENT
+                    ? feedback_due : Clock::now()>=next_feedback;
+                if(read_feedback){
+                    ++action_feedback_reads;
+                    code=context->client.ReadFeedback(header,feedback);
+                    if(!code&&header.goal_id==context->local_goal&&header.feedback_sequence>feedback_sequence&&header.state==ActionState::RUNNING){
+                        auto event=ActionResponse(job,ControlMessage::ACTION_FEEDBACK);event.request_id=0;event.action_state=ActionState::RUNNING;event.feedback_sequence=header.feedback_sequence;
+                        code=EncodeParameterValue(entry.feedback_descriptor,feedback,event.payload);
+                        if(!code){feedback_sequence=header.feedback_sequence;ActionReply(job.connection,std::move(event));}
+                    }
+                    if(config.action_status_mode==ActionStatusMode::SCHEDULED_POLL)
+                        next_feedback=Clock::now()+config.action_status_poll_interval;
                 }
                 if(code==-EAGAIN)code=0;
+                // Terminal Result checks stay independent of Feedback observation cadence.
                 if(!code&&Clock::now()>=next_result){
+                    ++action_result_checks;
                     code=context->client.GetResult(context->local_goal,state,result);next_result=Clock::now()+std::chrono::milliseconds(50);
                     if(!code){auto event=ActionResponse(job,ControlMessage::ACTION_RESULT);event.request_id=0;event.action_state=state;
                         event.status=EncodeParameterValue(entry.response_descriptor,result,event.payload);if(event.status)event.payload.clear();
@@ -720,7 +735,20 @@ struct ControlNode::Impl {
                 }
             }
             if(code){auto event=ActionResponse(job,ControlMessage::ACTION_RESULT,code);event.request_id=0;event.action_state=ActionState::FAILED;ActionReply(job.connection,std::move(event));return;}
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            if(config.action_status_mode==ActionStatusMode::EVENT){
+                // Bounded wait also wakes to check the independent terminal Result.
+                ++action_event_waits;
+                const int changed=context->client.WaitFeedback(notify_sequence,std::chrono::milliseconds(50));
+                if(changed>0)++action_event_notifications;
+                if(changed<0){auto event=ActionResponse(job,ControlMessage::ACTION_RESULT,changed);event.request_id=0;event.action_state=ActionState::FAILED;ActionReply(job.connection,std::move(event));return;}
+                feedback_due=changed>0;
+            }else{
+                const auto deadline=std::min(next_feedback,next_result);
+                if(deadline>Clock::now()){
+                    std::this_thread::sleep_until(deadline);
+                    ++action_poll_sleeps;
+                }
+            }
         }
         // Lost connection releases only gateway resources. Never Local Cancel.
     }
@@ -735,7 +763,15 @@ struct ControlNode::Impl {
             {std::lock_guard<std::mutex> lock(mutex);incoming.push_back(context);}
             task.done=false;
             try{task.worker=std::thread([this,&task,context]{
+                timespec cpu_start{},cpu_end{};
+                const bool cpu_valid=clock_gettime(CLOCK_THREAD_CPUTIME_ID,&cpu_start)==0;
                 try{ExecuteAction(context);}catch(...){std::lock_guard<std::mutex> lock(mutex);if(live_connections.count(context->job.connection))abort_connections.insert(context->job.connection);Wake();}
+                if(cpu_valid&&clock_gettime(CLOCK_THREAD_CPUTIME_ID,&cpu_end)==0){
+                    const auto start_ns=std::uint64_t(cpu_start.tv_sec)*1000000000ull+std::uint64_t(cpu_start.tv_nsec);
+                    const auto end_ns=std::uint64_t(cpu_end.tv_sec)*1000000000ull+std::uint64_t(cpu_end.tv_nsec);
+                    if(end_ns>=start_ns)action_worker_cpu_ns.fetch_add(end_ns-start_ns);
+                }
+                ++action_workers_completed;
                 {std::lock_guard<std::mutex> lock(context->call_mutex);context->done=true;context->client.Close();}
                 {std::lock_guard<std::mutex> lock(mutex);incoming.erase(std::remove(incoming.begin(),incoming.end(),context),incoming.end());}
                 task.done=true;
@@ -810,7 +846,9 @@ ControlNode::~ControlNode(){Stop();}
 int ControlNode::Start(const ControlConfig& input) {
     auto& s=*impl_;if(s.io.joinable()||s.backend.joinable())return -EBUSY;
     if(input.metadata_interval.count()<20||input.metadata_interval.count()>60000||input.connect_timeout.count()<20||
-        input.connect_timeout.count()>60000||input.reconnect_interval.count()<20||input.reconnect_interval.count()>60000)return -EINVAL;
+        input.connect_timeout.count()>60000||input.reconnect_interval.count()<20||input.reconnect_interval.count()>60000||
+        input.action_status_poll_interval.count()<1||input.action_status_poll_interval.count()>1000||
+        (input.action_status_mode!=ActionStatusMode::SCHEDULED_POLL&&input.action_status_mode!=ActionStatusMode::EVENT))return -EINVAL;
     if(input.descriptor_query_clients.size()>32||input.parameter_get_clients.size()>32||input.parameter_set_clients.size()>32||input.service_call_clients.size()>32||input.action_goal_clients.size()>32||input.action_cancel_clients.size()>32)return -EINVAL;
     for(const auto& host:input.parameter_get_clients)if(!Valid(host)||host==input.discovery.host)return -EINVAL;
     for(const auto& host:input.parameter_set_clients)if(!Valid(host)||host==input.discovery.host)return -EINVAL;
@@ -842,7 +880,10 @@ int ControlNode::Start(const ControlConfig& input) {
     if(input.diagnostics_enabled)s.config.discovery.profile.capabilities|=CapabilityBit(Capability::NETWORK_DIAGNOSTICS);
     if(input.topic_observer_enabled||!input.descriptor_query_clients.empty())s.config.discovery.profile.capabilities|=CapabilityBit(Capability::TYPE_DESCRIPTOR_QUERY);
     code=s.discovery.Start(s.config.discovery);if(code)return fail(code);
-    s.session=s.discovery.GetSessionId();s.error=0;s.connected=0;s.sent=0;s.ignored=0;s.rejected=0;s.running=true;s.seen.clear();s.client_seen.clear();s.diagnostics_seen.clear();s.observer_diagnostics_seen.clear();s.diagnostics_jobs.clear();s.next_diagnostics=Clock::now();
+    s.session=s.discovery.GetSessionId();s.error=0;s.connected=0;s.sent=0;s.ignored=0;s.rejected=0;
+    s.action_feedback_reads=0;s.action_event_waits=0;s.action_event_notifications=0;
+    s.action_result_checks=0;s.action_poll_sleeps=0;
+    s.action_worker_cpu_ns=0;s.action_workers_completed=0;s.running=true;s.seen.clear();s.client_seen.clear();s.diagnostics_seen.clear();s.observer_diagnostics_seen.clear();s.diagnostics_jobs.clear();s.next_diagnostics=Clock::now();
     try{s.backend=std::thread([&s]{s.Backend();});s.io=std::thread([&s]{s.IO();});}
     catch(...){Stop();return -EAGAIN;}return 0;
 }
@@ -878,7 +919,12 @@ std::future<ActionBatchResult> ControlNode::CancelAction(const std::shared_ptr<R
 }
 std::vector<PeerInfo> ControlNode::GetPeers() const{return impl_->discovery.GetPeers();}
 std::uint64_t ControlNode::GetSessionId() const{return impl_->discovery.GetSessionId();}
-ControlStats ControlNode::GetStats() const{return {impl_->connected.load(),impl_->sent.load(),impl_->ignored.load(),impl_->rejected.load()};}
+ControlStats ControlNode::GetStats() const{
+    const auto& s=*impl_;
+    return {s.connected.load(),s.sent.load(),s.ignored.load(),s.rejected.load(),
+        s.action_feedback_reads.load(),s.action_event_waits.load(),s.action_event_notifications.load(),
+        s.action_result_checks.load(),s.action_poll_sleeps.load(),s.action_worker_cpu_ns.load(),s.action_workers_completed.load()};
+}
 TopicDiagnostics ControlNode::GetTopicDiagnostics() const{return impl_->TopicSnapshot();}
 int ControlNode::GetLastError() const{return impl_->error.load();}
 }

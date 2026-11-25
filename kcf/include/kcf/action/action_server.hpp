@@ -134,6 +134,15 @@ class ActionServer
         }
     };
 
+    template<class T> static bool DescribeType(TypeDescriptor& out) noexcept {
+        if constexpr(TypeDescriptorTraits<T>::defined && std::is_standard_layout_v<T> &&
+                     std::is_trivially_copyable_v<T> && !std::is_union_v<T>) {
+            try{out=TypeDescriptorTraits<T>::Get();return out.payload_size==sizeof(T)&&out.payload_alignment==alignof(T);}
+            catch(...){}
+        }
+        return false;
+    }
+
 public:
     ActionServer() = default;
     ActionServer(const ActionServer&) = delete;
@@ -166,7 +175,8 @@ public:
         if constexpr(std::is_standard_layout_v<Goal> && std::is_standard_layout_v<Feedback> && std::is_standard_layout_v<Result>) {
             ActionInfo info;info.port=server.Port();info.ids=ids;
             if(topic.size()<sizeof(info.name))std::memcpy(info.name,topic.c_str(),topic.size()+1);
-            info.goal_type_id=detail::RegisterEndpointType<Goal>();info.feedback_type_id=detail::RegisterEndpointType<Feedback>();info.result_type_id=detail::RegisterEndpointType<Result>();
+            TypeDescriptor goal_type,feedback_type,result_type;
+            const bool typed=DescribeType<Goal>(goal_type)&&DescribeType<Feedback>(feedback_type)&&DescribeType<Result>(result_type);
             info.goal_request_size=sizeof(ActionGoalRequest<Goal>);info.goal_offset=offsetof(ActionGoalRequest<Goal>,goal);
             info.status_size=sizeof(ActionStatus<Feedback>);info.status_alignment=alignof(ActionStatus<Feedback>);info.feedback_offset=offsetof(ActionStatus<Feedback>,feedback);
             info.result_response_size=sizeof(ActionResultResponse<Result>);info.result_offset=offsetof(ActionResultResponse<Result>,result);
@@ -174,7 +184,7 @@ public:
             info.cancel_request_identity=detail::DeclaredStorageIdentity<ActionCancelRequest>();info.cancel_response_identity=detail::DeclaredStorageIdentity<ActionCancelResponse>();
             info.result_request_identity=detail::DeclaredStorageIdentity<ActionResultRequest>();info.result_response_identity=detail::DeclaredStorageIdentity<ActionResultResponse<Result>>();
             info.status_identity=detail::DeclaredStorageIdentity<ActionStatus<Feedback>>();
-            core->registration=detail::RegisterAction(info);
+            if(typed)core->registration=detail::RegisterActionWithTypes(info,&goal_type,&feedback_type,&result_type);
         }
         core_ = std::move(core);
         return 0;

@@ -2,17 +2,38 @@
 #include "kcf/action/action_server.hpp"
 #include "kcf/dynamic/dynamic_action_client.hpp"
 #include "kcf/introspection/detail/runtime_registry.hpp"
+#include "kcf/introspection/introspection_client.hpp"
 #include "kcf/introspection/detail/supervisor_registry.hpp"
 #include "parameter_demo_type.hpp"
 #include <cassert>
 #include <atomic>
+#include <algorithm>
+#include <numeric>
 #include <csignal>
 #include <cstring>
 #include <iostream>
+#include <functional>
+#include <cstdlib>
 #include <thread>
 #include <sys/wait.h>
 #include <arpa/inet.h>
 #include <poll.h>
+#include <sys/syscall.h>
+// Test-only interposition: real directory flock contention at the first
+// nonblocking registry creation. No architecture-specific syscall numbers.
+std::atomic<bool> contend_registry{false};
+std::atomic<unsigned> registry_contentions{0};
+extern "C" int flock(int fd,int operation) {
+    if((operation&LOCK_NB) && contend_registry.exchange(false)) {
+        const int held=open("/dev/shm",O_RDONLY|O_DIRECTORY|O_CLOEXEC);assert(held>=0);
+        assert(syscall(SYS_flock,held,LOCK_EX|LOCK_NB)==0);
+        const int result=syscall(SYS_flock,fd,operation), saved=errno;
+        assert(syscall(SYS_flock,held,LOCK_UN)==0);close(held);
+        assert(result==-1 && (saved==EAGAIN || saved==EWOULDBLOCK));
+        ++registry_contentions;errno=saved;return result;
+    }
+    return syscall(SYS_flock,fd,operation);
+}
 namespace n=kcf::network;
 using namespace std::chrono_literals;
 n::HostIdentity Id(unsigned char x){n::HostIdentity id;id.bytes[0]=x;return id;}
@@ -20,7 +41,20 @@ auto Descriptor(){return kcf::TypeDescriptorTraits<Value>::Get();}
 n::TypeIdentity Type(){n::TypeIdentity t;assert(!n::ParameterWireType(Descriptor(),t));return t;}
 std::vector<std::uint8_t> Bytes(int count){Value value{count,true,1.5};kcf::DynamicPayload p;p.type_id=Type().type_id;p.bytes.resize(sizeof(value));std::memcpy(p.bytes.data(),&value,sizeof(value));std::vector<std::uint8_t> out;assert(!n::EncodeParameterValue(Descriptor(),p,out));return out;}
 int Count(const std::vector<std::uint8_t>& wire){kcf::DynamicPayload p;assert(!n::DecodeParameterValue(Descriptor(),wire,p));Value v;std::memcpy(&v,p.bytes.data(),sizeof(v));return v.count;}
-template<class F>void Until(F f){auto end=std::chrono::steady_clock::now()+10s;while(!f()){assert(std::chrono::steady_clock::now()<end);std::this_thread::sleep_for(5ms);}}
+template<class F>void Until(F f,const char* stage="non-integration",const std::function<void()>& diagnose={}) {
+    std::cerr<<"[Action wait] "<<stage<<" begin"<<std::endl;
+    const auto end=std::chrono::steady_clock::now()+10s;
+    while(!f()) {
+        if(std::chrono::steady_clock::now()>=end) {
+            std::cerr<<"[Action wait] "<<stage<<" TIMEOUT (10s)"<<std::endl;
+            if(diagnose)diagnose();
+            assert(false && "Action wait timed out");
+            std::abort();
+        }
+        std::this_thread::sleep_for(5ms);
+    }
+    std::cerr<<"[Action wait] "<<stage<<" ready"<<std::endl;
+}
 std::uint16_t Port(int kind=SOCK_DGRAM,int* keep=nullptr){int fd=socket(AF_INET,kind|SOCK_CLOEXEC,0);assert(fd>=0);sockaddr_in a{};a.sin_family=AF_INET;a.sin_addr.s_addr=htonl(INADDR_LOOPBACK);assert(!bind(fd,reinterpret_cast<sockaddr*>(&a),sizeof(a)));socklen_t length=sizeof(a);assert(!getsockname(fd,reinterpret_cast<sockaddr*>(&a),&length));if(keep)*keep=fd;else close(fd);return ntohs(a.sin_port);}
 n::ControlConfig Config(unsigned char host,std::uint16_t port){n::ControlConfig c;c.discovery.host=Id(host);c.discovery.boot_id=Id(42);c.discovery.port=port;c.discovery.interface_address="127.0.0.1";c.discovery.announce_interval=50ms;c.discovery.peer_timeout=350ms;c.discovery.metadata_retry=30ms;c.metadata_interval=30ms;c.connect_timeout=300ms;c.reconnect_interval=50ms;c.metadata.runtime_pids={-1};return c;}
 n::RemoteTarget Host(unsigned char host){n::RemoteTarget t;t.scope=n::TargetScope::HOST;t.host=Id(host);return t;}
@@ -30,12 +64,14 @@ n::ActionBatchResult Result(std::future<n::ActionBatchResult> f){assert(f.wait_f
 n::ParameterEndpointResult One(std::future<n::ActionBatchResult> f){auto r=Result(std::move(f));static unsigned step=0;++step;if(r.error||r.endpoints.size()!=1)std::cerr<<"One step="<<step<<" error="<<r.error<<" endpoints="<<r.endpoints.size()<<std::endl;assert(!r.error&&r.endpoints.size()==1);return r.endpoints[0];}
 volatile std::sig_atomic_t stopping=0,remove_action=0;
 void Signal(int s){if(s==SIGUSR1)remove_action=1;else stopping=1;}
-int Owner(std::uint16_t port){alarm(120);std::signal(SIGTERM,Signal);std::signal(SIGUSR1,Signal);
+int Owner(std::uint16_t port,bool contended=false){alarm(120);std::signal(SIGTERM,Signal);std::signal(SIGUSR1,Signal);
     kcf::detail::BeginRuntimeIntrospection(kcf::ExecutionMode::STANDALONE);
     kcf::ServiceServer server;assert(!server.Create(port));
     kcf::ActionServer<Value,Value,Value> action,local;std::atomic<int> count{0};
     const auto name="/kcf_action_"+std::to_string(getpid());
+    if(contended)contend_registry=true;
     assert(!action.Create(server,{1,2,3},name,[&](std::uint64_t,const Value& value){if(value.count<0)return -EINVAL;if(value.count==99)std::this_thread::sleep_for(350ms);count=value.count;return 0;}));
+    if(contended)assert(!contend_registry && registry_contentions==1);
     assert(!local.Create(server,{4,5,6},name+"_local",[](std::uint64_t,const Value&){return -EINVAL;}));
     assert(!server.Start());kcf::detail::UpdateRuntimeIntrospection(kcf::ProcessState::RUNNING,0);
     int ticks=0;
@@ -44,11 +80,47 @@ int Owner(std::uint16_t port){alarm(120);std::signal(SIGTERM,Signal);std::signal
         auto id=action.GetGoalId();auto state=action.GetState();
         if(action.IsCancelRequested(id)&&(state==kcf::ActionState::ACCEPTED||state==kcf::ActionState::RUNNING)){assert(!action.Canceled(id,{-1,true,1}));}
         else if(state==kcf::ActionState::ACCEPTED){assert(!action.Start(id));ticks=0;}
-        else if(state==kcf::ActionState::RUNNING){++ticks;for(int i=0;i<(count==77?100:1);++i){int code=action.PublishFeedback(id,{ticks,true,1});assert(!code||code==-EAGAIN);}
+        else if(state==kcf::ActionState::RUNNING){++ticks;for(int i=0;i<(count==77?100:1);++i){
+                const double source_stamp=count==66?std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count():1.0;
+                int code=action.PublishFeedback(id,{ticks,true,source_stamp});assert(!code||code==-EAGAIN);
+            }
             if(ticks>=50)assert(!action.Succeed(id,{count.load()*2,true,1}));}
         std::this_thread::sleep_for(10ms);
     }
     server.Stop();action.Unlink();local.Unlink();action.Close();local.Close();kcf::detail::EndRuntimeIntrospection(kcf::ProcessState::STOPPED,0);return 0;
+}
+void RegistrationContention(int disposition=0) {
+    const auto contentions_before=registry_contentions.load();
+    kcf::detail::BeginRuntimeIntrospection(kcf::ExecutionMode::STANDALONE);
+    kcf::ServiceServer server;assert(!server.Create(Port()));
+    kcf::ActionServer<Value,Value,Value> first,second;
+    const auto name="/action_registration_"+std::to_string(getpid());
+    contend_registry=true;
+    assert(!first.Create(server,{1,2,3},name,[](std::uint64_t,const Value&){return 0;}));
+    assert(!contend_registry && registry_contentions==contentions_before+1);
+    if(disposition==1){first.Unlink();first.Close();}
+    if(disposition==2)kcf::detail::EndRuntimeIntrospection(kcf::ProcessState::STOPPED,0);
+    assert(!second.Create(server,{4,5,6},name+"_local",[](std::uint64_t,const Value&){return 0;}));
+    assert(!server.Start());kcf::detail::UpdateRuntimeIntrospection(kcf::ProcessState::RUNNING,0);
+    kcf::RuntimeInfo runtime;runtime.pid=getpid();assert(kcf::detail::ReadProcessIdentity(runtime.pid,runtime.process_start_ticks));
+    kcf::IntrospectionClient client;std::vector<kcf::ActionInfo> actions;
+    if(disposition==2){
+        std::this_thread::sleep_for(100ms);
+        assert(client.ListActions(runtime,actions)==-ENOENT);
+        server.Stop();first.Unlink();second.Unlink();first.Close();second.Close();
+        std::cout<<"Action pending recovery canceled by End PASS\n";return;
+    }
+    const std::size_t expected=disposition==1?1:2;
+    Until([&]{return !client.ListActions(runtime,actions)&&actions.size()==expected;},"registration-contention-recovery",[&]{
+        std::cerr<<"Local Create succeeded for both actions; ListActions count="<<actions.size()<<std::endl;
+        for(const auto& action:actions)std::cerr<<"registered="<<action.name<<std::endl;
+    });
+    n::MetadataConfig config;config.host=Id(1);config.boot_id=Id(42);config.runtime_pids={getpid()};config.remote_actions={name};
+    std::vector<n::LocalEndpoint> metadata;assert(!n::CollectLocalMetadata(config,metadata)&&metadata.size()==expected);
+    if(disposition==1)assert(actions[0].name==name+"_local");
+    server.Stop();first.Unlink();second.Unlink();first.Close();second.Close();
+    kcf::detail::EndRuntimeIntrospection(kcf::ProcessState::STOPPED,0);
+    std::cout<<"Action real directory contention / successful Local Create / registry and Metadata recovery PASS\n";
 }
 void Codec(){n::ControlFrame f;f.operation=n::ControlMessage::ACTION_GOAL_REQUEST;f.source={Id(1),Id(42),123,1};f.session_id=1;f.request_id=2;f.endpoint={{Id(2),Id(42),321,1},1ull<<62};f.name="/action";f.type=Type();f.feedback_type=Type();f.response_type=Type();f.goal={f.source,9,1};f.payload=Bytes(6);f.timeout_ms=100;
     std::vector<std::uint8_t> bytes;assert(!n::EncodeControlFrame(f,bytes)&&bytes.size()==292+f.name.size()+13);n::ControlFrame out;assert(!n::DecodeControlFrame(bytes.data(),bytes.size(),out)&&out.goal==f.goal);
@@ -65,60 +137,166 @@ void Codec(){n::ControlFrame f;f.operation=n::ControlMessage::ACTION_GOAL_REQUES
     }
     std::cout<<"Action operations and malformed frame/identity/size checks PASS\n";
 }
-void Integration(const char* exe){auto port=Port();pid_t children[2];std::string names[2];
-    for(int i=0;i<2;++i){auto local=std::to_string(Port());children[i]=fork();assert(children[i]>=0);if(!children[i]){execl(exe,exe,"--owner",local.c_str(),nullptr);_exit(127);}names[i]="/kcf_action_"+std::to_string(children[i]);}
+void Integration(const char* exe,bool contended=false){auto port=Port();pid_t children[2];std::string names[2];
+    for(int i=0;i<2;++i){auto local=std::to_string(Port());children[i]=fork();assert(children[i]>=0);if(!children[i]){execl(exe,exe,contended?"--owner-contended":"--owner",local.c_str(),nullptr);_exit(127);}names[i]="/kcf_action_"+std::to_string(children[i]);}
+    n::ControlNode a,b,c;
+    auto diagnose=[&] {
+        kcf::IntrospectionClient introspection;std::vector<kcf::RuntimeInfo> runtimes;
+        const int runtime_error=introspection.ListRuntimes(runtimes);
+        std::cerr<<"[Action runtimes] error="<<runtime_error<<std::endl;
+        for(auto child:children) {
+            std::uint64_t ticks=0;const bool alive=kcf::detail::ReadProcessIdentity(child,ticks);
+            std::cerr<<"[Action owner] pid="<<child<<" identity_read="<<alive<<" start_ticks="<<ticks<<std::endl;
+            bool registered=false;
+            for(const auto& runtime:runtimes)if(runtime.pid==child) {
+                registered=true;std::vector<kcf::ActionInfo> actions;
+                const int action_error=introspection.ListActions(runtime,actions);
+                std::cerr<<"[Action runtime] pid="<<runtime.pid<<" start_ticks="<<runtime.process_start_ticks
+                         <<" state="<<int(runtime.state)<<" actions_error="<<action_error
+                         <<" actions="<<actions.size()<<std::endl;
+            }
+            if(!registered)std::cerr<<"[Action runtime] pid="<<child<<" not registered"<<std::endl;
+        }
+        for(auto* node:{&a,&b,&c}) {
+            std::cerr<<"[Action node] label="<<(node==&a?"A":node==&b?"B":"C")
+                     <<" session="<<node->GetSessionId()<<" control_error="<<node->GetLastError()<<std::endl;
+            for(const auto& peer:node->GetPeers()) {
+                std::cerr<<"[Action peer] host="<<unsigned(peer.host.bytes[0])<<" state="<<int(peer.state)
+                         <<" session="<<peer.session_id<<" metadata_ready="<<peer.metadata_ready
+                         <<" revision="<<peer.metadata_revision<<" endpoints="<<peer.endpoints.size()<<std::endl;
+                for(const auto& endpoint:peer.endpoints)
+                    std::cerr<<"[Action endpoint] name="<<endpoint.name<<" pid="<<endpoint.identity.runtime.pid
+                             <<" start_ticks="<<endpoint.identity.runtime.process_start_ticks
+                             <<" registration="<<endpoint.identity.registration_id<<std::endl;
+            }
+        }
+    };
+    auto wait=[&](const char* stage,auto predicate){Until(predicate,stage,diagnose);};
     kcf::detail::SupervisorRegistry supervisor;supervisor.Begin();kcf::SupervisorInfo app{};std::strcpy(app.application_name,"action_test");app.application_state=kcf::ApplicationState::RUNNING;app.element_count=2;
-    for(int i=0;i<2;++i){auto& e=app.elements[i];e.pid=children[i];e.process_alive=1;std::strcpy(e.name,i?"second":"first");std::strcpy(e.executable,exe);Until([&]{return kcf::detail::ReadProcessIdentity(e.pid,e.process_start_ticks);});}supervisor.Update(app);
-    n::ControlNode a,b,c;auto ca=Config(10,port),cb=Config(20,port),cc=Config(30,port);ca.metadata.runtime_pids={children[0],children[1]};ca.metadata.remote_actions={names[0],names[1]};ca.metadata.groups={"robots"};assert(!a.Start(ca)&&!b.Start(cb)&&!c.Start(cc));
-    Until([&]{auto p=Peer(b,10);return p.metadata_ready&&p.endpoints.size()==4;});auto peer=Peer(b,10);n::NetworkEndpointMetadata endpoints[2];
+    for(int i=0;i<2;++i){auto& e=app.elements[i];e.pid=children[i];e.process_alive=1;std::strcpy(e.name,i?"second":"first");std::strcpy(e.executable,exe);wait("owner-process-identity",[&]{return kcf::detail::ReadProcessIdentity(e.pid,e.process_start_ticks);});}supervisor.Update(app);
+    auto ca=Config(10,port),cb=Config(20,port),cc=Config(30,port);ca.metadata.runtime_pids={children[0],children[1]};ca.metadata.remote_actions={names[0],names[1]};ca.metadata.groups={"robots"};ca.action_status_mode=n::ActionStatusMode::EVENT;assert(!a.Start(ca)&&!b.Start(cb)&&!c.Start(cc));
+    wait("initial-metadata-four-endpoints",[&]{auto p=Peer(b,10);return p.metadata_ready&&p.endpoints.size()==4;});auto peer=Peer(b,10);n::NetworkEndpointMetadata endpoints[2];
     for(const auto& e:peer.endpoints){assert(e.kind==n::EndpointKind::ACTION&&e.identity.registration_id&(1ull<<62));assert(e.application_name=="action_test");for(int i=0;i<2;++i)if(e.name==names[i])endpoints[i]=e;}
     assert(n::Valid(endpoints[0])&&n::Valid(endpoints[1]));
     assert(peer.profile.capabilities&n::CapabilityBit(n::Capability::REMOTE_ACTION));assert(!(peer.profile.capabilities&n::CapabilityBit(n::Capability::REMOTE_TOPIC)));
     auto start=[&](const n::RemoteTarget& target,int v,int index=0){return b.StartAction(target,names[index],Type(),Type(),Type(),Bytes(v),2s);};
     auto first=One(start(Endpoint(endpoints[0]),5));assert(!first.error&&first.action&&first.action->Snapshot().accepted);
-    std::uint64_t previous=0;int feedbacks=0;Until([&]{auto s=first.action->Snapshot();if(s.feedback_sequence!=previous){assert(s.feedback_sequence>previous);previous=s.feedback_sequence;++feedbacks;assert(Count(s.feedback)>0);}return s.terminal;});
+    std::uint64_t previous=0;int feedbacks=0;wait("event-goal-terminal",[&]{auto s=first.action->Snapshot();if(s.feedback_sequence!=previous){assert(s.feedback_sequence>previous);previous=s.feedback_sequence;++feedbacks;assert(Count(s.feedback)>0);}return s.terminal;});
     assert(feedbacks>=2&&Count(first.action->Snapshot().result)==10&&first.action->Snapshot().state==kcf::ActionState::SUCCEEDED);
+    // Repeat the completed-goal path after switching the provider Gateway
+    // from Event notification to a slower 50ms scheduled Feedback poll.
+    const auto previous_session=Peer(b,10).session_id;
+    a.Stop();ca.action_status_mode=n::ActionStatusMode::SCHEDULED_POLL;
+    ca.action_status_poll_interval=50ms;assert(!a.Start(ca));
+    wait("scheduled-provider-new-session",[&]{auto p=Peer(b,10);return p.metadata_ready&&p.state==n::PeerState::ONLINE&&p.session_id!=previous_session;});
+    auto scheduled=One(start(Endpoint(endpoints[0]),3));assert(!scheduled.error);
+    wait("scheduled-goal-terminal",[&]{return scheduled.action->Snapshot().terminal;});
+    assert(scheduled.action->Snapshot().state==kcf::ActionState::SUCCEEDED&&Count(scheduled.action->Snapshot().result)==6);
+    // Identical Loopback workload per mode. Counters measure actual Gateway
+    // feedback reads, waits, notifications and per-Action Worker CPU, not estimated
+    // wake-ups. Embedded source timestamp uses the same steady_clock on this host.
+    // CPU totals are worker-only, not Gateway/Discovery/transport process CPU.
+    for(const int mode:{-1,10,50,100}){
+        const auto old_session=Peer(b,10).session_id;
+        a.Stop();
+        ca.action_status_mode=mode<0?n::ActionStatusMode::EVENT:n::ActionStatusMode::SCHEDULED_POLL;
+        if(mode>0)ca.action_status_poll_interval=std::chrono::milliseconds(mode);
+        assert(!a.Start(ca));
+        wait("benchmark-mode-new-session",[&]{auto p=Peer(b,10);return p.metadata_ready&&p.state==n::PeerState::ONLINE&&p.session_id!=old_session;});
+        const auto begin_stats=a.GetStats();
+        std::vector<double> latency_ms;
+        std::uint64_t observed=0;
+        const auto begin_time=std::chrono::steady_clock::now();
+        for(int trial=0;trial<3;++trial){
+            auto sample=One(start(Endpoint(endpoints[0]),66));
+            assert(!sample.error&&sample.action);
+            std::uint64_t seen=0;
+            wait("benchmark-goal-terminal",[&]{
+                const auto snap=sample.action->Snapshot();
+                if(snap.feedback_sequence>seen){
+                    seen=snap.feedback_sequence;++observed;
+                    kcf::DynamicPayload decoded;
+                    assert(!n::DecodeParameterValue(Descriptor(),snap.feedback,decoded));
+                    Value value{};std::memcpy(&value,decoded.bytes.data(),sizeof(value));
+                    const double receive=std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+                    if(value.gain>0.0)latency_ms.push_back((receive-value.gain)*1000.0);
+                }
+                return snap.terminal;
+            });
+            const auto final=sample.action->Snapshot();
+            assert(final.state==kcf::ActionState::SUCCEEDED&&Count(final.result)==132);
+            assert(final.feedback_sequence>0&&seen>0);
+            const auto expected_completed=begin_stats.action_workers_completed+static_cast<std::uint64_t>(trial)+1;
+            wait("benchmark-worker-completed",[&]{return a.GetStats().action_workers_completed>=expected_completed;});
+        }
+        const auto after=a.GetStats();
+        std::sort(latency_ms.begin(),latency_ms.end());
+        assert(!latency_ms.empty());
+        const double mean=std::accumulate(latency_ms.begin(),latency_ms.end(),0.0)/latency_ms.size();
+        const double p95=latency_ms[(latency_ms.size()-1)*95/100];
+        const auto elapsed=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-begin_time).count();
+        std::cout<<"Action observation benchmark mode="<<(mode<0?"event":"poll")
+                 <<" poll_ms="<<(mode<0?0:mode)
+                 <<" trials=3 completed="<<(after.action_workers_completed-begin_stats.action_workers_completed)
+                 <<" feedback_reads="<<(after.action_feedback_reads-begin_stats.action_feedback_reads)
+                 <<" waits="<<(after.action_event_waits-begin_stats.action_event_waits)
+                 <<" notifications="<<(after.action_event_notifications-begin_stats.action_event_notifications)
+                 <<" poll_sleeps="<<(after.action_poll_sleeps-begin_stats.action_poll_sleeps)
+                 <<" result_checks="<<(after.action_result_checks-begin_stats.action_result_checks)
+                 <<" worker_cpu_us="<<(after.action_worker_cpu_ns-begin_stats.action_worker_cpu_ns)/1000
+                 <<" observed_feedback="<<observed<<" sample_latency_mean_ms="<<mean
+                 <<" sample_latency_p95_ms="<<p95<<" elapsed_ms="<<elapsed
+                 <<" (VM comparative sample; source-to-client Snapshot latency)"<<std::endl;
+    }
+    // Restore 50 ms scheduled polling for permissions, cancellation, flood,
+    // disconnect/reconnect and fanout regressions below.
+    {
+        const auto old_session=Peer(b,10).session_id;
+        a.Stop();ca.action_status_mode=n::ActionStatusMode::SCHEDULED_POLL;
+        ca.action_status_poll_interval=50ms;assert(!a.Start(ca));
+        wait("restore-poll-50-session",[&]{auto p=Peer(b,10);return p.metadata_ready&&p.state==n::PeerState::ONLINE&&p.session_id!=old_session;});
+    }
     auto rejected=One(start(Endpoint(endpoints[0]),-1));assert(rejected.error==-EINVAL&&!rejected.action->Snapshot().accepted&&!rejected.execution_unknown);
-    auto cancel=One(start(Endpoint(endpoints[0]),7));assert(!cancel.error);auto cancel_result=One(b.CancelAction(cancel.action));assert(!cancel_result.error&&!cancel_result.cancel_unknown);Until([&]{return cancel.action->Snapshot().terminal;});assert(cancel.action->Snapshot().state==kcf::ActionState::CANCELED);
+    auto cancel=One(start(Endpoint(endpoints[0]),7));assert(!cancel.error);auto cancel_result=One(b.CancelAction(cancel.action));assert(!cancel_result.error&&!cancel_result.cancel_unknown);wait("cancel-terminal",[&]{return cancel.action->Snapshot().terminal;});assert(cancel.action->Snapshot().state==kcf::ActionState::CANCELED);
     assert(Result(c.CancelAction(cancel.action)).error==-EACCES);
-    for(auto scope:{n::TargetScope::HOST,n::TargetScope::APPLICATION,n::TargetScope::GROUP,n::TargetScope::ALL}){n::RemoteTarget t;t.scope=scope;if(scope==n::TargetScope::HOST)t.host=Id(10);if(scope==n::TargetScope::APPLICATION)t.application=endpoints[0].application;if(scope==n::TargetScope::GROUP)t.group="robots";auto r=One(start(t,4));assert(!r.error);Until([&]{return r.action->Snapshot().terminal;});assert(Count(r.action->Snapshot().result)==8);}
+    for(auto scope:{n::TargetScope::HOST,n::TargetScope::APPLICATION,n::TargetScope::GROUP,n::TargetScope::ALL}){n::RemoteTarget t;t.scope=scope;if(scope==n::TargetScope::HOST)t.host=Id(10);if(scope==n::TargetScope::APPLICATION)t.application=endpoints[0].application;if(scope==n::TargetScope::GROUP)t.group="robots";auto r=One(start(t,4));assert(!r.error);wait("scoped-goal-terminal",[&]{return r.action->Snapshot().terminal;});assert(Count(r.action->Snapshot().result)==8);}
     // Same numeric IDs from different Host identities are distinct.
     auto left=One(start(Endpoint(endpoints[0]),8));auto right=One(c.StartAction(Endpoint(endpoints[1]),names[1],Type(),Type(),Type(),Bytes(9),2s));assert(!left.error&&!right.error&&left.action->Snapshot().goal!=right.action->Snapshot().goal);
-    Until([&]{return left.action->Snapshot().terminal&&right.action->Snapshot().terminal;});assert(Count(left.action->Snapshot().result)==16&&Count(right.action->Snapshot().result)==18);
+    wait("two-host-goals-terminal",[&]{return left.action->Snapshot().terminal&&right.action->Snapshot().terminal;});assert(Count(left.action->Snapshot().result)==16&&Count(right.action->Snapshot().result)==18);
     n::ControlNode d,e;assert(!d.Start(Config(40,port))&&!e.Start(Config(50,port)));
-    Until([&]{return Peer(d,10).metadata_ready&&Peer(e,10).metadata_ready;});
+    wait("additional-clients-metadata",[&]{return Peer(d,10).metadata_ready&&Peer(e,10).metadata_ready;});
     auto dgoal=One(d.StartAction(Endpoint(endpoints[0]),names[0],Type(),Type(),Type(),Bytes(4),2s));
     auto egoal=One(e.StartAction(Endpoint(endpoints[1]),names[1],Type(),Type(),Type(),Bytes(5),2s));
     assert(!dgoal.error&&!egoal.error);auto di=dgoal.action->Snapshot().goal,ei=egoal.action->Snapshot().goal;
     assert(di.goal_id==ei.goal_id&&di.source.pid==ei.source.pid&&di.source.process_start_ticks==ei.source.process_start_ticks&&di.source.host!=ei.source.host&&di!=ei);
-    Until([&]{return dgoal.action->Snapshot().terminal&&egoal.action->Snapshot().terminal;});d.Stop();e.Stop();
+    wait("same-numeric-id-goals-terminal",[&]{return dgoal.action->Snapshot().terminal&&egoal.action->Snapshot().terminal;});d.Stop();e.Stop();
     auto wrong=Type();++wrong.type_id;
     for(int i=0;i<3;++i){auto r=One(b.StartAction(Endpoint(endpoints[0]),names[0],i==0?wrong:Type(),i==1?wrong:Type(),i==2?wrong:Type(),Bytes(1)));assert(r.reason==n::CompatibilityReason::TYPE_MISMATCH&&!r.execution_unknown);}
     auto local=One(b.StartAction(Host(10),names[0]+"_local",Type(),Type(),Type(),Bytes(1)));assert(local.reason==n::CompatibilityReason::LOCAL_ONLY);
     auto bad=Bytes(1);bad[4]=2;assert(One(b.StartAction(Endpoint(endpoints[0]),names[0],Type(),Type(),Type(),bad)).error==-EPROTO);
-    auto flood=One(start(Endpoint(endpoints[0]),77));assert(!flood.error);Until([&]{return flood.action->Snapshot().terminal;});assert(flood.action->Snapshot().feedback_sequence>100&&Count(flood.action->Snapshot().result)==154);
+    auto flood=One(start(Endpoint(endpoints[0]),77));assert(!flood.error);wait("feedback-flood-terminal",[&]{return flood.action->Snapshot().terminal;});assert(flood.action->Snapshot().feedback_sequence>100&&Count(flood.action->Snapshot().result)==154);
     // Goal acceptance delayed beyond request timeout; no automatic retry.
     auto timeout=One(b.StartAction(Endpoint(endpoints[0]),names[0],Type(),Type(),Type(),Bytes(99),80ms));assert(timeout.error==-ETIMEDOUT&&timeout.execution_unknown);
     std::this_thread::sleep_for(1100ms);
     // Disconnect releases tracking; independently inspect Local result to prove no cancel.
     auto running=One(start(Endpoint(endpoints[0]),11));assert(!running.error);
     n::MetadataConfig metadata=ca.metadata;metadata.host=Id(10);metadata.boot_id=Id(42);std::vector<n::LocalEndpoint> entries;assert(!n::CollectLocalMetadata(metadata,entries));n::LocalEndpoint entry;for(const auto& e:entries)if(e.metadata.identity==endpoints[0].identity)entry=e;
-    kcf::DynamicActionClient direct;assert(!direct.Open(entry.action,entry.descriptor,entry.feedback_descriptor,entry.response_descriptor,children[0],entry.metadata.identity.runtime.process_start_ticks));kcf::ActionHeader header;kcf::DynamicPayload value;Until([&]{return !direct.ReadFeedback(header,value)&&header.state==kcf::ActionState::RUNNING;});auto local_goal=header.goal_id;
-    b.Stop();assert(running.action->Snapshot().communication_lost);kcf::ActionState state;Until([&]{int code=direct.GetResult(local_goal,state,value);assert(!code||code==-EINPROGRESS);return !code;});assert(state==kcf::ActionState::SUCCEEDED);direct.Close();
-    assert(!b.Start(cb));Until([&]{return Peer(b,10).metadata_ready;});auto fresh=One(start(Endpoint(endpoints[0]),3));assert(!fresh.error&&fresh.action->Snapshot().goal!=running.action->Snapshot().goal);Until([&]{return fresh.action->Snapshot().terminal;});
+    kcf::DynamicActionClient direct;assert(!direct.Open(entry.action,entry.descriptor,entry.feedback_descriptor,entry.response_descriptor,children[0],entry.metadata.identity.runtime.process_start_ticks));kcf::ActionHeader header;kcf::DynamicPayload value;wait("local-feedback-running",[&]{return !direct.ReadFeedback(header,value)&&header.state==kcf::ActionState::RUNNING;});auto local_goal=header.goal_id;
+    b.Stop();assert(running.action->Snapshot().communication_lost);kcf::ActionState state;wait("local-result-after-disconnect",[&]{int code=direct.GetResult(local_goal,state,value);assert(!code||code==-EINPROGRESS);return !code;});assert(state==kcf::ActionState::SUCCEEDED);direct.Close();
+    assert(!b.Start(cb));wait("client-reconnect-metadata",[&]{return Peer(b,10).metadata_ready;});auto fresh=One(start(Endpoint(endpoints[0]),3));assert(!fresh.error&&fresh.action->Snapshot().goal!=running.action->Snapshot().goal);wait("reconnect-goal-terminal",[&]{return fresh.action->Snapshot().terminal;});
     c.Stop();cc.metadata.runtime_pids={children[0]};cc.metadata.remote_actions={names[0]};cc.metadata.groups={"robots"};assert(!c.Start(cc));
-    Until([&]{auto p=Peer(b,30);return p.metadata_ready&&p.endpoints.size()==2;});
+    wait("fanout-provider-two-endpoints",[&]{auto p=Peer(b,30);return p.metadata_ready&&p.endpoints.size()==2;});
     for(auto scope:{n::TargetScope::GROUP,n::TargetScope::ALL}){
         n::RemoteTarget target;target.scope=scope;if(scope==n::TargetScope::GROUP)target.group="robots";
         auto fanout=Result(start(target,6));assert(!fanout.error&&fanout.endpoints.size()==2);unsigned accepted=0,rejected=0;
-        for(const auto& e:fanout.endpoints){if(!e.error){++accepted;Until([&]{return e.action->Snapshot().terminal;});assert(Count(e.action->Snapshot().result)==12);}else{++rejected;assert(e.error==-EBUSY);}}
+        for(const auto& e:fanout.endpoints){if(!e.error){++accepted;wait("fanout-terminal",[&]{return e.action->Snapshot().terminal;});assert(Count(e.action->Snapshot().result)==12);}else{++rejected;assert(e.error==-EBUSY);}}
         assert(accepted==1&&rejected==1&&fanout.endpoints[0].action->Snapshot().goal!=fanout.endpoints[1].action->Snapshot().goal);
     }
     auto invalid_owner=entry;++invalid_owner.metadata.identity.runtime.process_start_ticks;assert(n::ValidateLocalActionEndpoint(invalid_owner));
     auto invalid_registration=entry;invalid_registration.action.registration_id+=100;assert(n::ValidateLocalActionEndpoint(invalid_registration));
-    assert(!n::ValidateLocalActionEndpoint(entry));assert(!kill(children[0],SIGUSR1));Until([&]{return n::ValidateLocalActionEndpoint(entry)!=0;});auto stale=Result(start(Endpoint(endpoints[0]),1));assert(stale.error||stale.endpoints[0].error);
+    assert(!n::ValidateLocalActionEndpoint(entry));assert(!kill(children[0],SIGUSR1));wait("removed-owner-invalidated",[&]{return n::ValidateLocalActionEndpoint(entry)!=0;});auto stale=Result(start(Endpoint(endpoints[0]),1));assert(stale.error||stale.endpoints[0].error);
     for(auto child:children){kill(child,SIGTERM);int status;assert(waitpid(child,&status,0)==child&&WIFEXITED(status)&&!WEXITSTATUS(status));}
-    a.Stop();Until([&]{return Peer(b,10).state==n::PeerState::LOST;});assert(Result(start(Host(10),1)).error==-ENOTCONN);b.Stop();c.Stop();supervisor.End();
+    a.Stop();wait("provider-lost",[&]{return Peer(b,10).state==n::PeerState::LOST;});assert(Result(start(Host(10),1)).error==-ENOTCONN);b.Stop();c.Stop();supervisor.End();
     std::cout<<"auto metadata/allowlist/types/owner, lifecycle/cancel, five targets, feedback, timeout, disconnect no-cancel/reconnect PASS\n";
 }
 void Gates(){auto port=Port();n::ControlNode client;assert(!client.Start(Config(10,port)));n::PeerDiscovery missing,incompatible;
@@ -157,4 +335,4 @@ void Correlation(){auto port=Port();int listener=-1;auto tcp=Port(SOCK_STREAM,&l
     auto fifth=start();assert(!fifth.error);Until([&]{return fifth.action->Snapshot().communication_lost;});assert(client.GetStats().responses_ignored>=4);
     worker.join();client.Stop();server.Stop();close(listener);std::cout<<"request/goal correlation, cancel_unknown, late events, partial/malformed frame, reconnect isolation PASS\n";
 }
-int main(int argc,char** argv){if(argc==3&&std::string(argv[1])=="--owner")return Owner(std::stoi(argv[2]));std::cout.setf(std::ios::unitbuf);alarm(90);Codec();Gates();Integration(argv[0]);Correlation();std::cout<<"Remote Action PASS\n";}
+int main(int argc,char** argv){if(argc==3&&(std::string(argv[1])=="--owner"||std::string(argv[1])=="--owner-contended"))return Owner(std::stoi(argv[2]),std::string(argv[1])=="--owner-contended");std::cout.setf(std::ios::unitbuf);alarm(90);if(argc==2&&std::string(argv[1])=="--registration-contention"){for(int i=0;i<3;++i)RegistrationContention(i);return 0;}if(argc==2&&std::string(argv[1])=="--contended-integration"){Integration(argv[0],true);return 0;}Codec();for(int i=0;i<3;++i)RegistrationContention(i);Gates();Integration(argv[0]);Integration(argv[0],true);Correlation();std::cout<<"Remote Action PASS\n";}

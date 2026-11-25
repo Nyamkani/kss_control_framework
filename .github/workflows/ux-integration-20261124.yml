@@ -2,6 +2,8 @@ name: KCF UX combined Core validation
 on:
   push:
     branches: [integration/ux-20261124, dev]
+  pull_request:
+    branches: [dev, main]
   workflow_dispatch:
 permissions:
   contents: read

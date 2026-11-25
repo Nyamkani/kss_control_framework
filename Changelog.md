@@ -7,6 +7,31 @@ Phase 2 통신 기능은 v2.0, Phase 3 supervision/recovery는 v3.0에 기록합
 이 문서의 버전 표기는 개발 이력 구분이며 Git tag 또는 배포 생성 여부를 의미하지 않습니다.
 v1.0~v4.3은 historical record입니다. 당시 Mecanum 경로·실행 범위를 현재 Framework 소스 구성으로 해석하지 않습니다.
 
+## v5.6.2 — Gateway Topic 정책·Remote Action·진단·CLI 통합 Release (2026-11-26)
+
+- **배포:** [KCF Core v5.6.2 Pre-release](https://github.com/Nyamkani/kss_control_framework/releases/tag/v5.6.2).
+  태그 대상 `708ce920e26e82eaabe61bb10fd18e69260e1ec3`,
+  [Release Workflow SUCCESS](https://github.com/Nyamkani/kss_control_framework/actions/runs/45684236886).
+- **통합:** [PR #23](https://github.com/Nyamkani/kss_control_framework/pull/23) → `dev`,
+  [PR #24](https://github.com/Nyamkani/kss_control_framework/pull/24) → `main`;
+  Release 정합성 [#25](https://github.com/Nyamkani/kss_control_framework/pull/25), [#26](https://github.com/Nyamkani/kss_control_framework/pull/26).
+- **Gateway Topic:** Publisher 기본 공개 및 명시적 allow/exclude/default-deny 옵션 도입.
+  원격 Control 기본 거부·구독 수요 기반 DATA 전송 계약 유지.
+- **Remote Action:** Event/Scheduled Poll 선택, Poll 주기 설정 및 terminal Result 독립 확인.
+- **Supervisor 진단:** bounded Element 상태/오류 이력의 외부 read-only 조회 1차 구현.
+- **CLI:** `kcf status`, `kcf topic list`, `kcf network status`, `kcf doctor` 기본 기능.
+  Topic `info/echo/hz`, 완전한 doctor/JSON 명세는 미완료.
+- **Topic 진단:** route counter delta/Hz와 근거 기반 Topic route 실패 원인 코드 1차 구현.
+  Source Publish Hz/전체 IPC·Consumer Freshness 계측은 후속 과제.
+- **Timestamp Tolerance:** Topic별 opt-in, 기본 OFF, wire/SHM 포맷 유지.
+- **버전:** CMake/FrameworkVersion 5.6.2, NetworkProtocol major 유지;
+  EXACT FrameworkVersion 정책은 패치 차이를 구분. 정적 링크 사용자는 재빌드 필요.
+- **CI/CD:** Ubuntu 24.04 및 26.04의 AMD64/ARM64 Native DEB 4개와 SHA256SUMS 게시.
+  통합·패키징 자동 검증 PASS는 새 버전의 OPI5+ 실제 설치/운영 PASS와 다름.
+- **Known limitations:** Wi-Fi Discovery 복구 지연 [#6](https://github.com/Nyamkani/kss_control_framework/issues/6),
+  Topic 100Hz 장시간 보장 미확인, 신규 ARM64 실물 Topic 공개 정책/Action 성능/진단 회귀 대기.
+  세부 [Release Notes](docs/releases/v5.6.2.md)와 [Issue Tracker](https://github.com/Nyamkani/kss_control_framework/issues/18) 참고.
+
 ## v5.6.1 — Gateway 배포 준비 / Metadata Snapshot
 
 최종 Debug 회귀와 Ubuntu 24.04 amd64 Release DEB 검증을 완료한 작업 트리 기록입니다.

@@ -82,6 +82,10 @@ using ServiceEndpointResult = ParameterEndpointResult;
 using ServiceBatchResult = ParameterBatchResult;
 struct ControlStats {
     std::uint64_t connections{0},requests_sent{0},responses_ignored{0},rejected_frames{0};
+    // Cumulative per-Gateway-Start Action worker counters; no wire/SHM changes.
+    std::uint64_t action_feedback_reads{0},action_event_waits{0},action_event_notifications{0};
+    std::uint64_t action_result_checks{0},action_poll_sleeps{0};
+    std::uint64_t action_worker_cpu_ns{0},action_workers_completed{0};
 };
 // One host-level gateway, no Application Network registration. Start/Stop are
 // caller-serialized; Submit/GetPeers/GetStats are thread-safe. No user callbacks.

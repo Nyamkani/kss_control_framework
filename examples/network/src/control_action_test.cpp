@@ -7,6 +7,8 @@
 #include "parameter_demo_type.hpp"
 #include <cassert>
 #include <atomic>
+#include <algorithm>
+#include <numeric>
 #include <csignal>
 #include <cstring>
 #include <iostream>
@@ -78,7 +80,10 @@ int Owner(std::uint16_t port,bool contended=false){alarm(120);std::signal(SIGTER
         auto id=action.GetGoalId();auto state=action.GetState();
         if(action.IsCancelRequested(id)&&(state==kcf::ActionState::ACCEPTED||state==kcf::ActionState::RUNNING)){assert(!action.Canceled(id,{-1,true,1}));}
         else if(state==kcf::ActionState::ACCEPTED){assert(!action.Start(id));ticks=0;}
-        else if(state==kcf::ActionState::RUNNING){++ticks;for(int i=0;i<(count==77?100:1);++i){int code=action.PublishFeedback(id,{ticks,true,1});assert(!code||code==-EAGAIN);}
+        else if(state==kcf::ActionState::RUNNING){++ticks;for(int i=0;i<(count==77?100:1);++i){
+                const double source_stamp=count==66?std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count():1.0;
+                int code=action.PublishFeedback(id,{ticks,true,source_stamp});assert(!code||code==-EAGAIN);
+            }
             if(ticks>=50)assert(!action.Succeed(id,{count.load()*2,true,1}));}
         std::this_thread::sleep_for(10ms);
     }
@@ -187,37 +192,68 @@ void Integration(const char* exe,bool contended=false){auto port=Port();pid_t ch
     auto scheduled=One(start(Endpoint(endpoints[0]),3));assert(!scheduled.error);
     wait("scheduled-goal-terminal",[&]{return scheduled.action->Snapshot().terminal;});
     assert(scheduled.action->Snapshot().state==kcf::ActionState::SUCCEEDED&&Count(scheduled.action->Snapshot().result)==6);
-    // Validate the actual configurable polling deadlines, including the 100 ms
-    // boundary, with live Remote Action Goal/Feedback/Result over loopback.
-    // These are functional observations, not CPU or wake-up measurements.
-    for(const auto poll_ms:{10,100}){
+    // Identical Loopback workload per mode. Counters measure actual Gateway
+    // feedback reads, waits, notifications and per-Action Worker CPU, not estimated
+    // wake-ups. Embedded source timestamp uses the same steady_clock on this host.
+    // CPU totals are worker-only, not Gateway/Discovery/transport process CPU.
+    for(const int mode:{-1,10,50,100}){
         const auto old_session=Peer(b,10).session_id;
-        a.Stop();ca.action_status_poll_interval=std::chrono::milliseconds(poll_ms);
+        a.Stop();
+        ca.action_status_mode=mode<0?n::ActionStatusMode::EVENT:n::ActionStatusMode::SCHEDULED_POLL;
+        if(mode>0)ca.action_status_poll_interval=std::chrono::milliseconds(mode);
         assert(!a.Start(ca));
-        wait("poll-rate-new-session",[&]{auto p=Peer(b,10);return p.metadata_ready&&p.state==n::PeerState::ONLINE&&p.session_id!=old_session;});
-        const auto begun=std::chrono::steady_clock::now();
-        auto sample=One(start(Endpoint(endpoints[0]),3));
-        assert(!sample.error&&sample.action);
-        std::uint64_t seen=0;unsigned observed=0;
-        wait("poll-rate-goal-terminal",[&]{
-            const auto snapshot=sample.action->Snapshot();
-            if(snapshot.feedback_sequence>seen){seen=snapshot.feedback_sequence;++observed;}
-            return snapshot.terminal;
-        });
-        const auto final=sample.action->Snapshot();
-        assert(final.state==kcf::ActionState::SUCCEEDED&&Count(final.result)==6);
-        assert(final.feedback_sequence>0&&observed>0);
-        const auto elapsed=std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now()-begun).count();
-        std::cout<<"Action scheduled poll "<<poll_ms<<"ms: terminal PASS, observed_feedback="
-                 <<observed<<" latest_sequence="<<seen<<" elapsed_ms="<<elapsed
-                 <<" (integration observations, not CPU benchmark)"<<std::endl;
+        wait("benchmark-mode-new-session",[&]{auto p=Peer(b,10);return p.metadata_ready&&p.state==n::PeerState::ONLINE&&p.session_id!=old_session;});
+        const auto begin_stats=a.GetStats();
+        std::vector<double> latency_ms;
+        std::uint64_t observed=0;
+        const auto begin_time=std::chrono::steady_clock::now();
+        for(int trial=0;trial<3;++trial){
+            auto sample=One(start(Endpoint(endpoints[0]),66));
+            assert(!sample.error&&sample.action);
+            std::uint64_t seen=0;
+            wait("benchmark-goal-terminal",[&]{
+                const auto snap=sample.action->Snapshot();
+                if(snap.feedback_sequence>seen){
+                    seen=snap.feedback_sequence;++observed;
+                    kcf::DynamicPayload decoded;
+                    assert(!n::DecodeParameterValue(Descriptor(),snap.feedback,decoded));
+                    Value value{};std::memcpy(&value,decoded.bytes.data(),sizeof(value));
+                    const double receive=std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+                    if(value.gain>0.0)latency_ms.push_back((receive-value.gain)*1000.0);
+                }
+                return snap.terminal;
+            });
+            const auto final=sample.action->Snapshot();
+            assert(final.state==kcf::ActionState::SUCCEEDED&&Count(final.result)==132);
+            assert(final.feedback_sequence>0&&seen>0);
+            const auto previous_completed=a.GetStats().action_workers_completed;
+            wait("benchmark-worker-completed",[&]{return a.GetStats().action_workers_completed>previous_completed;});
+        }
+        const auto after=a.GetStats();
+        std::sort(latency_ms.begin(),latency_ms.end());
+        assert(!latency_ms.empty());
+        const double mean=std::accumulate(latency_ms.begin(),latency_ms.end(),0.0)/latency_ms.size();
+        const double p95=latency_ms[(latency_ms.size()-1)*95/100];
+        const auto elapsed=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-begin_time).count();
+        std::cout<<"Action observation benchmark mode="<<(mode<0?"event":"poll")
+                 <<" poll_ms="<<(mode<0?0:mode)
+                 <<" trials=3 completed="<<(after.action_workers_completed-begin_stats.action_workers_completed)
+                 <<" feedback_reads="<<(after.action_feedback_reads-begin_stats.action_feedback_reads)
+                 <<" waits="<<(after.action_event_waits-begin_stats.action_event_waits)
+                 <<" notifications="<<(after.action_event_notifications-begin_stats.action_event_notifications)
+                 <<" poll_sleeps="<<(after.action_poll_sleeps-begin_stats.action_poll_sleeps)
+                 <<" result_checks="<<(after.action_result_checks-begin_stats.action_result_checks)
+                 <<" worker_cpu_us="<<(after.action_worker_cpu_ns-begin_stats.action_worker_cpu_ns)/1000
+                 <<" observed_feedback="<<observed<<" sample_latency_mean_ms="<<mean
+                 <<" sample_latency_p95_ms="<<p95<<" elapsed_ms="<<elapsed
+                 <<" (VM comparative sample; source-to-client Snapshot latency)"<<std::endl;
     }
-    // Restore the previous 50 ms mode for all existing permissions,
-    // cancellation, flood, reconnect and fanout regressions below.
+    // Restore 50 ms scheduled polling for permissions, cancellation, flood,
+    // disconnect/reconnect and fanout regressions below.
     {
         const auto old_session=Peer(b,10).session_id;
-        a.Stop();ca.action_status_poll_interval=50ms;assert(!a.Start(ca));
+        a.Stop();ca.action_status_mode=n::ActionStatusMode::SCHEDULED_POLL;
+        ca.action_status_poll_interval=50ms;assert(!a.Start(ca));
         wait("restore-poll-50-session",[&]{auto p=Peer(b,10);return p.metadata_ready&&p.state==n::PeerState::ONLINE&&p.session_id!=old_session;});
     }
     auto rejected=One(start(Endpoint(endpoints[0]),-1));assert(rejected.error==-EINVAL&&!rejected.action->Snapshot().accepted&&!rejected.execution_unknown);

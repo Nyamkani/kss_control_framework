@@ -1,0 +1,55 @@
+name: KCF UX combined Core validation
+on:
+  push:
+    branches: [integration/ux-20261124, dev]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  linux-amd64:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+      - name: Compile combined Core, Gateway, CLI, tests
+        run: |
+          cmake --build build --parallel 4 --target \
+            kcf kcf_gateway kcf_gateway_test kcf_gateway_topic_policy_test \
+            kcf_gateway_lifecycle_test kcf_gateway_topic_rate_test \
+            kcf_control_action_test kcf_topic_exposure_test \
+            kcf_diagnostics_contract_test kcf_supervisor_failure_contract_test \
+            kcf_supervisor_discovery_test
+      - name: Combined Gateway options and policy
+        run: |
+          ./build/gateway/kcf_gateway --help | grep -- '--action-status-mode'
+          ./build/gateway/kcf_gateway --help | grep -- '--topic-default-deny'
+          timeout 120s ./build/gateway/kcf_gateway_test
+          timeout 120s ./build/gateway/kcf_gateway_test --policy-network ./build/gateway/kcf_gateway
+          timeout 120s ./build/gateway/kcf_gateway_topic_policy_test
+          timeout 120s ./build/gateway/kcf_gateway_lifecycle_test
+          timeout 120s ./build/gateway/kcf_gateway_topic_rate_test
+          timeout 120s ./build/examples/network/kcf_topic_exposure_test
+      - name: Combined remote Action and Topic localhost integration
+        run: |
+          timeout 120s ./build/examples/network/kcf_control_action_test
+          timeout 120s ./build/gateway/kcf_gateway_topic_policy_test --network
+      - name: Combined diagnostics regression
+        run: |
+          timeout 30s ./build/examples/network/kcf_diagnostics_contract_test
+          timeout 120s ./build/examples/supervisor/kcf_supervisor_failure_contract_test ./build/examples/supervisor/kcf_supervisor_runtime_test
+          timeout 120s ./build/examples/introspection/kcf_supervisor_discovery_test
+      - name: CLI smoke
+        run: |
+          ./build/bin/kcf --help
+          ./build/bin/kcf status
+          ./build/bin/kcf topic list
+          ./build/bin/kcf doctor
+
+  package:
+    name: Native DEB packages
+    needs: linux-amd64
+    uses: ./.github/workflows/core-release-cd.yml
+    permissions:
+      contents: read

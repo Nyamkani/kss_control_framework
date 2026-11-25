@@ -4,6 +4,7 @@
 #include "kcf/ipc/detail/storage_access.hpp"
 #include <sys/random.h>
 #include <algorithm>
+#include <ctime>
 namespace kcf {
 struct DynamicActionClient::Storage {
     int fd{-1};unsigned char* base{nullptr};std::string name;struct stat identity{};
@@ -36,6 +37,41 @@ struct DynamicActionClient::Storage {
         void* mapped=mmap(nullptr,layout.length,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0);if(mapped==MAP_FAILED)return -errno;
         base=static_cast<unsigned char*>(mapped);int code=Validate();if(code)return code;
         return flock(fd,LOCK_UN)?-errno:0;
+    }
+    // Uses the same robust process-shared condition variable as typed Subscriber.
+    // Bounded wait preserves terminal Result checks even without new Feedback.
+    int Wait(std::uint64_t& last,std::chrono::milliseconds timeout){
+        if(timeout.count()<1||timeout.count()>1000)return -EINVAL;
+        int code=Validate();if(code)return code;
+        auto* channel=reinterpret_cast<detail::ChannelHeader*>(base);
+        int error=pthread_mutex_lock(&channel->notify_mutex);
+        if(error==EOWNERDEAD){
+            channel->notify_sequence=channel->publish_sequence.load();
+            error=pthread_mutex_consistent(&channel->notify_mutex);
+            if(error){pthread_mutex_unlock(&channel->notify_mutex);return -error;}
+        }
+        if(error)return -error;
+        timespec deadline{};
+        if(clock_gettime(CLOCK_MONOTONIC,&deadline)){
+            const int saved=errno;pthread_mutex_unlock(&channel->notify_mutex);return -saved;
+        }
+        deadline.tv_sec+=timeout.count()/1000;
+        deadline.tv_nsec+=(timeout.count()%1000)*1000000L;
+        if(deadline.tv_nsec>=1000000000L){++deadline.tv_sec;deadline.tv_nsec-=1000000000L;}
+        while(channel->notify_sequence==last){
+            error=pthread_cond_timedwait(&channel->notify_cond,&channel->notify_mutex,&deadline);
+            if(error==ETIMEDOUT)break;
+            if(error==EOWNERDEAD){
+                channel->notify_sequence=channel->publish_sequence.load();
+                error=pthread_mutex_consistent(&channel->notify_mutex);
+                if(error){pthread_mutex_unlock(&channel->notify_mutex);return -error;}
+            }
+            if(error){pthread_mutex_unlock(&channel->notify_mutex);return -error;}
+        }
+        const bool changed=channel->notify_sequence!=last;
+        last=channel->notify_sequence;
+        error=pthread_mutex_unlock(&channel->notify_mutex);
+        return error?-error:(changed?1:0);
     }
     int Read(std::vector<std::uint8_t>& bytes){
         int code=Validate();if(code)return code;bytes.resize(header.size);
@@ -96,6 +132,9 @@ int DynamicActionClient::ReadFeedback(ActionHeader& header,DynamicPayload& feedb
     ActionHeader h{};std::memcpy(&h,bytes.data(),sizeof(h));if(h.state>ActionState::CANCELED||h.cancel_requested>1)return -EPROTO;
     DynamicPayload value;value.type_id=feedback_.type_id;value.bytes.resize(feedback_.payload_size);std::memcpy(value.bytes.data(),bytes.data()+info_.feedback_offset,value.bytes.size());
     header=h;feedback=std::move(value);return 0;
+}
+int DynamicActionClient::WaitFeedback(std::uint64_t& last_notify,std::chrono::milliseconds timeout){
+    return storage_?storage_->Wait(last_notify,timeout):-EBADF;
 }
 int DynamicActionClient::GetResult(std::uint64_t id,ActionState& state,DynamicPayload& result){
     if(!storage_)return -EBADF;

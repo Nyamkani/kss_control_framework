@@ -1,4 +1,6 @@
 #include "kcf/network/topic_data_plane.hpp"
+#include "kcf/network/detail/topic_timestamp.hpp"
+#include <time.h>
 #include "kcf/network/remote_topic_client.hpp"
 #include "kcf/introspection/detail/runtime_registry.hpp"
 #include "kcf/network/detail/topic_proxy.hpp"
@@ -25,10 +27,19 @@
 namespace kcf::network {
 #ifdef KCF_TOPIC_SCHEDULER_TEST
 void TopicSchedulerTestSample(std::chrono::steady_clock::time_point,std::chrono::steady_clock::time_point);
+// Test-only metrics: loop, transmit, refresh, receive, deliver, wake overshoot,
+// original-deadline lateness. Period counts are summed across outgoing routes.
+void TopicWorkerTestSample(unsigned,std::chrono::steady_clock::duration);
+void TopicSchedulerTestMissed(std::uint64_t,std::uint64_t);
+void TopicSchedulerTestNoSample(unsigned);
+void TopicToleranceTestSample(unsigned);
+void TopicSchedulerTestSent(std::chrono::steady_clock::time_point);
+void TopicSchedulerTestRead(std::uint64_t,bool,std::chrono::steady_clock::time_point);
 #endif
 namespace {
 using Clock=std::chrono::steady_clock;
 using namespace std::chrono_literals;
+std::uint64_t MonotonicNs(){timespec ts{};if(clock_gettime(CLOCK_MONOTONIC,&ts))return 0;return std::uint64_t(ts.tv_sec)*1000000000+ts.tv_nsec;}
 bool Topic(const NetworkEndpointMetadata& e,EndpointRole role){return e.kind==EndpointKind::TOPIC&&e.role==role&&e.scope==NetworkScope::REMOTE;}
 bool SameRoute(const TopicPacket& a,const TopicPacket& b){return a.source==b.source&&a.destination==b.destination&&a.source_session==b.source_session&&a.destination_session==b.destination_session&&a.route_id==b.route_id;}
 TopicRouteInfo Info(const TopicPacket& p,bool sending){TopicRouteInfo s;s.source=p.source;s.destination=p.destination;s.name=p.name;s.source_session=p.source_session;s.destination_session=p.destination_session;s.route_id=p.route_id;s.sending=sending;s.state=TopicRouteState::ACTIVE;return s;}
@@ -66,7 +77,12 @@ RemoteTopicSnapshot RemoteTopicSubscription::Snapshot() const {std::lock_guard<s
 struct TopicDataPlane::Impl {
     struct Proxy {TopicProxyInfo info;TypeDescriptor descriptor;std::unique_ptr<detail::TopicProxy> writer;};
     struct Incoming {std::shared_ptr<RemoteTopicSubscription::State> subscription;TopicPacket packet;LocalEndpoint consumer;std::size_t proxy;Clock::time_point interest{};std::uint64_t trace_sends{0};int trace_result{0};const char* trace_stage{"not-called"};TopicRouteInfo stats;std::optional<TopicPacket> latest;};
-    struct Outgoing {TopicPacket packet;LocalEndpoint publisher;std::unique_ptr<DynamicTopicReader> reader;Clock::time_point expires,next{};bool fresh_start{false};std::uint64_t baseline{0};std::string address;std::uint16_t port{0};TopicRouteInfo stats;};
+    struct Outgoing {
+        std::optional<std::size_t> timestamp_offset;
+        Clock::duration tolerance{};
+        bool pending{false};Clock::time_point scheduled{};
+        std::uint64_t earliest{0},expiry{0},last_stamp{0};
+        TopicPacket packet;LocalEndpoint publisher;std::unique_ptr<DynamicTopicReader> reader;Clock::time_point expires,next{};bool fresh_start{false};std::uint64_t baseline{0};std::string address;std::uint16_t port{0};TopicRouteInfo stats;};
     TopicConfig config;DiscoveryConfig discovery_config;MetadataConfig metadata;RemoteRuntimeIdentity self;PeerDiscovery* discovery{nullptr};
     int fd{-1},wake{-1};std::atomic<bool> running{false},ready{false};std::atomic<int> error{0};std::thread worker;
     std::uint64_t session{0},next_route{0},next_proxy{0};
@@ -206,6 +222,11 @@ struct TopicDataPlane::Impl {
         auto reader=std::make_unique<DynamicTopicReader>();int code=reader->Open(entry->metadata.name,entry->descriptor);
         if(code){Notice(entry->metadata,code);return;}
         Outgoing r;r.packet=packet;r.packet.kind=TopicMessage::DATA;r.publisher=*entry;r.reader=std::move(reader);r.address=peer.address;r.port=port;r.expires=Clock::now()+750ms;r.stats=Info(packet,true);
+        for(const auto& t:config.timestamp_tolerances)if(t.name==packet.name){
+            r.timestamp_offset=detail::TopicTimestampOffset(entry->descriptor,t.field);
+            if(!r.timestamp_offset){Notice(entry->metadata,-EPROTOTYPE);return;}
+            r.tolerance=t.tolerance;
+        }
         r.fresh_start=std::find(config.fresh_start_topics.begin(),config.fresh_start_topics.end(),packet.name)!=config.fresh_start_topics.end();
         if(r.fresh_start){code=FreshBaseline(*entry,*r.reader,r.baseline);if(code){Notice(entry->metadata,code);return;}}
         outgoing.push_back(std::move(r));
@@ -260,24 +281,123 @@ struct TopicDataPlane::Impl {
             double hz=config.max_hz;for(const auto& limit:config.rate_limits)if(limit.name==r.packet.name)hz=limit.max_hz;
             const auto period=std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(1.0/hz));
             if(r.next==Clock::time_point{})r.next=due;
+#ifdef KCF_TOPIC_SCHEDULER_TEST
+            if(!r.pending)TopicWorkerTestSample(6,due-r.next);
+#endif
             // Preserve phase, skip missed periods, and never send a catch-up burst.
-            const auto deadline=r.next+((due-r.next)/period)*period;
+            const auto deadline=r.pending?r.scheduled:r.next+((due-r.next)/period)*period;
+            const bool retry=r.pending;
+            if(r.timestamp_offset&&!retry){
+                const auto clock_before=Clock::now();
+                const auto mono=MonotonicNs();
+                if(!mono){error=-EIO;return;}
+                const auto lag=std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now()-deadline).count();
+                const auto scheduled=mono>std::uint64_t(lag)?mono-lag:0;
+                // Bracket conversion between steady_clock and CLOCK_MONOTONIC.
+                // Preemption during the probe narrows, never enlarges, the window.
+                const auto early_lag=std::chrono::duration_cast<std::chrono::nanoseconds>(clock_before-deadline).count();
+                const auto latest_scheduled=mono>std::uint64_t(early_lag)?mono-early_lag:0;
+                const auto span=std::chrono::duration_cast<std::chrono::nanoseconds>(period).count();
+                r.earliest=latest_scheduled>std::uint64_t(span)?latest_scheduled-span:0;
+                r.expiry=scheduled+std::chrono::duration_cast<std::chrono::nanoseconds>(r.tolerance).count();
+                r.scheduled=deadline;
+            }
+            bool defer=false;
             struct Advance {
                 Clock::time_point& next;Clock::time_point deadline;Clock::duration period;
-                ~Advance(){const auto end=Clock::now();next=deadline+((end-deadline)/period+1)*period;}
-            } advance{r.next,deadline,period};
+                bool& pending;bool& defer;Clock::duration tolerance;bool retry;
+                ~Advance(){const auto end=Clock::now();
+                    if(defer&&end<deadline+tolerance){
+#ifdef KCF_TOPIC_SCHEDULER_TEST
+                        if(!retry)TopicSchedulerTestMissed((deadline-next)/period,0);
+#endif
+                        pending=true;next=std::min(end+500us,deadline+tolerance);return;
+                    }
+                    pending=false;
+#ifdef KCF_TOPIC_SCHEDULER_TEST
+                    const auto before=retry?0:(deadline-next)/period, during=(end-deadline)/period;
+#endif
+                    next=deadline+((end-deadline)/period+1)*period;
+#ifdef KCF_TOPIC_SCHEDULER_TEST
+                    TopicSchedulerTestMissed(before,during);
+#endif
+                }
+            } advance{r.next,deadline,period,r.pending,defer,r.tolerance,retry};
+            if(r.timestamp_offset){
+                const auto now_ns=MonotonicNs();
+                if(!now_ns){error=-EIO;return;}
+                if(now_ns>r.expiry){
+#ifdef KCF_TOPIC_SCHEDULER_TEST
+                    TopicToleranceTestSample(2); // expired window, no forced send
+#endif
+                    continue;
+                }
+                defer=true; // only unsuccessful attempts retry; no busy wait
+#ifdef KCF_TOPIC_SCHEDULER_TEST
+                if(retry)TopicToleranceTestSample(0);
+#endif
+            }
             DynamicPayload value;int code=ValidateLocalTopicEndpoint(r.publisher,true);if(!code)code=r.reader->ReadLatest(value);
-            if(code){if(code!=-EAGAIN)r.stats.error=code;continue;}
-            if(r.fresh_start&&value.sequence<=r.baseline)continue;
-            if(value.sequence==r.packet.sample_sequence)continue;
-            if(value.sequence<r.packet.sample_sequence||r.packet.sequence==UINT64_MAX){r.stats.error=-ESTALE;continue;}
+            if(code){
+#ifdef KCF_TOPIC_SCHEDULER_TEST
+                if(code==-EAGAIN)TopicSchedulerTestNoSample(0);
+#endif
+                if(code!=-EAGAIN){r.stats.error=code;defer=false;}
+                continue;
+            }
+#ifdef KCF_TOPIC_SCHEDULER_TEST
+            TopicSchedulerTestRead(value.sequence,value.sequence==r.packet.sample_sequence,Clock::now());
+#endif
+            if(r.fresh_start&&value.sequence<=r.baseline){
+#ifdef KCF_TOPIC_SCHEDULER_TEST
+                TopicSchedulerTestNoSample(1);
+#endif
+                continue;}
+            if(value.sequence==r.packet.sample_sequence){
+#ifdef KCF_TOPIC_SCHEDULER_TEST
+                TopicSchedulerTestNoSample(2);
+                if(r.timestamp_offset)TopicToleranceTestSample(retry?4:3);
+#endif
+                continue;}
+            if(value.sequence<r.packet.sample_sequence||r.packet.sequence==UINT64_MAX){r.stats.error=-ESTALE;defer=false;continue;}
+            std::uint64_t stamp=0;
+            if(r.timestamp_offset){
+                if(*r.timestamp_offset>value.bytes.size()||value.bytes.size()-*r.timestamp_offset<sizeof(stamp)){
+                    r.stats.error=-EPROTOTYPE;defer=false;continue;
+                }
+                std::memcpy(&stamp,value.bytes.data()+*r.timestamp_offset,sizeof(stamp));
+                const auto now_ns=MonotonicNs();
+                if(!now_ns){error=-EIO;return;}
+                if(!detail::TopicTimestampEligible(stamp,value.sequence,r.packet.sample_sequence,r.last_stamp,r.earliest,r.expiry,now_ns)){
+#ifdef KCF_TOPIC_SCHEDULER_TEST
+                    TopicToleranceTestSample(1);
+#endif
+                    continue;
+                }
+            }
+            defer=false;
+            if(r.timestamp_offset){
+                code=EncodeParameterValue(r.publisher.descriptor,value,r.packet.payload);
+                const auto now_ns=MonotonicNs();
+                if(!now_ns){error=-EIO;return;}
+                if(now_ns>r.expiry){
+#ifdef KCF_TOPIC_SCHEDULER_TEST
+                    TopicToleranceTestSample(2);
+#endif
+                    continue;
+                }
+            }
             if(r.packet.sample_sequence)r.stats.local_samples_skipped+=value.sequence-r.packet.sample_sequence-1;
-            r.packet.sample_sequence=value.sequence;++r.packet.sequence;
-            code=EncodeParameterValue(r.publisher.descriptor,value,r.packet.payload);
+            r.packet.sample_sequence=value.sequence;r.last_stamp=stamp;++r.packet.sequence;
+            if(!r.timestamp_offset)code=EncodeParameterValue(r.publisher.descriptor,value,r.packet.payload);
 #ifdef KCF_TOPIC_SCHEDULER_TEST
             if(!code)TopicSchedulerTestSample(deadline,Clock::now());
+            if(!code&&retry)TopicToleranceTestSample(5);
 #endif
             if(!code)code=Send(r.packet,r.address,r.port);
+#ifdef KCF_TOPIC_SCHEDULER_TEST
+            if(!code)TopicSchedulerTestSent(Clock::now());
+#endif
             if(code){++r.stats.dropped;r.stats.error=code;}else{++r.stats.packets_sent;r.stats.error=0;}
         }
     }
@@ -319,9 +439,35 @@ struct TopicDataPlane::Impl {
         while(running){
             if(!ready){if(trace){std::lock_guard<std::mutex> lock(subscription_mutex);TraceLoop(peers);}std::this_thread::sleep_for(2ms);continue;}
             if(!session){session=discovery->GetSessionId();if(!session){if(trace){std::lock_guard<std::mutex> lock(subscription_mutex);TraceLoop(peers);}std::this_thread::sleep_for(2ms);continue;}}
+#ifdef KCF_TOPIC_SCHEDULER_TEST
+            const auto loop_start=Clock::now();
+#endif
             {std::lock_guard<std::mutex> subscriptions_lock(subscription_mutex);
-            if(Clock::now()>=next){peers=discovery->GetPeers();{std::lock_guard<std::mutex> lock(local_mutex);entries=local;}CheckSubscriptions(peers);Refresh(peers,*entries);Export();next=Clock::now()+20ms;}
-            Receive(peers,*entries);Deliver();Transmit(peers);TraceLoop(peers);if(error)break;}
+            if(Clock::now()>=next){
+#ifdef KCF_TOPIC_SCHEDULER_TEST
+                const auto refresh_start=Clock::now();
+#endif
+                peers=discovery->GetPeers();{std::lock_guard<std::mutex> lock(local_mutex);entries=local;}CheckSubscriptions(peers);Refresh(peers,*entries);Export();next=Clock::now()+20ms;
+#ifdef KCF_TOPIC_SCHEDULER_TEST
+                TopicWorkerTestSample(2,Clock::now()-refresh_start);
+#endif
+            }
+#ifdef KCF_TOPIC_SCHEDULER_TEST
+            auto phase=Clock::now();
+#endif
+            Receive(peers,*entries);
+#ifdef KCF_TOPIC_SCHEDULER_TEST
+            TopicWorkerTestSample(3,Clock::now()-phase);phase=Clock::now();
+#endif
+            Deliver();
+#ifdef KCF_TOPIC_SCHEDULER_TEST
+            TopicWorkerTestSample(4,Clock::now()-phase);phase=Clock::now();
+#endif
+            Transmit(peers);
+#ifdef KCF_TOPIC_SCHEDULER_TEST
+            TopicWorkerTestSample(1,Clock::now()-phase);
+#endif
+            TraceLoop(peers);if(error)break;}
             // Keep the existing 2 ms upper bound for receive/interest work, but
             // do not round a nearer send deadline up to another whole poll tick.
             auto wait=Clock::duration(2ms);const auto before_wait=Clock::now();
@@ -329,7 +475,18 @@ struct TopicDataPlane::Impl {
                 wait=std::min(wait,std::max(Clock::duration::zero(),r.next-before_wait));
             const auto ns=std::chrono::duration_cast<std::chrono::nanoseconds>(wait).count();
             timespec timeout{static_cast<time_t>(ns/1000000000),static_cast<long>(ns%1000000000)};
-            pollfd fds[2]{{fd,POLLIN,0},{wake,POLLIN,0}};int code=ppoll(fds,2,&timeout,nullptr);if(code<0&&errno!=EINTR){error=-errno;break;}if(fds[1].revents){Trace("worker=wake revents=%d",int(fds[1].revents));break;}
+            pollfd fds[2]{{fd,POLLIN,0},{wake,POLLIN,0}};
+#ifdef KCF_TOPIC_SCHEDULER_TEST
+            TopicWorkerTestSample(0,Clock::now()-loop_start); // excludes ppoll sleep
+            const auto poll_start=Clock::now();
+#endif
+            int code=ppoll(fds,2,&timeout,nullptr);
+#ifdef KCF_TOPIC_SCHEDULER_TEST
+            const int poll_errno=errno;
+            TopicWorkerTestSample(5,std::max(Clock::duration::zero(),Clock::now()-poll_start-wait));
+            errno=poll_errno; // diagnostics must not alter ppoll error handling
+#endif
+            if(code<0&&errno!=EINTR){error=-errno;break;}if(fds[1].revents){Trace("worker=wake revents=%d",int(fds[1].revents));break;}
         }
         std::lock_guard<std::mutex> subscriptions_lock(subscription_mutex);
         for(const auto& state:subscriptions)CloseSubscription(state,error?RemoteTopicState::ERROR:RemoteTopicState::CLOSED,error?error.load():-ECANCELED);subscriptions.clear();
@@ -350,6 +507,13 @@ int TopicDataPlane::Start(const TopicConfig& config,const DiscoveryConfig& dc,co
     for(std::size_t i=0;i<config.fresh_start_topics.size();++i){const auto& name=config.fresh_start_topics[i];
         if(!Text(name,240)||name[0]!='/')return -EINVAL;
         for(std::size_t j=0;j<i;++j)if(name==config.fresh_start_topics[j])return -EINVAL;
+    }
+    if(config.timestamp_tolerances.size()>64)return -EINVAL;
+    for(std::size_t i=0;i<config.timestamp_tolerances.size();++i){const auto& t=config.timestamp_tolerances[i];
+        double hz=config.max_hz;for(const auto& r:config.rate_limits)if(r.name==t.name)hz=r.max_hz;
+        if(!Text(t.name,240)||t.name[0]!='/'||!Text(t.field,95)||t.tolerance.count()<=0||
+           t.tolerance.count()>1000000||double(t.tolerance.count())>500000.0/hz)return -EINVAL;
+        for(std::size_t j=0;j<i;++j)if(config.timestamp_tolerances[j].name==t.name)return -EINVAL;
     }
     for(const auto& r:config.rate_limits)if(!Text(r.name,240)||r.name[0]!='/'||!rate(r.max_hz))return -EINVAL;
     for(const auto& t:config.local_types){TypeIdentity wire;if(!Text(t.name,240)||t.name[0]!='/'||ParameterWireType(t.descriptor,wire))return -EINVAL;}

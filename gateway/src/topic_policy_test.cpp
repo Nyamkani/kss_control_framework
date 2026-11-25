@@ -15,13 +15,29 @@ static gateway::Options Parse(std::vector<std::string> args){std::vector<char*> 
 template<class F> void Until(F f){auto end=std::chrono::steady_clock::now()+10s;while(!f()){assert(std::chrono::steady_clock::now()<end);std::this_thread::sleep_for(20ms);}}
 int main(int argc,char** argv){
     assert(!n::ControlConfig{}.topic_observer_enabled);
-    auto off=Parse({"gateway"});n::NetworkInterfaceSelection nic{"lo","127.0.0.1",1,false};assert(!gateway::Config(off,nic).topics.enabled&&!gateway::Config(off,nic).topic_observer_enabled);
+    auto defaults=Parse({"gateway"});n::NetworkInterfaceSelection nic{"lo","127.0.0.1",1,false};
+    assert(gateway::Config(defaults,nic).topics.enabled&&gateway::Config(defaults,nic).topic_observer_enabled);
+    assert(defaults.topic_policy.allow_prefixes.size()==1&&defaults.topic_policy.allow_prefixes.front()=="/");
+    n::NetworkScope scope{};
+    assert(n::EvaluateTopicExposure(gateway::Config(defaults,nic).metadata,"/custom/topic",n::EndpointRole::PROVIDER,scope)==0&&scope==n::NetworkScope::REMOTE);
+    assert(n::EvaluateTopicExposure(gateway::Config(defaults,nic).metadata,"/custom/topic",n::EndpointRole::CONSUMER,scope)==0&&scope==n::NetworkScope::LOCAL);
+    auto denied=Parse({"gateway","--topic-default-deny"});
+    assert(!gateway::Config(denied,nic).topics.enabled&&!gateway::Config(denied,nic).topic_observer_enabled);
+    assert(n::EvaluateTopicExposure(gateway::Config(denied,nic).metadata,"/custom/topic",n::EndpointRole::PROVIDER,scope)==0&&scope==n::NetworkScope::LOCAL);
+    auto opt_in=Parse({"gateway","--topic-default-deny","--topic-allow-prefix","/safe"});
+    assert(gateway::Config(opt_in,nic).topics.enabled&&opt_in.topic_policy.allow_prefixes.size()==1);
+    assert(n::EvaluateTopicExposure(gateway::Config(opt_in,nic).metadata,"/safe/data",n::EndpointRole::PROVIDER,scope)==0&&scope==n::NetworkScope::REMOTE);
+    assert(n::EvaluateTopicExposure(gateway::Config(opt_in,nic).metadata,"/other/data",n::EndpointRole::PROVIDER,scope)==0&&scope==n::NetworkScope::LOCAL);
     auto options=Parse({"gateway","--topic-allow-prefix","/policy","--topic-allow-prefix","/extra/","--topic-exclude-prefix","/policy/private"});
     auto config=gateway::Config(options,nic);assert(config.topics.enabled&&config.topics.max_hz==50&&config.metadata.remote_topics.empty());
     assert(config.parameter_set_clients.empty()&&config.service_call_clients.empty()&&config.action_goal_clients.empty()&&config.action_cancel_clients.empty()&&config.descriptor_query_clients.empty());
     for(auto args:std::vector<std::vector<std::string>>{{"x","--topic-allow-prefix","bad"},{"x","--topic-allow-prefix","/a","--topic-allow-prefix","/a/"},{"x","--topic-exclude-prefix"}}){bool bad=false;try{Parse(args);}catch(...){bad=true;}assert(bad);}
-    auto excluded=Parse({"x","--topic-exclude-prefix","/policy"});assert(!gateway::Config(excluded,nic).topics.enabled&&!gateway::Config(excluded,nic).topic_observer_enabled);
-    std::cout<<"Gateway repeated Prefix CLI/validation/default deny/rate/Config PASS\n";
+    auto excluded=Parse({"x","--topic-exclude-prefix","/policy"});
+    assert(gateway::Config(excluded,nic).topics.enabled&&gateway::Config(excluded,nic).topic_observer_enabled);
+    assert(n::EvaluateTopicExposure(gateway::Config(excluded,nic).metadata,"/policy/private",n::EndpointRole::PROVIDER,scope)==0&&scope==n::NetworkScope::LOCAL);
+    assert(n::EvaluateTopicExposure(gateway::Config(excluded,nic).metadata,"/public/data",n::EndpointRole::PROVIDER,scope)==0&&scope==n::NetworkScope::REMOTE);
+    assert(n::EvaluateTopicExposure(config.metadata,"/outside/data",n::EndpointRole::PROVIDER,scope)==0&&scope==n::NetworkScope::LOCAL);
+    std::cout<<"Gateway default public/restrictive allow/exclude/explicit deny/rate/Config PASS\n";
     if(argc==1)return 0;
     assert(argc==2&&std::string(argv[1])=="--network");
     config.discovery.host.bytes[0]=10;config.discovery.boot_id.bytes[0]=42;config.discovery.port=48651;
@@ -124,6 +140,63 @@ int main(int argc,char** argv){
     assert(private_publisher.Close()==0);assert(private_publisher.Unlink()==0);
     Until([&]{return peer().metadata_ready&&peer().endpoints.empty();});
     assert(control.QueryTypeDescriptor(endpoint.identity,peer().session_id,endpoint.name,n::DescriptorRole::VALUE,endpoint.value_type,schema)!=0);
+    // No Topic CLI policy: an unrelated Publisher must be discoverable and
+    // remotely subscribable through the real loopback data plane.
+    std::cerr<<"[default-open] stop restricted Gateway\n";
+    const auto prior_session=peer().session_id;
+    sender.Stop();
+    auto default_config=gateway::Config(defaults,nic);
+    default_config.discovery=config.discovery;
+    default_config.topics.port=config.topics.port;
+    default_config.metadata.runtime_pids={getpid()};
+    assert(default_config.topics.enabled&&default_config.topic_observer_enabled);
+    assert(default_config.parameter_set_clients.empty()&&default_config.service_call_clients.empty()
+        &&default_config.action_goal_clients.empty()&&default_config.action_cancel_clients.empty());
+    assert(sender.Start(default_config)==0);
+    std::cerr<<"[default-open] waiting empty metadata new session\n";
+    Until([&]{return peer().metadata_ready&&peer().session_id!=prior_session&&peer().endpoints.empty();});
+    std::cerr<<"[default-open] new session ready\\n";
+    kcf::Publisher<Value> default_publisher;
+    assert(default_publisher.Create("/default_open/value")==0);
+    std::cerr<<"[default-open] publisher created, waiting metadata\\n";
+    n::NetworkEndpointMetadata default_endpoint;
+    auto last_dump=std::chrono::steady_clock::now();
+    Until([&]{
+        const auto p=peer();
+        for(const auto& e:p.endpoints){
+            if(e.name!="/default_open/value"||e.role!=n::EndpointRole::PROVIDER)continue;
+            assert(e.scope==n::NetworkScope::REMOTE);
+            default_endpoint=e;
+            return p.metadata_ready;
+        }
+        if(std::chrono::steady_clock::now()-last_dump>1s){
+            std::cerr<<"[default-open] metadata_ready="<<p.metadata_ready
+                <<" endpoints="<<p.endpoints.size()<<" session="<<p.session_id<<"\\n";
+            for(const auto& e:p.endpoints)
+                std::cerr<<"[default-open] endpoint="<<e.name<<" role="<<static_cast<int>(e.role)
+                    <<" scope="<<static_cast<int>(e.scope)<<"\\n";
+            last_dump=std::chrono::steady_clock::now();
+        }
+        return false;
+    });
+    std::cerr<<"[default-open] metadata ready, query descriptor\\n";
+    assert(control.QueryTypeDescriptor(default_endpoint.identity,peer().session_id,
+        default_endpoint.name,n::DescriptorRole::VALUE,default_endpoint.value_type,schema)==0);
+    std::shared_ptr<n::RemoteTopicSubscription> default_handle;
+    std::cerr<<"[default-open] descriptor ready, subscribe\\n";
+    assert(client.Subscribe(default_endpoint.identity,peer().session_id,
+        default_endpoint.name,default_endpoint.value_type,default_handle,2s)==0);
+    std::cerr<<"[default-open] subscribed, wait payload\\n";
+    Until([&]{assert(default_publisher.Publish({456,true,2.5})==0);return default_handle->Snapshot().has_value;});
+    kcf::DynamicPayload default_decoded;
+    assert(n::DecodeParameterValue(kcf::TypeDescriptorTraits<Value>::Get(),
+        default_handle->Snapshot().payload,default_decoded)==0);
+    Value default_value{};
+    std::memcpy(&default_value,default_decoded.bytes.data(),sizeof(default_value));
+    assert(default_value.count==456&&default_value.enabled&&default_value.gain==2.5);
+    assert(client.Unsubscribe(default_handle)==0);
+    assert(default_publisher.Close()==0&&default_publisher.Unlink()==0);
+    std::cout<<"Gateway no-allow-list default-open real Remote Subscribe/Payload PASS\\n";
     client.Stop();control.Stop();discovery.Stop();sender.Stop();
     kcf::detail::EndRuntimeIntrospection(kcf::ProcessState::STOPPED,0);
     std::cout<<"Gateway policy Metadata dynamic add/remove/Subscriber exclusion/no-interest no-send/actual DATA/rebind policy PASS (unregistered read-only Topic Observer)\n";

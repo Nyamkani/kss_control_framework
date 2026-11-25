@@ -1,12 +1,14 @@
 // Supervisor contract only. Runtime Setup/exception/Shutdown coverage remains in
 // kcf_runtime_lifecycle_test; children reuse kcf_supervisor_runtime_test.
 #include "bringup/bringup.hpp"
+#include "kcf/introspection/introspection_client.hpp"
 #include <cassert>
 #include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <iostream>
 #include <thread>
+#include <vector>
 #include <fstream>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -81,6 +83,12 @@ static void InitialFailure(const std::string& self,const std::string& executable
     const auto first=app.GetErrorHistory().front();
     assert(app.GetErrorHistory().size()==1 && first.generation==1 && first.sequence==1);
     assert(first.error.element_name=="target");
+    kcf::IntrospectionClient observer;
+    kcf::SupervisorDiagnosticsInfo detail{};
+    Until([&]{return observer.GetSupervisorDiagnostics(getpid(),ticks,detail)==0 &&
+                     detail.history_count==1;});
+    assert(detail.element_count==2 && detail.history[0].sequence==first.sequence);
+    assert(std::string(detail.history[0].element_name)=="target");
     if(first.error.failure_kind==kcf::ElementFailureKind::PROCESS_EXIT)
         assert(first.error.exit_info.exit_code==7 &&
                (first.runtime_error_observed || first.error.runtime_error==0));
@@ -153,6 +161,36 @@ static void RunningExit(const std::string& executable,std::uint64_t ticks,
             // Give the regular monitor cycles time to observe the second exit.
             Until([&]{return !fs::exists("/proc/"+std::to_string(children[0].pid));});
             assert(status.ReadCurrent(error)==0 && error.failed_pid==first_pid);
+            kcf::IntrospectionClient observer;
+            kcf::SupervisorDiagnosticsInfo detail{};
+            Until([&]{return observer.GetSupervisorDiagnostics(getpid(),ticks,detail)==0 &&
+                             detail.history_count==2;});
+            assert(detail.history[0].pid==children[1].pid &&
+                   detail.history[1].pid==children[0].pid);
+            assert(detail.history[0].sequence<detail.history[1].sequence);
+            assert(detail.history[0].monotonic_ns<=detail.history[1].monotonic_ns);
+            // Independent external observers must be able to read identical
+            // immutable error history concurrently. Each reader owns a client
+            // and snapshot; no observer can mutate the Supervisor.
+            std::atomic<unsigned> reader_passes{0};
+            std::vector<std::thread> readers;
+            for(int n=0;n<8;++n)readers.emplace_back([&,n]{
+                kcf::IntrospectionClient other;
+                for(int iteration=0;iteration<32;++iteration){
+                    kcf::SupervisorDiagnosticsInfo snapshot{};
+                    assert(other.GetSupervisorDiagnostics(getpid(),ticks,snapshot)==0);
+                    assert(snapshot.element_count==2 && snapshot.history_count==2);
+                    assert(snapshot.pid==getpid() && snapshot.process_start_ticks==ticks);
+                    assert(snapshot.history[0].pid==children[1].pid);
+                    assert(snapshot.history[1].pid==children[0].pid);
+                    assert(snapshot.history[0].sequence<snapshot.history[1].sequence);
+                    assert(snapshot.history[0].generation==snapshot.history[1].generation);
+                    ++reader_passes;
+                }
+            });
+            for(auto& reader:readers)reader.join();
+            assert(reader_passes==256);
+            std::cout<<"Supervisor diagnostics 8 readers x 32 consistent snapshots PASS\\n";
             // ERROR latches, but does not automatically terminate the healthy sibling.
         }
         assert(status.Close()==0);

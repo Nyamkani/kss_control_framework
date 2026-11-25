@@ -187,6 +187,39 @@ void Integration(const char* exe,bool contended=false){auto port=Port();pid_t ch
     auto scheduled=One(start(Endpoint(endpoints[0]),3));assert(!scheduled.error);
     wait("scheduled-goal-terminal",[&]{return scheduled.action->Snapshot().terminal;});
     assert(scheduled.action->Snapshot().state==kcf::ActionState::SUCCEEDED&&Count(scheduled.action->Snapshot().result)==6);
+    // Validate the actual configurable polling deadlines, including the 100 ms
+    // boundary, with live Remote Action Goal/Feedback/Result over loopback.
+    // These are functional observations, not CPU or wake-up measurements.
+    for(const auto poll_ms:{10,100}){
+        const auto old_session=Peer(b,10).session_id;
+        a.Stop();ca.action_status_poll_interval=std::chrono::milliseconds(poll_ms);
+        assert(!a.Start(ca));
+        wait("poll-rate-new-session",[&]{auto p=Peer(b,10);return p.metadata_ready&&p.state==n::PeerState::ONLINE&&p.session_id!=old_session;});
+        const auto begun=std::chrono::steady_clock::now();
+        auto sample=One(start(Endpoint(endpoints[0]),3));
+        assert(!sample.error&&sample.action);
+        std::uint64_t seen=0;unsigned observed=0;
+        wait("poll-rate-goal-terminal",[&]{
+            const auto snapshot=sample.action->Snapshot();
+            if(snapshot.feedback_sequence>seen){seen=snapshot.feedback_sequence;++observed;}
+            return snapshot.terminal;
+        });
+        const auto final=sample.action->Snapshot();
+        assert(final.state==kcf::ActionState::SUCCEEDED&&Count(final.result)==6);
+        assert(final.feedback_sequence>0&&observed>0);
+        const auto elapsed=std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now()-begun).count();
+        std::cout<<"Action scheduled poll "<<poll_ms<<"ms: terminal PASS, observed_feedback="
+                 <<observed<<" latest_sequence="<<seen<<" elapsed_ms="<<elapsed
+                 <<" (integration observations, not CPU benchmark)"<<std::endl;
+    }
+    // Restore the previous 50 ms mode for all existing permissions,
+    // cancellation, flood, reconnect and fanout regressions below.
+    {
+        const auto old_session=Peer(b,10).session_id;
+        a.Stop();ca.action_status_poll_interval=50ms;assert(!a.Start(ca));
+        wait("restore-poll-50-session",[&]{auto p=Peer(b,10);return p.metadata_ready&&p.state==n::PeerState::ONLINE&&p.session_id!=old_session;});
+    }
     auto rejected=One(start(Endpoint(endpoints[0]),-1));assert(rejected.error==-EINVAL&&!rejected.action->Snapshot().accepted&&!rejected.execution_unknown);
     auto cancel=One(start(Endpoint(endpoints[0]),7));assert(!cancel.error);auto cancel_result=One(b.CancelAction(cancel.action));assert(!cancel_result.error&&!cancel_result.cancel_unknown);wait("cancel-terminal",[&]{return cancel.action->Snapshot().terminal;});assert(cancel.action->Snapshot().state==kcf::ActionState::CANCELED);
     assert(Result(c.CancelAction(cancel.action)).error==-EACCES);

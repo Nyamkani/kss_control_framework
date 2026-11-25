@@ -140,6 +140,45 @@ int main(int argc,char** argv){
     assert(private_publisher.Close()==0);assert(private_publisher.Unlink()==0);
     Until([&]{return peer().metadata_ready&&peer().endpoints.empty();});
     assert(control.QueryTypeDescriptor(endpoint.identity,peer().session_id,endpoint.name,n::DescriptorRole::VALUE,endpoint.value_type,schema)!=0);
+    // No Topic CLI policy: an unrelated Publisher must be discoverable and
+    // remotely subscribable through the real loopback data plane.
+    const auto prior_session=peer().session_id;
+    sender.Stop();
+    auto default_config=gateway::Config(defaults,nic);
+    default_config.discovery=config.discovery;
+    default_config.topics.port=config.topics.port;
+    default_config.metadata.runtime_pids={getpid()};
+    assert(default_config.topics.enabled&&default_config.topic_observer_enabled);
+    assert(default_config.parameter_set_clients.empty()&&default_config.service_call_clients.empty()
+        &&default_config.action_goal_clients.empty()&&default_config.action_cancel_clients.empty());
+    assert(sender.Start(default_config)==0);
+    Until([&]{return peer().metadata_ready&&peer().session_id!=prior_session&&peer().endpoints.empty();});
+    kcf::Publisher<Value> default_publisher;
+    assert(default_publisher.Create("/default_open/value")==0);
+    n::NetworkEndpointMetadata default_endpoint;
+    Until([&]{
+        if(!peer().metadata_ready||peer().endpoints.size()!=1)return false;
+        const auto& e=peer().endpoints.front();
+        if(e.name!="/default_open/value"||e.role!=n::EndpointRole::PROVIDER)return false;
+        assert(e.scope==n::NetworkScope::REMOTE);
+        default_endpoint=e;
+        return true;
+    });
+    assert(control.QueryTypeDescriptor(default_endpoint.identity,peer().session_id,
+        default_endpoint.name,n::DescriptorRole::VALUE,default_endpoint.value_type,schema)==0);
+    std::shared_ptr<n::RemoteTopicSubscription> default_handle;
+    assert(client.Subscribe(default_endpoint.identity,peer().session_id,
+        default_endpoint.name,default_endpoint.value_type,default_handle,2s)==0);
+    Until([&]{assert(default_publisher.Publish({456,true,2.5})==0);return default_handle->Snapshot().has_value;});
+    kcf::DynamicPayload default_decoded;
+    assert(n::DecodeParameterValue(kcf::TypeDescriptorTraits<Value>::Get(),
+        default_handle->Snapshot().payload,default_decoded)==0);
+    Value default_value{};
+    std::memcpy(&default_value,default_decoded.bytes.data(),sizeof(default_value));
+    assert(default_value.count==456&&default_value.enabled&&default_value.gain==2.5);
+    assert(client.Unsubscribe(default_handle)==0);
+    assert(default_publisher.Close()==0&&default_publisher.Unlink()==0);
+    std::cout<<"Gateway no-allow-list default-open real Remote Subscribe/Payload PASS\\n";
     client.Stop();control.Stop();discovery.Stop();sender.Stop();
     kcf::detail::EndRuntimeIntrospection(kcf::ProcessState::STOPPED,0);
     std::cout<<"Gateway policy Metadata dynamic add/remove/Subscriber exclusion/no-interest no-send/actual DATA/rebind policy PASS (unregistered read-only Topic Observer)\n";
